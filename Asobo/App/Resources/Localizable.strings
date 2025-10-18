@@ -1,0 +1,2 @@
+/* Localizable strings (base). Add ja/en in Xcode localization */
+"hello" = "こんにちは";

@@ -1,0 +1,668 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		1405B2902E75306B002102AE /* Services in Frameworks */ = {isa = PBXBuildFile; productRef = 1405B28F2E75306B002102AE /* Services */; };
+		1405B2932E753077002102AE /* Support in Frameworks */ = {isa = PBXBuildFile; productRef = 1405B2922E753077002102AE /* Support */; };
+		1405B2962E753081002102AE /* Domain in Frameworks */ = {isa = PBXBuildFile; productRef = 1405B2952E753081002102AE /* Domain */; };
+		146EA9CB2E87A63F00BBD955 /* Debug.xcconfig in Resources */ = {isa = PBXBuildFile; fileRef = 146EA9CA2E87A63F00BBD955 /* Debug.xcconfig */; };
+		146EA9CD2E87A65400BBD955 /* Release.xcconfig in Resources */ = {isa = PBXBuildFile; fileRef = 146EA9CC2E87A65400BBD955 /* Release.xcconfig */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		1497CE772E72D88A00051217 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 1497CE602E72D88900051217 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 1497CE672E72D88900051217;
+			remoteInfo = Asobo;
+		};
+		1497CE812E72D88A00051217 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 1497CE602E72D88900051217 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 1497CE672E72D88900051217;
+			remoteInfo = Asobo;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		146EA9CA2E87A63F00BBD955 /* Debug.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Debug.xcconfig; sourceTree = "<group>"; };
+		146EA9CC2E87A65400BBD955 /* Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Release.xcconfig; sourceTree = "<group>"; };
+		1497CE682E72D88900051217 /* Asobo.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Asobo.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		1497CE762E72D88A00051217 /* AsoboTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AsoboTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		1497CE802E72D88A00051217 /* AsoboUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AsoboUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		1405B28D2E752B62002102AE /* Exceptions for "Asobo" folder in "Asobo" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				App/Resources/Info.plist,
+			);
+			target = 1497CE672E72D88900051217 /* Asobo */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		1497CE6A2E72D88900051217 /* Asobo */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				1405B28D2E752B62002102AE /* Exceptions for "Asobo" folder in "Asobo" target */,
+			);
+			path = Asobo;
+			sourceTree = "<group>";
+		};
+		1497CE792E72D88A00051217 /* AsoboTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = AsoboTests;
+			sourceTree = "<group>";
+		};
+		1497CE832E72D88A00051217 /* AsoboUITests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = AsoboUITests;
+			sourceTree = "<group>";
+		};
+/* End PBXFileSystemSynchronizedRootGroup section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		1497CE652E72D88900051217 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				1405B2962E753081002102AE /* Domain in Frameworks */,
+				1405B2932E753077002102AE /* Support in Frameworks */,
+				1405B2902E75306B002102AE /* Services in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		1497CE732E72D88A00051217 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		1497CE7D2E72D88A00051217 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		1497CE5F2E72D88900051217 = {
+			isa = PBXGroup;
+			children = (
+				1497CE6A2E72D88900051217 /* Asobo */,
+				1497CE792E72D88A00051217 /* AsoboTests */,
+				1497CE832E72D88A00051217 /* AsoboUITests */,
+				1497CE692E72D88900051217 /* Products */,
+				146EA9CA2E87A63F00BBD955 /* Debug.xcconfig */,
+				146EA9CC2E87A65400BBD955 /* Release.xcconfig */,
+			);
+			sourceTree = "<group>";
+		};
+		1497CE692E72D88900051217 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				1497CE682E72D88900051217 /* Asobo.app */,
+				1497CE762E72D88A00051217 /* AsoboTests.xctest */,
+				1497CE802E72D88A00051217 /* AsoboUITests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		1497CE672E72D88900051217 /* Asobo */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 1497CE8A2E72D88A00051217 /* Build configuration list for PBXNativeTarget "Asobo" */;
+			buildPhases = (
+				1497CE642E72D88900051217 /* Sources */,
+				1497CE652E72D88900051217 /* Frameworks */,
+				1497CE662E72D88900051217 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				1497CE6A2E72D88900051217 /* Asobo */,
+			);
+			name = Asobo;
+			packageProductDependencies = (
+				1405B28F2E75306B002102AE /* Services */,
+				1405B2922E753077002102AE /* Support */,
+				1405B2952E753081002102AE /* Domain */,
+			);
+			productName = Asobo;
+			productReference = 1497CE682E72D88900051217 /* Asobo.app */;
+			productType = "com.apple.product-type.application";
+		};
+		1497CE752E72D88A00051217 /* AsoboTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 1497CE8D2E72D88A00051217 /* Build configuration list for PBXNativeTarget "AsoboTests" */;
+			buildPhases = (
+				1497CE722E72D88A00051217 /* Sources */,
+				1497CE732E72D88A00051217 /* Frameworks */,
+				1497CE742E72D88A00051217 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				1497CE782E72D88A00051217 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				1497CE792E72D88A00051217 /* AsoboTests */,
+			);
+			name = AsoboTests;
+			packageProductDependencies = (
+			);
+			productName = AsoboTests;
+			productReference = 1497CE762E72D88A00051217 /* AsoboTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		1497CE7F2E72D88A00051217 /* AsoboUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 1497CE902E72D88A00051217 /* Build configuration list for PBXNativeTarget "AsoboUITests" */;
+			buildPhases = (
+				1497CE7C2E72D88A00051217 /* Sources */,
+				1497CE7D2E72D88A00051217 /* Frameworks */,
+				1497CE7E2E72D88A00051217 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				1497CE822E72D88A00051217 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				1497CE832E72D88A00051217 /* AsoboUITests */,
+			);
+			name = AsoboUITests;
+			packageProductDependencies = (
+			);
+			productName = AsoboUITests;
+			productReference = 1497CE802E72D88A00051217 /* AsoboUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		1497CE602E72D88900051217 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1640;
+				LastUpgradeCheck = 1640;
+				TargetAttributes = {
+					1497CE672E72D88900051217 = {
+						CreatedOnToolsVersion = 16.4;
+					};
+					1497CE752E72D88A00051217 = {
+						CreatedOnToolsVersion = 16.4;
+						TestTargetID = 1497CE672E72D88900051217;
+					};
+					1497CE7F2E72D88A00051217 = {
+						CreatedOnToolsVersion = 16.4;
+						TestTargetID = 1497CE672E72D88900051217;
+					};
+				};
+			};
+			buildConfigurationList = 1497CE632E72D88900051217 /* Build configuration list for PBXProject "Asobo" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = 1497CE5F2E72D88900051217;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				1405B28E2E75306A002102AE /* XCLocalSwiftPackageReference "Packages/Services" */,
+				1405B2912E753077002102AE /* XCLocalSwiftPackageReference "Packages/Support" */,
+				1405B2942E753081002102AE /* XCLocalSwiftPackageReference "Packages/Domain" */,
+			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 1497CE692E72D88900051217 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				1497CE672E72D88900051217 /* Asobo */,
+				1497CE752E72D88A00051217 /* AsoboTests */,
+				1497CE7F2E72D88A00051217 /* AsoboUITests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		1497CE662E72D88900051217 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				146EA9CD2E87A65400BBD955 /* Release.xcconfig in Resources */,
+				146EA9CB2E87A63F00BBD955 /* Debug.xcconfig in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		1497CE742E72D88A00051217 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		1497CE7E2E72D88A00051217 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		1497CE642E72D88900051217 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		1497CE722E72D88A00051217 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		1497CE7C2E72D88A00051217 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		1497CE782E72D88A00051217 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 1497CE672E72D88900051217 /* Asobo */;
+			targetProxy = 1497CE772E72D88A00051217 /* PBXContainerItemProxy */;
+		};
+		1497CE822E72D88A00051217 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 1497CE672E72D88900051217 /* Asobo */;
+			targetProxy = 1497CE812E72D88A00051217 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		1497CE882E72D88A00051217 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = 146EA9CA2E87A63F00BBD955 /* Debug.xcconfig */;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		1497CE892E72D88A00051217 /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = 146EA9CC2E87A65400BBD955 /* Release.xcconfig */;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				SWIFT_COMPILATION_MODE = wholemodule;
+			};
+			name = Release;
+		};
+		1497CE8B2E72D88A00051217 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = Asobo/Asobo.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 2;
+				DEVELOPMENT_TEAM = XT522XX64M;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = "$(SRCROOT)/Asobo/App/Resources/Info.plist";
+				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
+				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
+				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
+				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphonesimulator*]" = YES;
+				"INFOPLIST_KEY_UILaunchScreen_Generation[sdk=iphoneos*]" = YES;
+				"INFOPLIST_KEY_UILaunchScreen_Generation[sdk=iphonesimulator*]" = YES;
+				"INFOPLIST_KEY_UIStatusBarStyle[sdk=iphoneos*]" = UIStatusBarStyleDefault;
+				"INFOPLIST_KEY_UIStatusBarStyle[sdk=iphonesimulator*]" = UIStatusBarStyleDefault;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				IPHONEOS_DEPLOYMENT_TARGET = 18.5;
+				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
+				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
+				MACOSX_DEPLOYMENT_TARGET = 15.5;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.practice.Asobo;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				REGISTER_APP_GROUPS = YES;
+				SDKROOT = auto;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+				XROS_DEPLOYMENT_TARGET = 2.5;
+			};
+			name = Debug;
+		};
+		1497CE8C2E72D88A00051217 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = Asobo/Asobo.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 2;
+				DEVELOPMENT_TEAM = XT522XX64M;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = "$(SRCROOT)/Asobo/App/Resources/Info.plist";
+				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
+				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
+				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
+				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphonesimulator*]" = YES;
+				"INFOPLIST_KEY_UILaunchScreen_Generation[sdk=iphoneos*]" = YES;
+				"INFOPLIST_KEY_UILaunchScreen_Generation[sdk=iphonesimulator*]" = YES;
+				"INFOPLIST_KEY_UIStatusBarStyle[sdk=iphoneos*]" = UIStatusBarStyleDefault;
+				"INFOPLIST_KEY_UIStatusBarStyle[sdk=iphonesimulator*]" = UIStatusBarStyleDefault;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				IPHONEOS_DEPLOYMENT_TARGET = 18.5;
+				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
+				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
+				MACOSX_DEPLOYMENT_TARGET = 15.5;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.practice.Asobo;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				REGISTER_APP_GROUPS = YES;
+				SDKROOT = auto;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+				XROS_DEPLOYMENT_TARGET = 2.5;
+			};
+			name = Release;
+		};
+		1497CE8E2E72D88A00051217 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 2;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Asobo/App/Resources/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.5;
+				MACOSX_DEPLOYMENT_TARGET = 15.5;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.practice.AsoboTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = auto;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx xros xrsimulator";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2,7";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Asobo.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Asobo";
+				XROS_DEPLOYMENT_TARGET = 2.5;
+			};
+			name = Debug;
+		};
+		1497CE8F2E72D88A00051217 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 2;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Asobo/App/Resources/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.5;
+				MACOSX_DEPLOYMENT_TARGET = 15.5;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.practice.AsoboTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = auto;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx xros xrsimulator";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2,7";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Asobo.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Asobo";
+				XROS_DEPLOYMENT_TARGET = 2.5;
+			};
+			name = Release;
+		};
+		1497CE912E72D88A00051217 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 2;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Asobo/App/Resources/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.5;
+				MACOSX_DEPLOYMENT_TARGET = 15.5;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.practice.AsoboUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = auto;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx xros xrsimulator";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2,7";
+				TEST_TARGET_NAME = Asobo;
+				XROS_DEPLOYMENT_TARGET = 2.5;
+			};
+			name = Debug;
+		};
+		1497CE922E72D88A00051217 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 2;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Asobo/App/Resources/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.5;
+				MACOSX_DEPLOYMENT_TARGET = 15.5;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.practice.AsoboUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = auto;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx xros xrsimulator";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2,7";
+				TEST_TARGET_NAME = Asobo;
+				XROS_DEPLOYMENT_TARGET = 2.5;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		1497CE632E72D88900051217 /* Build configuration list for PBXProject "Asobo" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				1497CE882E72D88A00051217 /* Debug */,
+				1497CE892E72D88A00051217 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		1497CE8A2E72D88A00051217 /* Build configuration list for PBXNativeTarget "Asobo" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				1497CE8B2E72D88A00051217 /* Debug */,
+				1497CE8C2E72D88A00051217 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		1497CE8D2E72D88A00051217 /* Build configuration list for PBXNativeTarget "AsoboTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				1497CE8E2E72D88A00051217 /* Debug */,
+				1497CE8F2E72D88A00051217 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		1497CE902E72D88A00051217 /* Build configuration list for PBXNativeTarget "AsoboUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				1497CE912E72D88A00051217 /* Debug */,
+				1497CE922E72D88A00051217 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		1405B28E2E75306A002102AE /* XCLocalSwiftPackageReference "Packages/Services" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Packages/Services;
+		};
+		1405B2912E753077002102AE /* XCLocalSwiftPackageReference "Packages/Support" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Packages/Support;
+		};
+		1405B2942E753081002102AE /* XCLocalSwiftPackageReference "Packages/Domain" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Packages/Domain;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		1405B28F2E75306B002102AE /* Services */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = Services;
+		};
+		1405B2922E753077002102AE /* Support */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = Support;
+		};
+		1405B2952E753081002102AE /* Domain */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = Domain;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = 1497CE602E72D88900051217 /* Project object */;
+}
