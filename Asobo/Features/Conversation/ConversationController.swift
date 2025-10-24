@@ -22,16 +22,20 @@ public final class ConversationController: ObservableObject {
     @Published public var isRealtimeActive: Bool = false
     @Published public var isRealtimeConnecting: Bool = false
     
+    // 追加: ユーザーが停止したかを覚えるフラグ
+    private var userStoppedRecording = false
+    
     // デバッグ用プロパティ
     @Published public var aiResponseText: String = ""
     @Published public var isPlayingAudio: Bool = false
     @Published public var hasMicrophonePermission: Bool = false
 
-    // MARK: - Local STT (Speech)
+    // MARK: - Local STT (Speech) - DI対応
     private let audioEngine = AVAudioEngine()
-    private let speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: "ja-JP"))
+    private let audioSession: AudioSessionManaging
+    private let speech: SpeechRecognizing
     private var sttRequest: SFSpeechAudioBufferRecognitionRequest?
-    private var sttTask: SFSpeechRecognitionTask?
+    private var sttTask: SpeechRecognitionTasking?
 
     // MARK: - Realtime (OpenAI)
     private let audioSessionManager = AudioSessionManager()
@@ -44,7 +48,13 @@ public final class ConversationController: ObservableObject {
     private var sessionStartTask: Task<Void, Never>?     // セッション開始タスクの管理
 
     // MARK: - Lifecycle
-    public init() {}
+    public init(
+        audioSession: AudioSessionManaging = SystemAudioSessionManager(),
+        speech: SpeechRecognizing = SystemSpeechRecognizer(locale: "ja-JP")
+    ) {
+        self.audioSession = audioSession
+        self.speech = speech
+    }
 
     deinit {
         Task { @MainActor in
@@ -63,16 +73,16 @@ public final class ConversationController: ObservableObject {
         SFSpeechRecognizer.requestAuthorization { _ in }
     }
 
-    // MARK: - Local STT (まずはここから)
+    // MARK: - Local STT (DI対応版)
     public func startLocalTranscription() {
         guard !isRecording else { return }
-        guard speechRecognizer?.isAvailable == true else {
+        guard speech.isAvailable else {
             self.errorMessage = "音声認識が現在利用できません。"
             return
         }
 
-        // 1) AudioSession を先に構成（サンプルレート/モードを確定）
-        do { try audioSessionManager.configure() }
+        // 1) AudioSession を先に構成（DI経由）
+        do { try audioSession.configure() }
         catch {
             self.errorMessage = "AudioSession開始に失敗: \(error.localizedDescription)"
             return
@@ -103,18 +113,31 @@ public final class ConversationController: ObservableObject {
             return
         }
 
-        // 5) 認識（部分テキストを随時反映）
-        sttTask = speechRecognizer?.recognitionTask(with: req) { [weak self] result, err in
-            guard let self else { return }
-            if let r = result {
+        // 5) 認識（プロトコル経由）
+        sttTask = speech.startTask(
+            request: req,
+            onResult: { [weak self] text, isFinal in
                 Task { @MainActor in
-                    self.transcript = r.bestTranscription.formattedString
+                    self?.transcript = text
+                    if isFinal { self?.stopLocalTranscription() }
+                }
+            },
+            onError: { [weak self] err in
+                guard let self else { return }
+                
+                // キャンセル/無音などの"正常終了扱い"は UI に出さない
+                if self.userStoppedRecording || Self.isBenignSpeechError(err) {
+                    Task { @MainActor in self.finishSTTCleanup() }
+                    return
+                }
+                
+                // それ以外のみエラー表示
+                Task { @MainActor in
+                    self.errorMessage = err.localizedDescription
+                    self.finishSTTCleanup()
                 }
             }
-            if err != nil || (result?.isFinal == true) {
-                Task { @MainActor in self.stopLocalTranscription() }
-            }
-        }
+        )
 
         isRecording = true
         mode = .localSTT
@@ -122,13 +145,12 @@ public final class ConversationController: ObservableObject {
 
     public func stopLocalTranscription() {
         guard isRecording || sttTask != nil else { return }
+        userStoppedRecording = true                // フラグを立ててから
         audioEngine.inputNode.removeTap(onBus: 0)
         audioEngine.stop()
         sttRequest?.endAudio()
-        sttTask?.cancel()
-        sttRequest = nil
-        sttTask = nil
-        isRecording = false
+        sttTask?.cancel()                          // キャンセルは必要。上で無害扱いにする
+        finishSTTCleanup()
     }
 
     // MARK: - Realtime（次の段階：会話）
@@ -382,5 +404,22 @@ public final class ConversationController: ObservableObject {
                 } catch { break }
             }
         }
+    }
+    
+    // MARK: - Private Helpers
+    private func finishSTTCleanup() {
+        sttRequest = nil
+        sttTask = nil
+        isRecording = false
+        userStoppedRecording = false
+    }
+    
+    private static func isBenignSpeechError(_ error: Error) -> Bool {
+        let e = error as NSError
+        let msg = e.localizedDescription.lowercased()
+        // "canceled""no speech detected" などは無害扱い
+        return msg.contains("canceled") || msg.contains("no speech")
+        // 必要ならコードで分岐（環境で異なるが 203/216 を見ることが多い）
+        // || e.code == 203 || e.code == 216
     }
 }

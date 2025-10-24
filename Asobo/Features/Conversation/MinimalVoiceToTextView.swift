@@ -5,9 +5,11 @@ import Speech
 /// ConversationController をそのまま使って、
 /// 「音声入力 → リアルタイムでテキスト表示」だけに特化した最小ビュー
 public struct MinimalVoiceToTextView: View {
-    @StateObject private var vm = ConversationController()
+    @StateObject private var vm: ConversationController
 
-    public init() {}
+    public init(controller: ConversationController? = nil) {
+        _vm = StateObject(wrappedValue: controller ?? ConversationController())
+    }
 
     public var body: some View {
         NavigationStack {
