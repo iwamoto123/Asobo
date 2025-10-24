@@ -5,9 +5,7 @@ import SwiftUI
 struct AsoboApp: App {
     var body: some Scene {
         WindowGroup {
-            NavigationStack {
-                ConversationView()   // 引数なしの今の View を表示
-            }
+            ContentView()   // メインのContentViewを表示
         }
     }
 }
