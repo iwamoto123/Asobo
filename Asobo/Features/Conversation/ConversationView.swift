@@ -57,17 +57,38 @@ public struct ConversationView: View {
                 
                 // 音声入力テキスト表示
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("🎤 あなたの音声入力")
-                        .font(.caption)
-                        .foregroundColor(.green)
+                    if vm.mode == .localSTT {
+                        Text("🎤 あなたの音声入力（ローカル認識）")
+                            .font(.caption)
+                            .foregroundColor(.green)
+                    } else {
+                        Text("🎤 あなたの音声入力（Realtime認識）")
+                            .font(.caption)
+                            .foregroundColor(.green)
+                    }
                     
-                    Text(vm.transcript.isEmpty ? "（音声を話すとここに文字が流れます）" : vm.transcript)
+                    if vm.mode == .realtime && vm.isRecording && vm.transcript.isEmpty {
+                        HStack(spacing: 6) {
+                            ProgressView()
+                                .scaleEffect(0.8)
+                            Text("音声を認識中...")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(8)
                         .background(Color.green.opacity(0.1))
                         .cornerRadius(8)
-                        .font(.caption)
                         .frame(minHeight: 60, maxHeight: 80)
+                    } else {
+                        Text(vm.transcript.isEmpty ? "（音声を話すとここに文字が流れます）" : vm.transcript)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(8)
+                            .background(Color.green.opacity(0.1))
+                            .cornerRadius(8)
+                            .font(.caption)
+                            .frame(minHeight: 60, maxHeight: 80)
+                    }
                 }
                 
                 // AI応答テキスト表示
@@ -76,13 +97,24 @@ public struct ConversationView: View {
                         .font(.caption)
                         .foregroundColor(.blue)
                     
-                    Text(vm.aiResponseText.isEmpty ? "（AIの応答がここに表示されます）" : vm.aiResponseText)
+                    if vm.isThinking {
+                        HStack(spacing: 6) {
+                            ProgressView()
+                            Text("かんがえちゅう…").font(.caption)
+                        }
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(8)
-                        .background(Color.blue.opacity(0.1))
+                        .background(Color.blue.opacity(0.06))
                         .cornerRadius(8)
-                        .font(.caption)
-                        .frame(minHeight: 60, maxHeight: 80)
+                    } else {
+                        Text(vm.aiResponseText.isEmpty ? "（AIの応答がここに表示されます）" : vm.aiResponseText)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(8)
+                            .background(Color.blue.opacity(0.1))
+                            .cornerRadius(8)
+                            .font(.caption)
+                            .frame(minHeight: 60, maxHeight: 80)
+                    }
                 }
 
                 // コントロール

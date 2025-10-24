@@ -102,7 +102,7 @@ public final class RealtimeClientOpenAI: RealtimeClient {
         let sessionUpdate: [String: Any] = [
             "type": "session.update",
             "session": [
-                "instructions": "子どもにやさしく、一文ずつ短く返答して。",
+                "instructions": "子どもにやさしく、一文ずつ短く返答して。日本語のみで話してください。",
                 "modalities": ["text", "audio"],
                 "input_audio_format": "pcm16",
                 "output_audio_format": "pcm16",
@@ -115,7 +115,17 @@ public final class RealtimeClientOpenAI: RealtimeClient {
                 "tools": [],
                 "tool_choice": "auto",
                 "temperature": 0.8,
-                "max_response_output_tokens": 4096
+                "max_response_output_tokens": 4096,
+                "voice": "alloy",
+                "response_format": [
+                    "type": "text"
+                ],
+                "input_audio_transcription": [
+                    "model": "whisper-1"
+                ],
+                "output_audio_transcription": [
+                    "model": "whisper-1"
+                ]
             ]
         ]
         print("🔗 RealtimeClient: セッション設定送信")
@@ -204,7 +214,7 @@ public final class RealtimeClientOpenAI: RealtimeClient {
             "type": "response.create",
             "response": [
                 "modalities": ["text", "audio"], // ← テキストも要求
-                "instructions": "子どもにやさしく、一文ずつ短く返答して。"
+                "instructions": "子どもにやさしく、一文ずつ短く返答して。日本語のみで話してください。"
             ]
         ])
     }
@@ -254,6 +264,21 @@ public final class RealtimeClientOpenAI: RealtimeClient {
         audioContinuation?.finish()
         textContinuation?.finish()
         inputTextContinuation?.finish()
+        
+        // リソースを完全にクリーンアップ
+        audioContinuation = nil
+        textContinuation = nil
+        inputTextContinuation = nil
+        audioBuffer.removeAll()
+        wsTask = nil
+        reconnectAttempts = 0
+        
+        // 状態をidleに戻す
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            guard let self else { return }
+            self.state = .idle
+            self.onStateChange?(self.state)
+        }
     }
 
     // MARK: - Private
@@ -323,6 +348,11 @@ public final class RealtimeClientOpenAI: RealtimeClient {
                         print("📝 RealtimeClient: テキストデルタ受信 - \(s)")
                         textContinuation?.yield(s)
                     }
+                case "response.audio_transcript.delta":
+                    if let s = obj["delta"] as? String {
+                        print("📝 RealtimeClient: 音声文字起こしデルタ受信 - \(s)")
+                        textContinuation?.yield(s)
+                    }
                 case "response.audio.delta":
                     if let b64 = obj["delta"] as? String,
                        let data = Data(base64Encoded: b64) {
@@ -336,6 +366,9 @@ public final class RealtimeClientOpenAI: RealtimeClient {
                     print("🎤 RealtimeClient: 音声入力開始")
                 case "input_audio_buffer.speech_stopped":
                     print("🎤 RealtimeClient: 音声入力終了")
+                    // 音声入力が停止した場合、空のテキストでも通知
+                    print("📝 RealtimeClient: 音声入力停止 - テキスト確認")
+                    inputTextContinuation?.yield("")
                 case "input_audio_buffer.committed":
                     if let transcript = obj["transcript"] as? String {
                         print("📝 RealtimeClient: 音声入力テキスト - \(transcript)")
@@ -376,6 +409,13 @@ public final class RealtimeClientOpenAI: RealtimeClient {
         audioContinuation?.finish()
         textContinuation?.finish()
         inputTextContinuation?.finish()
+        
+        // リソースを完全にクリーンアップ
+        audioContinuation = nil
+        textContinuation = nil
+        inputTextContinuation = nil
+        audioBuffer.removeAll()
+        wsTask = nil
         
         // 再接続は自動的に行わない（手動で再開させる）
         reconnectAttempts += 1

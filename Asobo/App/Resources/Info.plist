@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
 	<key>API_BASE</key>
-	<string>$(API_BASE)</string>
+	<string>https://api.openai.com/v1</string>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>

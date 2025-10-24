@@ -29,6 +29,10 @@ public final class ConversationController: ObservableObject {
     @Published public var aiResponseText: String = ""
     @Published public var isPlayingAudio: Bool = false
     @Published public var hasMicrophonePermission: Bool = false
+    
+    // AI呼び出し用フィールド
+    @Published public var isThinking: Bool = false   // ぐるぐる表示用
+    private var lastAskedText: String = ""           // 同文の連投防止
 
     // MARK: - Local STT (Speech) - DI対応
     private let audioEngine = AVAudioEngine()
@@ -164,6 +168,23 @@ public final class ConversationController: ObservableObject {
         // 既存のセッション開始タスクをキャンセル
         sessionStartTask?.cancel()
         
+        // 既存のクライアントがあれば完全にクリーンアップ
+        if realtimeClient != nil {
+            print("🧹 ConversationController: 既存のクライアントをクリーンアップ中...")
+            Task {
+                try? await realtimeClient?.finishSession()
+                await MainActor.run {
+                    self.realtimeClient = nil
+                    self.startRealtimeSessionInternal()
+                }
+            }
+            return
+        }
+        
+        startRealtimeSessionInternal()
+    }
+    
+    private func startRealtimeSessionInternal() {
         // 接続中フラグを設定
         isRealtimeConnecting = true
         
@@ -302,19 +323,32 @@ public final class ConversationController: ObservableObject {
         sessionStartTask?.cancel()
         sessionStartTask = nil
         
+        // 受信タスクをキャンセル
         receiveTextTask?.cancel(); receiveTextTask = nil
         receiveAudioTask?.cancel(); receiveAudioTask = nil
         receiveInputTextTask?.cancel(); receiveInputTextTask = nil
+        
+        // マイクとプレイヤーを停止
         mic?.stop(); mic = nil
         player.stop()
+        
+        // 状態をリセット
         isRecording = false
         isRealtimeActive = false
         isRealtimeConnecting = false
+        
+        // テキストをクリア
+        transcript = ""
+        aiResponseText = ""
+        
+        // エラーメッセージをクリア
+        errorMessage = nil
         
         Task {
             try? await realtimeClient?.finishSession()
             await MainActor.run {
                 self.realtimeClient = nil
+                print("✅ ConversationController: リソースクリーンアップ完了")
             }
         }
     }
@@ -349,13 +383,17 @@ public final class ConversationController: ObservableObject {
     }
 
     private func startReceiveLoops() {
+        print("🔄 ConversationController: startReceiveLoops開始")
+        
         // 返答テキスト（partial）ループ
         receiveTextTask?.cancel()
         receiveTextTask = Task { [weak self] in
             guard let self else { return }
+            print("🔄 ConversationController: AI応答テキストループ開始")
             while !Task.isCancelled {
                 do {
                     if let part = try await self.realtimeClient?.nextPartialText() {
+                        print("📝 ConversationController: AI応答テキスト受信 - \(part)")
                         await MainActor.run { 
                             // AI応答テキストを追記
                             if self.aiResponseText.isEmpty { 
@@ -363,11 +401,15 @@ public final class ConversationController: ObservableObject {
                             } else { 
                                 self.aiResponseText += part   // ← 追記
                             }
+                            print("📝 ConversationController: aiResponseText更新 - \(self.aiResponseText)")
                         }
                     } else {
                         try await Task.sleep(nanoseconds: 50_000_000) // idle 50ms
                     }
-                } catch { break }
+                } catch { 
+                    print("❌ ConversationController: AI応答テキストループエラー - \(error)")
+                    break 
+                }
             }
         }
 
@@ -375,16 +417,22 @@ public final class ConversationController: ObservableObject {
         receiveInputTextTask?.cancel()
         receiveInputTextTask = Task { [weak self] in
             guard let self else { return }
+            print("🔄 ConversationController: 音声入力テキストループ開始")
             while !Task.isCancelled {
                 do {
                     if let inputText = try await self.realtimeClient?.nextInputText() {
+                        print("📝 ConversationController: 音声入力テキスト受信 - \(inputText)")
                         await MainActor.run { 
                             self.transcript = inputText
+                            print("📝 ConversationController: transcript更新 - \(self.transcript)")
                         }
                     } else {
                         try await Task.sleep(nanoseconds: 50_000_000)
                     }
-                } catch { break }
+                } catch { 
+                    print("❌ ConversationController: 音声入力テキストループエラー - \(error)")
+                    break 
+                }
             }
         }
 
@@ -411,7 +459,14 @@ public final class ConversationController: ObservableObject {
         sttRequest = nil
         sttTask = nil
         isRecording = false
+        let finalText = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        let userStopped = userStoppedRecording
         userStoppedRecording = false
+
+        // ユーザー停止 or 最終確定後に、本文があればAIへ
+        if !finalText.isEmpty, userStopped || !finalText.isEmpty {
+            askAI(with: finalText)
+        }
     }
     
     private static func isBenignSpeechError(_ error: Error) -> Bool {
@@ -421,5 +476,143 @@ public final class ConversationController: ObservableObject {
         return msg.contains("canceled") || msg.contains("no speech")
         // 必要ならコードで分岐（環境で異なるが 203/216 を見ることが多い）
         // || e.code == 203 || e.code == 216
+    }
+    
+    // MARK: - AI呼び出し
+    public func askAI(with userText: String) {
+        // 同じテキストを連投しない
+        guard userText != lastAskedText else { return }
+        lastAskedText = userText
+
+        aiResponseText = ""              // 新しいターンの開始
+        isThinking = true
+        errorMessage = nil
+
+        Task {
+            defer { 
+                Task { @MainActor in
+                    self.isThinking = false 
+                }
+            }
+
+            // OpenAI Chat Completions
+            struct Payload: Encodable {
+                let model: String
+                let messages: [[String:String]]
+                let max_tokens: Int?
+                let temperature: Double?
+            }
+            
+            let payload = Payload(
+                model: "gpt-4o-mini",
+                messages: [
+                    ["role": "system", "content": "あなたは幼児向けのAIアシスタントです。やさしく短く、ひらがな中心で答えてください。日本語のみで話してください。"],
+                    ["role": "user", "content": userText]
+                ],
+                max_tokens: 120,
+                temperature: 0.3
+            )
+
+            let endpoint = (Bundle.main.object(forInfoDictionaryKey: "API_BASE") as? String)
+                .flatMap(URL.init(string:)) ?? URL(string: "https://api.openai.com/v1")!
+
+            var req = URLRequest(url: endpoint.appendingPathComponent("chat/completions"))
+            req.httpMethod = "POST"
+            req.addValue("application/json", forHTTPHeaderField: "Content-Type")
+            req.addValue("Bearer \(AppConfig.openAIKey)", forHTTPHeaderField: "Authorization")
+            req.httpBody = try? JSONEncoder().encode(payload)
+
+            // 429 バックオフ（最大3回、0.5s→1s→2s）
+            var attempt = 0
+            let maxAttempts = 3
+            var backoff: UInt64 = 500_000_000 // 0.5s
+
+            while attempt < maxAttempts {
+                do {
+                    let (data, response) = try await URLSession.shared.data(for: req)
+                    guard let http = response as? HTTPURLResponse else {
+                        throw URLError(.badServerResponse)
+                    }
+
+                    if http.statusCode == 429 {
+                        // エラーボディを解析して文言化
+                        let msg = Self.readable429Message(from: data)
+                        attempt += 1
+                        if attempt >= maxAttempts {
+                            await MainActor.run {
+                                self.errorMessage = msg
+                                self.isThinking = false
+                            }
+                            return
+                        }
+                        try await Task.sleep(nanoseconds: backoff)
+                        backoff *= 2
+                        continue
+                    }
+
+                    guard (200..<300).contains(http.statusCode) else {
+                        // 429 以外のエラー
+                        let body = String(data: data, encoding: .utf8) ?? ""
+                        throw NSError(domain: "OpenAI", code: http.statusCode,
+                                      userInfo: [NSLocalizedDescriptionKey: "HTTP \(http.statusCode): \(body)"])
+                    }
+
+                    struct Choice: Decodable {
+                        struct Message: Decodable { let role: String; let content: String }
+                        let message: Message
+                    }
+                    struct Resp: Decodable { let choices: [Choice] }
+                    let decoded = try JSONDecoder().decode(Resp.self, from: data)
+                    let text = decoded.choices.first?.message.content ?? "(おへんじができなかったよ)"
+
+                    await MainActor.run {
+                        self.aiResponseText = text
+                        self.isThinking = false
+                    }
+                    return
+                } catch {
+                    // ネットワーク例外など
+                    await MainActor.run {
+                        self.errorMessage = Self.humanReadable(error)
+                        self.isThinking = false
+                    }
+                    return
+                }
+            }
+        }
+    }
+    
+    private static func readable429Message(from data: Data) -> String {
+        // OpenAI エラー形式に対応
+        struct OpenAIError: Decodable { 
+            struct Inner: Decodable { 
+                let message: String
+                let type: String?
+                let code: String?
+            }
+            let error: Inner 
+        }
+        if let e = try? JSONDecoder().decode(OpenAIError.self, from: data) {
+            if let code = e.error.code?.lowercased(), code.contains("insufficient_quota") {
+                return "クレジット残高が不足しています（insufficient_quota）。請求/クレジットを確認してください。"
+            }
+            if let code = e.error.code?.lowercased(), code.contains("rate_limit") {
+                return "リクエストが多すぎます（rate limit）。少し待ってからもう一度ためしてね。"
+            }
+            return e.error.message
+        }
+        return "429: しばらく待ってからもう一度ためしてね。"
+    }
+
+    private static func humanReadable(_ error: Error) -> String {
+        if let u = error as? URLError {
+            switch u.code {
+            case .cannotFindHost: return "ネットワークエラー：ホスト名が見つかりません（API_BASEを確認）"
+            case .notConnectedToInternet: return "インターネットに接続できません"
+            case .userAuthenticationRequired, .userCancelledAuthentication: return "APIキーが無効です（401）"
+            default: break
+            }
+        }
+        return error.localizedDescription
     }
 }

@@ -31,15 +31,14 @@ struct ContentView: View {
                     HStack {
                         Image(systemName: "bubble.left.and.bubble.right.fill")
                             .font(.title)
-                        Text("会話モード（開発中）")
+                        Text("会話モード（AI応答付き）")
                             .font(.headline)
                     }
                     .foregroundColor(.white)
                     .padding()
-                    .background(Color.gray)
+                    .background(Color.green)
                     .cornerRadius(12)
                 }
-                .disabled(true)
                 
                 Spacer()
             }
