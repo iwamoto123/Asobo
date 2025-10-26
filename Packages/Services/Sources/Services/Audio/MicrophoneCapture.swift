@@ -27,25 +27,25 @@ public final class MicrophoneCapture {
     let inputNode = engine.inputNode
     let inFormat  = inputNode.inputFormat(forBus: 0)
 
-    inputNode.installTap(onBus: 0, bufferSize: 1024, format: inFormat) { [weak self] buffer, _ in
+    // 入力側の tap フレーム数は「20ms 相当」
+    let framesPer20ms = AVAudioFrameCount(inFormat.sampleRate * 0.02)
+
+    inputNode.installTap(onBus: 0, bufferSize: framesPer20ms, format: inFormat) { [weak self] buffer, _ in
       guard let self else { return }
 
-      // 出力バッファを用意（24kHz/mono/Int16）
-      let ratio    = self.outFormat.sampleRate / inFormat.sampleRate
-      let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio + 1)
-      guard let outBuf = AVAudioPCMBuffer(pcmFormat: self.outFormat, frameCapacity: capacity) else { return }
+      // 出力側（24kHz）でも20ms相当=480フレームを目安に確保
+      let targetFrames = AVAudioFrameCount(self.outFormat.sampleRate * 0.02) // 480
+      guard let outBuf = AVAudioPCMBuffer(pcmFormat: self.outFormat, frameCapacity: targetFrames) else { return }
 
-      // ✅ ステータスで判定（戻り値は AVAudioConverterOutputStatus）
       var error: NSError?
       let status = self.converter.convert(to: outBuf, error: &error) { _, outStatus in
-        outStatus.pointee = .haveData   // 第二引数だけ .pointee を使う
-        return buffer                   // 入力として元バッファを渡す
+        outStatus.pointee = .haveData
+        return buffer
       }
 
-      if status == .haveData, outBuf.frameLength > 0 {
-        self.onPCM(outBuf)
+      if (status == .haveData || status == .endOfStream), outBuf.frameLength > 0 {
+        self.onPCM(outBuf)               // ← 毎回20ms刻みで即時コールバック
       }
-      // 必要なら: status == .error のとき error をログ
     }
 
     try engine.start()

@@ -22,17 +22,23 @@ public final class RealtimeClientOpenAI: RealtimeClient {
     
     // 状態変更のコールバック
     public var onStateChange: ((State) -> Void)?
+    
+    // ① 追加: 会話イベントのコールバック
+    public var onResponseDone: (() -> Void)?
+    public var onInputCommitted: ((String) -> Void)?
+    public var onSpeechStarted: (() -> Void)?
+    public var onSpeechStopped: (() -> Void)?
 
     // 出力ストリーム（AsyncStream）
     private var audioContinuation: AsyncStream<Data>.Continuation?
     private var textContinuation: AsyncStream<String>.Continuation?
     private var inputTextContinuation: AsyncStream<String>.Continuation?
+    
+    // イテレータ（単一のイテレータを使用して重複を防ぐ）
+    private var textIterator: AsyncStream<String>.AsyncIterator?
+    private var inputTextIterator: AsyncStream<String>.AsyncIterator?
 
-    // 入力オーディオの一時バッファ（必要なら圧縮Opusなどに拡張）
-    private let inputQueue = DispatchQueue(label: "realtime.input")
-    private var audioBuffer = Data()
-    private let maxBufferSize = 1024 // 1KB（Base64で約1.3KB）
-    private let minBufferSize = 512  // 最小送信サイズ
+    // PTT時は即送信のため内部バッファは不要
 
     // Ping/Pong & 再接続
     private var pingTimer: Timer?
@@ -95,40 +101,35 @@ public final class RealtimeClientOpenAI: RealtimeClient {
         listen()
         startPing()
         
-        // 音声バッファをクリア
-        audioBuffer.removeAll()
+        // 音声バッファをクリア（PTT時は不要だが念のため）
+        // audioBuffer.removeAll() // ← 削除
         
-        // セッション設定（session.initは不要、session.updateのみ使用）
+        // イテレータをリセット（新しいセッション開始時）
+        textIterator = nil
+        inputTextIterator = nil
+        
+        // ✅ PTT 想定: turn_detection を外す（サーバが勝手に切らない）
         let sessionUpdate: [String: Any] = [
             "type": "session.update",
             "session": [
-                "instructions": "子どもにやさしく、一文ずつ短く返答して。日本語のみで話してください。",
-                "modalities": ["text", "audio"],
+                "instructions": """
+                あなたは日本語のみで話す幼児向けのアシスタントです。
+                かならず日本語で返答してください。ひらがな中心で、一文をみじかく、やさしく話します。
+                ユーザーの話に合わせた返答をしてください。わからない時は聞き返したり、返事を待ったり、新たな質問をしてください。
+                つみきやおえかきなどの具体的な遊びではなく、会話のみで成り立つような呼びかけをしてください。
+                """,
+                "modalities": ["text","audio"],
                 "input_audio_format": "pcm16",
                 "output_audio_format": "pcm16",
-                "turn_detection": [
-                    "type": "server_vad",
-                    "threshold": 0.5,
-                    "prefix_padding_ms": 300,
-                    "silence_duration_ms": 200
-                ],
-                "tools": [],
-                "tool_choice": "auto",
-                "temperature": 0.8,
-                "max_response_output_tokens": 4096,
+                "input_audio_transcription": ["model": "whisper-1", "language": "ja"],
                 "voice": "alloy",
-                "response_format": [
-                    "type": "text"
-                ],
-                "input_audio_transcription": [
-                    "model": "whisper-1"
-                ],
-                "output_audio_transcription": [
-                    "model": "whisper-1"
-                ]
+                "tools": [],
+                "tool_choice": "none"
+                // "turn_detection" は入れない（PTT前提）
             ]
         ]
         print("🔗 RealtimeClient: セッション設定送信")
+        // 必ず WebSocket が running かつクライアント state が ready になってから送信
         try await send(json: sessionUpdate)
         
         print("✅ RealtimeClient: セッション開始完了")
@@ -138,85 +139,57 @@ public final class RealtimeClientOpenAI: RealtimeClient {
     }
 
     public func sendMicrophonePCM(_ buffer: AVAudioPCMBuffer) async throws {
-        guard case .ready = state else { 
-            print("⚠️ RealtimeClient: セッションが準備完了していません - State: \(state)")
-            return 
-        }
-        
-        // WebSocket接続状態をチェック
-        guard let ws = wsTask, ws.state == .running else {
-            print("⚠️ RealtimeClient: WebSocket接続が切れています - State: \(wsTask?.state.rawValue ?? -1)")
-            return
-        }
-        
-        if let ch0 = buffer.int16ChannelData {
-            let frameCount = Int(buffer.frameLength)
-            let ptr = ch0.pointee
-            let data = Data(bytes: ptr, count: frameCount * MemoryLayout<Int16>.size)
-            
-            // データサイズが小さすぎる場合は送信しない
-            guard data.count > 0 else { return }
-            
-            // バッファに追加
-            audioBuffer.append(data)
-            
-            // バッファサイズが上限に達したら送信
-            if audioBuffer.count >= maxBufferSize {
-                await sendAudioBuffer()
-            }
-        }
-    }
-    
-    private func sendAudioBuffer() async {
-        guard !audioBuffer.isEmpty else { return }
-        
-        let base64Data = audioBuffer.base64EncodedString()
-        let audioMessage: [String: Any] = [
-            "type": "input_audio_buffer.append",
-            "audio": base64Data
-        ]
-        
-        print("🎤 RealtimeClient: 音声データ送信 - \(audioBuffer.count) bytes (Base64: \(base64Data.count) chars)")
-        
-        do {
-            try await send(json: audioMessage)
-            audioBuffer.removeAll()
-        } catch {
-            print("❌ RealtimeClient: 音声データ送信エラー - \(error.localizedDescription)")
-        }
-    }
+        guard case .ready = state, let ws = wsTask, ws.state == .running else { return }
 
-    public func interruptAndYield() async throws {
-        try await send(json: ["type": "session.interrupt"])
+        // ここで即 append（20ms/480フレームのバッファが来る想定）
+        if let ch0 = buffer.int16ChannelData {
+            let n = Int(buffer.frameLength)
+            let ptr = ch0.pointee
+            let data = Data(bytes: ptr, count: n * MemoryLayout<Int16>.size)
+            let b64  = data.base64EncodedString()
+            try await send(json: ["type": "input_audio_buffer.append", "audio": b64])
+        }
     }
     
-    public func commitAndRequestResponse() async throws {
-        guard case .ready = state else { 
-            print("⚠️ RealtimeClient: セッションが準備完了していません - State: \(state)")
-            return 
-        }
-        
-        // WebSocket接続状態をチェック
-        guard let ws = wsTask, ws.state == .running else {
-            print("⚠️ RealtimeClient: WebSocket接続が切れています - State: \(wsTask?.state.rawValue ?? -1)")
-            return
-        }
-        
-        // 残りのバッファがあれば送信
-        if !audioBuffer.isEmpty {
-            await sendAudioBuffer()
-        }
-        
-        // 1) 入力オーディオを確定
+    public func interruptAndYield() async throws {
+        // ユーザーが割り込んだら（再録音開始前など）
+        try await send(json: ["type": "response.cancel"])
+        // 必要に応じて入力バッファもクリア
+        try await send(json: ["type": "input_audio_buffer.clear"])
+    }
+    
+    // ② 追加: コミットだけ送る（応答は送らない）
+    public func commitInputOnly() async throws {
+        guard case .ready = state, let ws = wsTask, ws.state == .running else { return }
         try await send(json: ["type": "input_audio_buffer.commit"])
-        // 2) 応答を生成（テキストも欲しいので modalities を指定）
-        try await send(json: [
+    }
+    
+    // ③ 追加: 応答だけリクエスト（commit済みの入力を使う）
+    public func requestResponse(instructions: String? = nil, temperature: Double = 0.3) async throws {
+        guard case .ready = state, let ws = wsTask, ws.state == .running else { return }
+        
+        var resp: [String: Any] = [
             "type": "response.create",
             "response": [
-                "modalities": ["text", "audio"], // ← テキストも要求
-                "instructions": "子どもにやさしく、一文ずつ短く返答して。日本語のみで話してください。"
+                "modalities": ["audio","text"],
+                "temperature": NSDecimalNumber(value: temperature)
             ]
-        ])
+        ]
+        if let inst = instructions {
+            // 任意の固定文や促しを"そのまま言わせる"用途にも使う
+            resp["response"] = [
+                "modalities": ["audio","text"],
+                "temperature": NSDecimalNumber(value: temperature),
+                "instructions": inst
+            ]
+        }
+        try await send(json: resp)
+    }
+    
+    // ④ 追加: テキストイテレータをリセット（新しい会話ターン開始時）
+    public func resetTextIterator() {
+        textIterator = nil
+        inputTextIterator = nil
     }
 
     public func nextAudioChunk() async throws -> Data? {
@@ -233,11 +206,13 @@ public final class RealtimeClientOpenAI: RealtimeClient {
 
     public func nextPartialText() async throws -> String? {
         if textContinuation == nil { self.makeTextStream() }
+        if textIterator == nil { textIterator = textStream.makeAsyncIterator() }
+        
         return await withCheckedContinuation { cont in
             Task { [weak self] in
-                guard let stream = self?.textStream else { cont.resume(returning: nil); return }
-                var iterator = stream.makeAsyncIterator()
+                guard let self = self, var iterator = self.textIterator else { cont.resume(returning: nil); return }
                 let part = try? await iterator.next()
+                self.textIterator = iterator  // Update the iterator state
                 cont.resume(returning: part ?? nil)
             }
         }
@@ -245,11 +220,13 @@ public final class RealtimeClientOpenAI: RealtimeClient {
     
     public func nextInputText() async throws -> String? {
         if inputTextContinuation == nil { self.makeInputTextStream() }
+        if inputTextIterator == nil { inputTextIterator = inputTextStream.makeAsyncIterator() }
+        
         return await withCheckedContinuation { cont in
             Task { [weak self] in
-                guard let stream = self?.inputTextStream else { cont.resume(returning: nil); return }
-                var iterator = stream.makeAsyncIterator()
+                guard let self = self, var iterator = self.inputTextIterator else { cont.resume(returning: nil); return }
                 let part = try? await iterator.next()
+                self.inputTextIterator = iterator  // Update the iterator state
                 cont.resume(returning: part ?? nil)
             }
         }
@@ -269,7 +246,9 @@ public final class RealtimeClientOpenAI: RealtimeClient {
         audioContinuation = nil
         textContinuation = nil
         inputTextContinuation = nil
-        audioBuffer.removeAll()
+        textIterator = nil
+        inputTextIterator = nil
+        // audioBuffer.removeAll() // ← PTT時は不要
         wsTask = nil
         reconnectAttempts = 0
         
@@ -361,18 +340,33 @@ public final class RealtimeClientOpenAI: RealtimeClient {
                     }
                 case "response.done":
                     print("✅ RealtimeClient: レスポンス完了")
+                    onResponseDone?()
+                    break
+                case "response.audio.done",
+                     "response.audio_transcript.done",
+                     "response.content_part.added",
+                     "response.content_part.done",
+                     "response.output_item.added",
+                     "response.output_item.done",
+                     "response.created",
+                     "conversation.item.created",
+                     "rate_limits.updated":
+                    // 正常イベント - 何もしないでもOK
                     break
                 case "input_audio_buffer.speech_started":
                     print("🎤 RealtimeClient: 音声入力開始")
+                    onSpeechStarted?()
                 case "input_audio_buffer.speech_stopped":
                     print("🎤 RealtimeClient: 音声入力終了")
                     // 音声入力が停止した場合、空のテキストでも通知
                     print("📝 RealtimeClient: 音声入力停止 - テキスト確認")
                     inputTextContinuation?.yield("")
+                    onSpeechStopped?()
                 case "input_audio_buffer.committed":
                     if let transcript = obj["transcript"] as? String {
                         print("📝 RealtimeClient: 音声入力テキスト - \(transcript)")
                         inputTextContinuation?.yield(transcript)
+                        onInputCommitted?(transcript)
                     }
                 case "ping":
                     print("🏓 RealtimeClient: Ping受信 - Pong送信")
@@ -414,7 +408,7 @@ public final class RealtimeClientOpenAI: RealtimeClient {
         audioContinuation = nil
         textContinuation = nil
         inputTextContinuation = nil
-        audioBuffer.removeAll()
+        // audioBuffer.removeAll() // ← PTT時は不要
         wsTask = nil
         
         // 再接続は自動的に行わない（手動で再開させる）
@@ -460,7 +454,14 @@ public final class RealtimeClientOpenAI: RealtimeClient {
         }
         
         let jsonString = String(data: data, encoding: .utf8)!
-        print("📤 RealtimeClient: 送信 - \(jsonString)")
+        
+        // 音声データの場合は長いBase64データをログに出力しない
+        if jsonString.contains("input_audio_buffer.append") {
+            print("📤 RealtimeClient: 音声データ送信 - \(data.count) bytes")
+        } else {
+            print("📤 RealtimeClient: 送信 - \(jsonString)")
+        }
+        
         try await ws.send(.string(jsonString))
     }
 

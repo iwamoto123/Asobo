@@ -190,6 +190,7 @@ public protocol RealtimeClient {
     func nextAudioChunk() async throws -> Data?   // PCM/Opusなど（先出し再生）
     func nextPartialText() async throws -> String?// 吹き出し用部分文字列
     func nextInputText() async throws -> String?  // 音声入力のテキスト
+    func resetTextIterator()                      // テキストイテレータをリセット
     func finishSession() async throws
 }
 

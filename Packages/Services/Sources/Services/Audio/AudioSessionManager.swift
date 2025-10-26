@@ -5,19 +5,23 @@ public final class AudioSessionManager {
     public init() {}
     
     public func configure() throws {
-        let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.playAndRecord, options: [.defaultToSpeaker, .allowBluetooth, .duckOthers])
-        try session.setMode(.voiceChat)
-        
+        let s = AVAudioSession.sharedInstance()
+        try s.setCategory(.playAndRecord,
+                          options: [.defaultToSpeaker, .allowBluetooth, .duckOthers])
+        try s.setMode(.voiceChat)
+
+        // 20ms 目安の I/O バッファ
+        try? s.setPreferredIOBufferDuration(0.02)
+
         #if targetEnvironment(simulator)
-        // シミュレータでは48kHzに寄せてオーディオログを抑制
-        try session.setPreferredSampleRate(48_000)
+        // シミュレータは 48kHz に寄せて CoreAudio ログを抑制
+        try? s.setPreferredSampleRate(48_000)
         #else
-        // 実機では24kHzを維持
-        try session.setPreferredSampleRate(24_000)
+        // 実機は 24kHz（RealtimeのPCMに合わせやすい）
+        try? s.setPreferredSampleRate(24_000)
         #endif
-        
-        try session.setActive(true)
+
+        try s.setActive(true, options: .notifyOthersOnDeactivation)
     }
     
     public func deactivate() throws {

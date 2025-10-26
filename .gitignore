@@ -22,6 +22,11 @@ Config/Debug.xcconfig
 Config/Release.xcconfig
 Secrets.xcconfig
 
+Config/Secrets*.xcconfig
+*.xcuserdatad
+Asobo.git/
+
+
 .swift-module-cache/
 
 ## App packaging

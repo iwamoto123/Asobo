@@ -3,12 +3,14 @@ import AVFoundation
 public final class PlayerNodeStreamer {
   private let engine = AVAudioEngine()
   private let player = AVAudioPlayerNode()
-
-  // 接続後に決まる実フォーマット（多くは Float32 / 44.1k or 48k / 2ch）
   private var outFormat: AVAudioFormat!
-  // 受信チャンク想定（Int16 / 24kHz / mono）
   private let inFormat: AVAudioFormat
   private var converter: AVAudioConverter!
+
+  // 受信チャンクを貯める簡易ジッタバッファ
+  private var queue: [Data] = []
+  private var queuedFrames: AVAudioFrameCount = 0
+  private let prebufferSec: Double = 0.12 // 120ms たまったらスタート
 
   /// `sourceSampleRate` はサーバのPCMレートに合わせて（既定 24k）
   public init(sourceSampleRate: Double = 24_000.0) {
@@ -42,15 +44,29 @@ public final class PlayerNodeStreamer {
 
   /// 受信した Int16/mono（既定 24kHz）のPCMチャンクを再生
   public func playChunk(_ data: Data) {
-    let inFrames = AVAudioFrameCount(data.count / MemoryLayout<Int16>.size)
+    queue.append(data)
+    let frames = AVAudioFrameCount(data.count / MemoryLayout<Int16>.size)
+    // outFormatに変換後のフレーム数を概算して加算
+    let ratio = outFormat.sampleRate / inFormat.sampleRate
+    queuedFrames += AVAudioFrameCount(Double(frames) * ratio)
+
+    // まだプリロール未達なら貯めるだけ
+    let targetFrames = AVAudioFrameCount(outFormat.sampleRate * prebufferSec)
+    if !player.isPlaying, queuedFrames < targetFrames { return }
+
+    // まとめて1ブロックにしてから変換→スケジュール
+    let merged = queue.reduce(into: Data()) { $0.append($1) }
+    queue.removeAll(keepingCapacity: true)
+    queuedFrames = 0
+
+    let inFrames = AVAudioFrameCount(merged.count / MemoryLayout<Int16>.size)
     guard let inBuf = AVAudioPCMBuffer(pcmFormat: inFormat, frameCapacity: inFrames) else { return }
     inBuf.frameLength = inFrames
-    data.withUnsafeBytes { (ptr: UnsafeRawBufferPointer) in
+    merged.withUnsafeBytes { (ptr: UnsafeRawBufferPointer) in
       let dst = inBuf.int16ChannelData![0]
-      memcpy(dst, ptr.baseAddress!, data.count)
+      memcpy(dst, ptr.baseAddress!, merged.count)
     }
 
-    let ratio = outFormat.sampleRate / inFormat.sampleRate
     let outCap = AVAudioFrameCount(ceil(Double(inFrames) * ratio))
     guard let outBuf = AVAudioPCMBuffer(pcmFormat: outFormat, frameCapacity: outCap) else { return }
 
@@ -61,9 +77,14 @@ public final class PlayerNodeStreamer {
     }
     guard (status == .haveData || status == .endOfStream), outBuf.frameLength > 0 else { return }
 
+    // ここで多少まとまった塊として再生に渡す
     player.scheduleBuffer(outBuf, completionHandler: nil)
     if !player.isPlaying { player.play() }
   }
 
-  public func stop() { player.stop() }
+  public func stop() {
+    queue.removeAll()
+    queuedFrames = 0
+    player.stop()
+  }
 }
