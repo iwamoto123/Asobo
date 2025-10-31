@@ -197,8 +197,36 @@ public final class ConversationController: ObservableObject {
         isRealtimeConnecting = true
         
         // オーディオセッションを構成
-        do { try audioSessionManager.configure() }
-        catch { self.errorMessage = "AudioSession構成に失敗: \(error.localizedDescription)" }
+        do {
+            try audioSessionManager.configure()
+            
+            // AudioSession設定後にPlayerNodeStreamerのエンジンを開始
+            // ⚠️ 重要な順序：AudioSessionを設定してからエンジンを開始
+            try player.start()
+            
+            // 音量確認（デバッグ用）
+            let audioSession = AVAudioSession.sharedInstance()
+            print("📊 ConversationController: オーディオ設定確認")
+            print("   - OutputVolume: \(audioSession.outputVolume) (1.0が最大)")
+            print("   - OutputChannels: \(audioSession.outputNumberOfChannels)")
+            print("   - SampleRate: \(audioSession.sampleRate)Hz")
+            
+            if audioSession.outputVolume < 0.1 {
+                print("⚠️ ConversationController: 音量が非常に低いです（\(audioSession.outputVolume)）。デバイスの音量設定を確認してください。")
+            }
+            
+            print("✅ ConversationController: AudioSession設定とPlayerNodeStreamer開始成功")
+        } catch {
+            self.errorMessage = "AudioSession構成に失敗: \(error.localizedDescription)"
+            print("❌ ConversationController: AudioSession構成失敗 - \(error.localizedDescription)")
+            
+            // 詳細なエラー情報をログに出力
+            if let nsError = error as NSError? {
+                print("   - Error Domain: \(nsError.domain)")
+                print("   - Error Code: \(nsError.code)")
+                print("   - Error Info: \(nsError.userInfo)")
+            }
+        }
 
         // エンドポイントURL（REALTIME_WSS_URL があれば優先）
         let url: URL = {
