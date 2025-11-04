@@ -43,12 +43,31 @@ public final class RealtimeClientOpenAI: RealtimeClient {
     // Ping/Pong & 再接続
     private var pingTimer: Timer?
     private var reconnectAttempts = 0
+    
+    // ✅ ユーザー確定フラグ（自動レスポンスの即キャンセル用）
+    private var userRequestedResponse = false
+    
+    // ✅ ターン内の累積ミリ秒（空コミット防止用）
+    private var turnAccumulatedMs: Double = 0
+    
+    // ✅ キャンセル後の音声を破棄するフラグ
+    private var suppressCurrentResponseAudio = false
+    
+    // ✅ VADモードフラグ（VADモード時は自動レスポンスをキャンセルしない）
+    private var useServerVAD = true  // VADモードで運用
+    
+    // ✅ VADの「詰まり」対策（無音ハマり防止）
+    private var vadIdleTimer: Timer?
+    private var lastAppendAt: Date?
 
     // MARK: - Init
-    public init(url: URL, apiKey: String, model: String = "gpt-4o-realtime-preview") {
-        self.url = url
+    // ✅ デフォルトは gpt-realtime（GA版）- フォールバックを完全に排除
+    public init(url: URL? = nil, apiKey: String, model: String = "gpt-realtime") {
+        // URLが指定されていない場合はデフォルトURLを使用（gpt-realtime固定）
+        let ws = url ?? URL(string: "wss://api.openai.com/v1/realtime?model=gpt-realtime")!
+        self.url = ws
         self.apiKey = apiKey
-        self.model = model
+        self.model = "gpt-realtime"  // ✅ フィールドも固定（フォールバック排除）
         let cfg = URLSessionConfiguration.default
         cfg.timeoutIntervalForRequest = 30
         cfg.timeoutIntervalForResource = 300
@@ -119,18 +138,46 @@ public final class RealtimeClientOpenAI: RealtimeClient {
                 つみきやおえかきなどの具体的な遊びではなく、会話のみで成り立つような呼びかけをしてください。
                 """,
                 "modalities": ["text","audio"],
-                "input_audio_format": "pcm16",
-                "output_audio_format": "pcm16",
-                "input_audio_transcription": ["model": "whisper-1", "language": "ja"],
+                // ✅ 入力も出力も24kHz/モノラルに統一（pcm16は24kHzが前提）
+                "input_audio_format": [
+                    "type": "pcm16",
+                    "sample_rate_hz": 24000,
+                    "channels": 1
+                ],
+                // ✅ 出力も24kHz/モノラルに統一
+                "output_audio_format": [
+                    "type": "pcm16",
+                    "sample_rate_hz": 24000,
+                    "channels": 1
+                ],
+                // ✅ Realtime向けのSTTモデル推奨名（gpt-4o-transcribe）
+                "input_audio_transcription": ["model": "gpt-4o-transcribe", "language": "ja"],
                 "voice": "alloy",
                 "tools": [],
-                "tool_choice": "none"
-                // "turn_detection" は入れない（PTT前提）
+                "tool_choice": "none",
+                // ✅ VADモード：サーバVADで自動区切り（10000以下に設定）
+                // threshold を NSDecimalNumber で正確な小数桁で送る（エラー回避）
+                "turn_detection": [
+                    "type": "server_vad",
+                    "threshold": NSDecimalNumber(string: "0.6"),  // ✅ 小数誤差を回避
+                    "silence_duration_ms": 1500,   // ≤ 10000
+                    "prefix_padding_ms": 150
+                ]
             ]
         ]
         print("🔗 RealtimeClient: セッション設定送信")
         // 必ず WebSocket が running かつクライアント state が ready になってから送信
         try await send(json: sessionUpdate)
+        
+        // ✅ セッション確立直後にテスト応答を1回送る（配線テスト）
+        print("🧪 RealtimeClient: テスト応答を送信（配線確認）")
+        try await send(json: [
+            "type": "response.create",
+            "response": [
+                "modalities": ["audio","text"],
+                "instructions": "こんにちは。にほんごでおはなしのじっけんをします。"
+            ]
+        ])
         
         print("✅ RealtimeClient: セッション開始完了")
         state = .ready
@@ -144,6 +191,13 @@ public final class RealtimeClientOpenAI: RealtimeClient {
         // ここで即 append（20ms/480フレームのバッファが来る想定）
         if let ch0 = buffer.int16ChannelData {
             let n = Int(buffer.frameLength)
+            let sr = Double(buffer.format.sampleRate) // 48000 など
+            let ms = (Double(n) / sr) * 1000.0
+            turnAccumulatedMs += ms  // ✅ 累積ミリ秒を計算
+            
+            // ✅ VADの「詰まり」対策：最後のappend時刻を更新
+            lastAppendAt = Date()
+            
             let ptr = ch0.pointee
             let data = Data(bytes: ptr, count: n * MemoryLayout<Int16>.size)
             let b64  = data.base64EncodedString()
@@ -151,39 +205,76 @@ public final class RealtimeClientOpenAI: RealtimeClient {
         }
     }
     
+    // ✅ 録音開始時/再録音時のリセット
+    public func resetRecordingTurn() {
+        turnAccumulatedMs = 0
+    }
+    
     public func interruptAndYield() async throws {
-        // ユーザーが割り込んだら（再録音開始前など）
-        try await send(json: ["type": "response.cancel"])
+        // ✅ VADモードでは response.cancel を送らない（サーバが自動で区切るため）
+        if !useServerVAD {
+            // PTTモードなど、手動で止めたい時だけキャンセル
+            if userRequestedResponse || suppressCurrentResponseAudio {
+                suppressCurrentResponseAudio = true  // ✅ キャンセル後の音声を破棄
+                try await send(json: ["type": "response.cancel"])
+            }
+        }
         // 必要に応じて入力バッファもクリア
         try await send(json: ["type": "input_audio_buffer.clear"])
+        // ✅ 録音ターンをリセット
+        turnAccumulatedMs = 0
     }
     
     // ② 追加: コミットだけ送る（応答は送らない）
+    // ⚠️ VADモードでは使用しない（サーバが自動でcommitするため）
     public func commitInputOnly() async throws {
+        // ✅ VADモードではcommitを送らない（サーバが自動で区切るため）
+        if useServerVAD {
+            print("⚠️ RealtimeClient: VADモードでは commitInputOnly() を使用しないでください（サーバが自動でcommitします）")
+            return
+        }
         guard case .ready = state, let ws = wsTask, ws.state == .running else { return }
+        // ✅ 100ms 以上たまってから commit（空コミット防止）
+        guard turnAccumulatedMs >= 120 else {
+            print("⚠️ RealtimeClient: commitスキップ (<120ms) 現在: \(turnAccumulatedMs)ms")
+            return
+        }
         try await send(json: ["type": "input_audio_buffer.commit"])
+        turnAccumulatedMs = 0  // ✅ リセット
     }
     
     // ③ 追加: 応答だけリクエスト（commit済みの入力を使う）
     public func requestResponse(instructions: String? = nil, temperature: Double = 0.3) async throws {
         guard case .ready = state, let ws = wsTask, ws.state == .running else { return }
         
-        var resp: [String: Any] = [
-            "type": "response.create",
-            "response": [
-                "modalities": ["audio","text"],
-                "temperature": NSDecimalNumber(value: temperature)
-            ]
+        // ✅ ユーザー確定フラグを立てる（自動レスポンスの即キャンセルを防ぐ）
+        userRequestedResponse = true
+        
+        // ✅ 日本語固定のデフォルト指示（念のため）
+        let defaultJapaneseInstructions = "つねににほんごでこたえてください。ひらがなを中心に、やさしく、みじかく話します。"
+        
+        var responseDict: [String: Any] = [
+            "modalities": ["audio","text"],
+            "instructions": defaultJapaneseInstructions,
+            "temperature": NSDecimalNumber(value: temperature)
         ]
-        if let inst = instructions {
-            // 任意の固定文や促しを"そのまま言わせる"用途にも使う
-            resp["response"] = [
-                "modalities": ["audio","text"],
-                "temperature": NSDecimalNumber(value: temperature),
-                "instructions": inst
-            ]
+        
+        // カスタムinstructionsがある場合は、それに日本語強制を追加
+        if let inst = instructions, !inst.isEmpty {
+            responseDict["instructions"] = """
+            \(defaultJapaneseInstructions)
+            
+            \(inst)
+            """
         }
+        
+        let resp: [String: Any] = [
+            "type": "response.create",
+            "response": responseDict
+        ]
         try await send(json: resp)
+        
+        // フラグは response.done でリセット
     }
     
     // ④ 追加: テキストイテレータをリセット（新しい会話ターン開始時）
@@ -232,10 +323,53 @@ public final class RealtimeClientOpenAI: RealtimeClient {
         }
     }
 
+    // ✅ VADの「詰まり」対策：アイドル監視を開始
+    private func startVADIdleMonitoring() {
+        stopVADIdleMonitoring()  // 既存のタイマーをクリア
+        
+        let timer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { [weak self] _ in
+            guard let self = self else { return }
+            
+            // 最後のappendから1.8秒以上経過していたら手動で締める
+            if let lastAppend = self.lastAppendAt,
+               Date().timeIntervalSince(lastAppend) > 1.8 {
+                print("⚠️ RealtimeClient: VADが詰まっているため手動でcommit → response.create")
+                self.stopVADIdleMonitoring()
+                
+                Task { [weak self] in
+                    guard let self = self else { return }
+                    // サーバが止めてくれないので手動 commit → response.create
+                    do {
+                        try await self.send(json: ["type": "input_audio_buffer.commit"])
+                        try await self.send(json: [
+                            "type": "response.create",
+                            "response": [
+                                "modalities": ["audio","text"],
+                                "instructions": "つねににほんごでこたえてください。ひらがな中心で、やさしく、みじかく。"
+                            ]
+                        ])
+                    } catch {
+                        print("❌ RealtimeClient: VAD保険の手動commit失敗 - \(error)")
+                    }
+                }
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        vadIdleTimer = timer
+    }
+    
+    // ✅ VADの「詰まり」対策：アイドル監視を停止
+    private func stopVADIdleMonitoring() {
+        vadIdleTimer?.invalidate()
+        vadIdleTimer = nil
+    }
+    
     public func finishSession() async throws {
         state = .closing
         // OpenAI Realtime APIでは session.finish は不要
         stopPing()
+        // ✅ VADの「詰まり」対策：タイマーを停止
+        stopVADIdleMonitoring()
         wsTask?.cancel(with: .goingAway, reason: nil)
         state = .closed(nil)
         audioContinuation?.finish()
@@ -251,6 +385,11 @@ public final class RealtimeClientOpenAI: RealtimeClient {
         // audioBuffer.removeAll() // ← PTT時は不要
         wsTask = nil
         reconnectAttempts = 0
+        // ✅ フラグをリセット
+        userRequestedResponse = false
+        suppressCurrentResponseAudio = false
+        turnAccumulatedMs = 0
+        lastAppendAt = nil
         
         // 状態をidleに戻す
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
@@ -333,6 +472,10 @@ public final class RealtimeClientOpenAI: RealtimeClient {
                         textContinuation?.yield(s)
                     }
                 case "response.audio.delta":
+                    // ✅ キャンセル後の音声は破棄（再生しない）
+                    if suppressCurrentResponseAudio {
+                        return
+                    }
                     if let b64 = obj["delta"] as? String,
                        let data = Data(base64Encoded: b64) {
                         print("🔊 RealtimeClient: 音声デルタ受信 - \(data.count) bytes")
@@ -340,7 +483,14 @@ public final class RealtimeClientOpenAI: RealtimeClient {
                     }
                 case "response.done":
                     print("✅ RealtimeClient: レスポンス完了")
+                    userRequestedResponse = false  // ✅ フラグをリセット
+                    suppressCurrentResponseAudio = false  // ✅ フラグをリセット
                     onResponseDone?()
+                    break
+                case "response.created":
+                    // ✅ VADモード：自動レスポンスをキャンセルしない（サーバが自動で区切る）
+                    suppressCurrentResponseAudio = false  // ✅ 音声を許可
+                    print("✅ RealtimeClient: VAD: response.created")
                     break
                 case "response.audio.done",
                      "response.audio_transcript.done",
@@ -348,33 +498,86 @@ public final class RealtimeClientOpenAI: RealtimeClient {
                      "response.content_part.done",
                      "response.output_item.added",
                      "response.output_item.done",
-                     "response.created",
                      "conversation.item.created",
                      "rate_limits.updated":
                     // 正常イベント - 何もしないでもOK
                     break
                 case "input_audio_buffer.speech_started":
                     print("🎤 RealtimeClient: 音声入力開始")
+                    turnAccumulatedMs = 0  // ✅ 録音開始時に累積時間をリセット
+                    lastAppendAt = Date()  // ✅ VADの「詰まり」対策：開始時刻を記録
+                    // ✅ VADの「詰まり」対策：アイドル監視を開始
+                    startVADIdleMonitoring()
                     onSpeechStarted?()
                 case "input_audio_buffer.speech_stopped":
                     print("🎤 RealtimeClient: 音声入力終了")
-                    // 音声入力が停止した場合、空のテキストでも通知
-                    print("📝 RealtimeClient: 音声入力停止 - テキスト確認")
-                    inputTextContinuation?.yield("")
+                    // ✅ VADの「詰まり」対策：サーバが正常に区切ったなら保険は終了
+                    stopVADIdleMonitoring()
                     onSpeechStopped?()
+                    // ✅ VADは「区切り検出」であり「応答生成」ではないので、止まったら自分で response.create を送る
+                    Task { [weak self] in
+                        guard let self = self else { return }
+                        // 念のため commit → 直後に response.create
+                        do {
+                            try await self.send(json: ["type": "input_audio_buffer.commit"])
+                            try await self.send(json: [
+                                "type": "response.create",
+                                "response": [
+                                    "modalities": ["audio","text"],
+                                    "instructions": "つねににほんごでこたえてください。ひらがなを中心に、やさしく、みじかく話します。"
+                                ]
+                            ])
+                            print("✅ RealtimeClient: 応答生成をリクエスト（speech_stopped → commit → response.create）")
+                        } catch {
+                            print("❌ RealtimeClient: 応答生成リクエスト失敗 - \(error)")
+                        }
+                    }
                 case "input_audio_buffer.committed":
                     if let transcript = obj["transcript"] as? String {
                         print("📝 RealtimeClient: 音声入力テキスト - \(transcript)")
                         inputTextContinuation?.yield(transcript)
                         onInputCommitted?(transcript)
                     }
+                case "input_audio_buffer.cleared":
+                    // ✅ 正常イベント（バッファクリア）
+                    print("ℹ️ RealtimeClient: input_audio_buffer.cleared")
+                    turnAccumulatedMs = 0  // ✅ 累積時間をリセット
+                    break
+                case "conversation.item.input_audio_transcription.delta":
+                    // ✅ 新イベント名：ユーザー入力側のSTTデルタ（部分テキスト表示用）
+                    if let s = (obj["delta"] as? String) ?? (obj["text"] as? String) {
+                        print("📝 RealtimeClient: 入力側STTデルタ - \(s)")
+                        inputTextContinuation?.yield(s)
+                    }
+                    break
+                case "conversation.item.input_audio_transcription.completed":
+                    // ✅ 新イベント名：ユーザー入力側のSTT確定（完了テキスト）
+                    if let t = (obj["transcript"] as? String) ?? (obj["text"] as? String) {
+                        print("📝 RealtimeClient: 入力側STT確定 - \(t)")
+                        inputTextContinuation?.yield(t)
+                        onInputCommitted?(t)
+                    }
+                    break
                 case "ping":
                     print("🏓 RealtimeClient: Ping受信 - Pong送信")
                     Task { try? await self.send(json: ["type": "pong"]) }
                 case "session.created":
                     print("✅ RealtimeClient: セッション作成完了")
                 case "session.updated":
-                    print("✅ RealtimeClient: セッション更新完了")
+                    print("✅ RealtimeClient: session.updated 受信（session.update 成功）")
+                    // ✅ 日本語指示が反映されたか確認（先頭80文字を表示）
+                    if let session = obj["session"] as? [String: Any],
+                       let instructions = session["instructions"] as? String {
+                        print("   📝 instructions(先頭80文字): \(instructions.prefix(80))\(instructions.count > 80 ? "..." : "")")
+                        // 日本語指示が含まれているか確認
+                        if instructions.contains("日本語") || instructions.contains("ja-JP") {
+                            print("   ✅ 日本語指示が反映されています")
+                        } else {
+                            print("   ⚠️ 日本語指示が反映されていない可能性があります")
+                        }
+                    } else {
+                        print("   ⚠️ session 本体が取得できませんでした")
+                    }
                 case "error":
                     if let error = obj["error"] as? [String: Any] {
                         print("❌ RealtimeClient: サーバーエラー - \(error)")

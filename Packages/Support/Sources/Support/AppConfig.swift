@@ -10,7 +10,8 @@ public struct AppConfig {
     }
     
     public static var realtimeModel: String {
-        Bundle.main.object(forInfoDictionaryKey: "REALTIME_MODEL") as? String ?? "gpt-4o-realtime-preview"
+        // ✅ gpt-realtime に固定（フォールバックを完全排除）
+        Bundle.main.object(forInfoDictionaryKey: "REALTIME_MODEL") as? String ?? "gpt-realtime"
     }
     
     public static var realtimeEndpoint: String {

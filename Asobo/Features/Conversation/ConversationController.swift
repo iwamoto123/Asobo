@@ -245,7 +245,8 @@ public final class ConversationController: ObservableObject {
                 return finalUrl
             }
 
-            let fallbackUrl = URL(string: "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview")!
+            // ✅ gpt-realtime に固定（フォールバックを完全排除）
+            let fallbackUrl = URL(string: "wss://api.openai.com/v1/realtime?model=gpt-realtime")!
             print("🔗 ConversationController: フォールバックURL使用 - \(fallbackUrl)")
             return fallbackUrl
         }()
