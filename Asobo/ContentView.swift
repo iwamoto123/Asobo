@@ -40,6 +40,19 @@ struct ContentView: View {
                     .cornerRadius(12)
                 }
                 
+                NavigationLink(destination: RealtimeTestView()) {
+                    HStack {
+                        Image(systemName: "testtube.2")
+                            .font(.title)
+                        Text("Realtime API テスト（料理評論家）")
+                            .font(.headline)
+                    }
+                    .foregroundColor(.white)
+                    .padding()
+                    .background(Color.orange)
+                    .cornerRadius(12)
+                }
+                
                 Spacer()
             }
             .padding()

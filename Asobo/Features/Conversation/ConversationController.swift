@@ -25,13 +25,23 @@ public final class ConversationController: ObservableObject {
     // 追加: ユーザーが停止したかを覚えるフラグ
     private var userStoppedRecording = false
     
-    // 追加: ターン状態と促しタイマー
-    private enum TurnState { case idle, awaitingUser, capturingUser, awaitingAI, speakingAI }
+    // ✅ AI音声再生中フラグ（onAudioDeltaReceivedで設定、sendMicrophonePCMの早期returnを一元化）
+    private var isAIPlayingAudio: Bool = false
+    
+    // ✅ ターン状態（拡張版）
+    enum TurnState {
+        case idle               // セッション前 or 終了後
+        case waitingUser        // 初回/毎ターン：まずユーザーの声を待つ
+        case nudgedByAI(Int)   // 促し(何回目かインデックス)
+        case listening          // VADが speech_started 〜 speech_stopped の間
+        case thinking           // commit 済み〜応答生成中
+        case speaking           // AIがTTS出力中
+        case clarifying         // 聞き取り不可→聞き返し中
+    }
     @Published private var turnState: TurnState = .idle
     
-    private var nudgeTask: Task<Void, Never>?
-    private let nudgeDelayAfterAIFinish: Double = 60.0   // AI発話後に待つ秒数（大幅延長）
-    private let nudgeDelayAfterEmptyInput: Double = 10.0 // 空コミット時に待つ秒数（延長）
+    // ✅ 「待つ→促す」タイマー
+    private var nudgeTimer: Timer?
     
     // デバッグ用プロパティ
     @Published public var aiResponseText: String = ""
@@ -269,51 +279,65 @@ public final class ConversationController: ObservableObject {
         // Realtimeのイベントにフック
         realtimeClient?.onSpeechStarted = { [weak self] in
             Task { @MainActor in
-                self?.cancelNudgeTimer()
-                self?.turnState = .capturingUser
+                guard let self else { return }
+                // ユーザー発話を検知 → 促しタイマーは止める & AI音声を即停止
+                self.cancelNudge()
+                self.turnState = .listening
+                // ✅ ユーザーが話し始めたら即AI音声を止める
+                self.player.stopImmediately()
             }
         }
         
         realtimeClient?.onSpeechStopped = { [weak self] in
             Task { @MainActor in
-                // 入力が止まっただけ。commitは別イベントで来る
+                guard let self else { return }
+                self.turnState = .thinking
+                // 以降は Realtime 側が commit → response.create を送信してくれる設計にしている
             }
         }
         
         realtimeClient?.onInputCommitted = { [weak self] transcript in
             Task { @MainActor in
                 guard let self else { return }
-                self.cancelNudgeTimer()
-                
                 let t = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
-                if t.isEmpty {
-                    // 📌 入力なし → ユーザーが話すのを待つ（促しは控えめに）
-                    self.turnState = .awaitingUser
-                    // 空の入力でも促しタイマーは無効化（ユーザーが話すのを待つ）
-                    // self.startNudgeTimer(reason: .afterEmptyInput)  // 無効化
+                if t.count < 2 {
+                    // ✅ 聞き取り失敗時は必ず聞き返し（RealtimeClient側で処理済み）
+                    self.turnState = .clarifying
                 } else {
-                    // 📌 入力あり → このタイミング"だけ"応答を作る
-                    self.turnState = .awaitingAI
-                    // 新しい会話ターン開始時にテキストイテレータをリセット
-                    self.realtimeClient?.resetTextIterator()
-                    try? await self.realtimeClient?.requestResponse(
-                        instructions: """
-                        かならず にほんご。ひらがな おおめ。みじかく やさしく。
-                        ユーザーの話を よく きいて から、それに こたえてね。
-                        まず ユーザーの きもちを うけとめて、それから こたえを ひとこと。
-                        つぎに かんたんな しつもんを ひとつ してね。
-                        """
-                    )
+                    // ✅ 聞き取り成功 → 応答生成中
+                    self.turnState = .thinking
                 }
+            }
+        }
+        
+        realtimeClient?.onResponseCreated = { [weak self] in
+            Task { @MainActor in
+                guard let self else { return }
+                // ✅ 新しい応答が作成された時にテキストをクリア（前の応答のテキストを消す）
+                self.aiResponseText = ""
+                print("📝 ConversationController: 新しい応答開始 - aiResponseTextをクリア")
+                // ✅ 音声再生を再開（stopImmediately()でvolume=0になった場合の復帰）
+                self.player.resumeIfNeeded()
             }
         }
         
         realtimeClient?.onResponseDone = { [weak self] in
             Task { @MainActor in
                 guard let self else { return }
-                self.turnState = .awaitingUser
-                // 📌 AI発話が終わった。ユーザーが話すのを待つ（促しタイマーは無効化）
-                // self.startNudgeTimer(reason: .afterAIFinish)  // 無効化
+                // ✅ 応答が終わったら次ターンへ：まずは「待つ」
+                // ✅ AI音声再生フラグをリセット（次のターンで録音を再開できるように）
+                self.isAIPlayingAudio = false
+                self.startWaiting()
+            }
+        }
+        
+        // ✅ 参考プロジェクトパターン：AI音声受信時に録音停止をトリガー
+        realtimeClient?.onAudioDeltaReceived = { [weak self] in
+            Task { @MainActor in
+                guard let self else { return }
+                // ✅ AI音声受信時にフラグを設定（sendMicrophonePCMの早期returnを一元化）
+                self.isAIPlayingAudio = true
+                print("🛑 ConversationController: AI音声受信 - 録音停止フラグ設定（isAIPlayingAudio=true）")
             }
         }
         
@@ -346,7 +370,7 @@ public final class ConversationController: ObservableObject {
         transcript = ""
         aiResponseText = ""
         errorMessage = nil
-        turnState = .awaitingUser  // セッション開始時はユーザーが話すのを待つ
+        turnState = .waitingUser  // セッション開始時はユーザーが話すのを待つ
 
         sessionStartTask = Task {
             do {
@@ -380,6 +404,32 @@ public final class ConversationController: ObservableObject {
                     self.isRealtimeActive = true
                     self.mode = .realtime
                     self.startReceiveLoops()
+                    
+                    // ✅ セッション開始時にマイクを開始して、常に音声入力を監視する
+                    guard let client = self.realtimeClient else {
+                        print("⚠️ ConversationController: セッション開始後、realtimeClientがnil")
+                        return
+                    }
+                    self.mic?.stop()
+                    self.mic = MicrophoneCapture { [weak self] buf in
+                        guard let self = self else { return }
+                        // ✅ AI音声再生中は音声送信をスキップ（onAudioDeltaReceivedで設定されたフラグをチェック）
+                        if self.isAIPlayingAudio {
+                            // AIが話している間は音声送信をスキップ
+                            return
+                        }
+                        Task { try? await client.sendMicrophonePCM(buf) }
+                    }
+                    do {
+                        try self.mic?.start()
+                        print("✅ ConversationController: マイク開始成功（常時監視モード）")
+                    } catch {
+                        print("⚠️ ConversationController: マイク開始失敗 - \(error.localizedDescription)")
+                        self.errorMessage = "マイク開始に失敗: \(error.localizedDescription)"
+                    }
+                    
+                    // ✅ セッション開始後、まずはユーザーの声を待つ
+                    self.startWaiting()
                 }
             } catch {
                 print("❌ ConversationController: セッション開始失敗 - \(error.localizedDescription)")
@@ -421,10 +471,14 @@ public final class ConversationController: ObservableObject {
         mic?.stop(); mic = nil
         player.stop()
         
+        // ✅ 促しタイマーを停止
+        cancelNudge()
+        
         // 状態をリセット
         isRecording = false
         isRealtimeActive = false
         isRealtimeConnecting = false
+        turnState = .idle
         
         // テキストをクリア
         transcript = ""
@@ -446,20 +500,29 @@ public final class ConversationController: ObservableObject {
         guard let client = realtimeClient else {
             self.errorMessage = "Realtimeクライアントが初期化されていません"; return
         }
-        cancelNudgeTimer()             // ← 追加：ユーザーが話し始めるので促しを止める
+        cancelNudge()             // ✅ ユーザーが話し始めるので促しを止める
         // 🔇 いま流れているAI音声を止める（barge-in 前提）
         player.stop()
         Task { try? await client.interruptAndYield() }   // ← サーバ側の発話も中断
 
+        // ✅ 公式パターン: PTT開始時に input_audio_buffer.clear を送信（interruptAndYield内で送信されるため追加不要）
+        // ✅ interruptAndYield() が既に input_audio_buffer.clear を送信しているため、ここでは追加不要
+
         mic?.stop()
-        mic = MicrophoneCapture { buf in
+        mic = MicrophoneCapture { [weak self] buf in
+            guard let self = self else { return }
+            // ✅ AI音声再生中は音声送信をスキップ（onAudioDeltaReceivedで設定されたフラグをチェック）
+            if self.isAIPlayingAudio {
+                // AIが話している間は音声送信をスキップ
+                return
+            }
             Task { try? await client.sendMicrophonePCM(buf) }
         }
         do {
             try mic?.start()
             isRecording = true
             transcript = ""
-            turnState = .capturingUser
+            turnState = .listening
         } catch {
             self.errorMessage = "マイク開始に失敗: \(error.localizedDescription)"
             isRecording = false
@@ -469,8 +532,16 @@ public final class ConversationController: ObservableObject {
     public func stopPTTRealtime() {
         isRecording = false
         mic?.stop()
-        // 👇 ここを変更：commit だけ送る
-        Task { try? await realtimeClient?.commitInputOnly() }
+        // ✅ 公式パターン: PTT終了時に commit → response.create を送信
+        Task { [weak self] in
+            guard let self = self, let client = self.realtimeClient else { return }
+            do {
+                try await client.commitInputAndRequestResponse()
+                print("✅ ConversationController: PTT終了 - commit → response.create送信完了")
+            } catch {
+                print("⚠️ ConversationController: PTT終了処理失敗 - \(error)")
+            }
+        }
     }
 
     private func startReceiveLoops() {
@@ -512,15 +583,31 @@ public final class ConversationController: ObservableObject {
         receiveInputTextTask = Task { [weak self] in
             guard let self else { return }
             print("🔄 ConversationController: 音声入力テキストループ開始")
+            var lastLogTime = Date()
             while !Task.isCancelled {
                 do {
                     if let inputText = try await self.realtimeClient?.nextInputText() {
-                        print("📝 ConversationController: 音声入力テキスト受信 - \(inputText)")
+                        let trimmed = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
+                        print("🎤 ConversationController: ユーザーの発言テキスト受信 - 「\(trimmed)」")
                         await MainActor.run { 
-                            self.transcript = inputText
-                            print("📝 ConversationController: transcript更新 - \(self.transcript)")
+                            // テキストを追記（部分テキストの場合は置換）
+                            if inputText.count < self.transcript.count {
+                                // 部分テキストが来た場合は置換
+                                self.transcript = inputText
+                                print("📝 ConversationController: 部分テキスト更新 - 「\(self.transcript)」")
+                            } else {
+                                // 確定テキストが来た場合は置換
+                                self.transcript = inputText
+                                print("✅ ConversationController: 確定テキスト更新 - 「\(self.transcript)」")
+                            }
                         }
                     } else {
+                        // 1秒に1回程度、STTイベントが来ていないことをログに出力
+                        let now = Date()
+                        if now.timeIntervalSince(lastLogTime) >= 1.0 {
+                            print("⚠️ ConversationController: STTイベント待機中...（conversation.item.input_audio_transcription.* または input_audio_buffer.committed が来ていません）")
+                            lastLogTime = now
+                        }
                         try await Task.sleep(nanoseconds: 50_000_000)
                     }
                 } catch { 
@@ -541,6 +628,9 @@ public final class ConversationController: ObservableObject {
                 do {
                     if let chunk = try await self.realtimeClient?.nextAudioChunk() {
                         await MainActor.run { self.isPlayingAudio = true }
+                        // ✅ 音声再生を再開（stopImmediately()でvolume=0になった場合の復帰）
+                        // 注: onResponseCreatedでも呼び出しているが、念のためここでも呼び出す
+                        self.player.resumeIfNeeded()
                         self.player.playChunk(chunk)
                         await MainActor.run { self.isPlayingAudio = false }
                     } else {
@@ -721,42 +811,39 @@ public final class ConversationController: ObservableObject {
     
     // MARK: - 促しタイマー機能
     
-    private enum NudgeReason { case afterAIFinish, afterEmptyInput }
-    
-    private func startNudgeTimer(reason: NudgeReason) {
-        nudgeTask?.cancel()
-        let delay = (reason == .afterAIFinish) ? nudgeDelayAfterAIFinish : nudgeDelayAfterEmptyInput
-        
-        nudgeTask = Task { [weak self] in
-            guard let self else { return }
-            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
-            
-            // まだユーザー待ちで、録音中でもなく、接続中でもあるときだけ
-            guard !Task.isCancelled,
-                  self.turnState == .awaitingUser,
-                  self.isRealtimeActive,
-                  !self.isRecording
-            else { return }
-            
-            let line: String = {
-                switch reason {
-                case .afterAIFinish:
-                    return "どう おもう？ もう すこし おしえてね。"
-                case .afterEmptyInput:
-                    return "ごめんね。きこえなかったよ。もう いちど ゆっくり いってね。"
-                }
-            }()
-            
-            // 📌 促しは"固定文"として1文だけ言わせる
-            try? await self.realtimeClient?.requestResponse(
-                instructions: "つぎのぶんを そのまま やさしく いって:『\(line)』"
-            )
-            self.turnState = .speakingAI
+    // ✅ 「待つ→促す」タイマー実装
+    private func startWaiting() {
+        turnState = .waitingUser
+        cancelNudge()
+        nudgeTimer?.invalidate()
+        nudgeTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: false) { [weak self] _ in
+            Task { await self?.sendNudge(index: 0) }
         }
     }
     
-    private func cancelNudgeTimer() {
-        nudgeTask?.cancel()
-        nudgeTask = nil
+    private func scheduleNextNudge(_ idx: Int) {
+        guard idx < 2 else { return } // 最大3回(0,1,2)で制限
+        nudgeTimer?.invalidate()
+        nudgeTimer = Timer.scheduledTimer(withTimeInterval: 8.0, repeats: false) { [weak self] _ in
+            Task { await self?.sendNudge(index: idx + 1) }
+        }
+    }
+    
+    private func cancelNudge() {
+        nudgeTimer?.invalidate()
+        nudgeTimer = nil
+    }
+    
+    private func sendNudge(index: Int) async {
+        guard isRealtimeActive else { return }
+        // ✅ ユーザーが話している最中は促しメッセージを送信しない
+        if case .listening = turnState {
+            print("⚠️ ConversationController: ユーザーが話しているため nudge をスキップ")
+            cancelNudge()
+            return
+        }
+        turnState = .nudgedByAI(index)
+        await realtimeClient?.nudge(kind: index)
+        scheduleNextNudge(index)
     }
 }

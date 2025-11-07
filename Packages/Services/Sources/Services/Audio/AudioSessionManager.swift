@@ -18,17 +18,10 @@ public final class AudioSessionManager {
                           options: [.defaultToSpeaker, .allowBluetooth, .duckOthers])
         try s.setMode(.voiceChat)
 
-        // 20ms 目安の I/O バッファ（低レイテンシ）
-        try? s.setPreferredIOBufferDuration(0.02)
-
-        #if targetEnvironment(simulator)
-        // シミュレータは 48kHz に寄せて CoreAudio ログを抑制
-        try? s.setPreferredSampleRate(48_000)
-        #else
-        // 実機も48kHzに統一（デバイスの標準サンプリングレートに合わせる）
-        // 24kHzだと一部のデバイスで問題が発生する可能性があるため
-        try? s.setPreferredSampleRate(48_000)
-        #endif
+        // ✅ 24kHz/10msに設定（OpenAI Realtime APIの要求仕様に合わせる）
+        // ✅ AEC/AGCを確実に有効化するため、preferredIOBufferDuration = 0.01 前後に固定して無音パケット乱発を抑制
+        try? s.setPreferredSampleRate(24_000)
+        try? s.setPreferredIOBufferDuration(0.01)  // 10ms（無音パケット乱発を抑制）
 
         // AudioSessionをアクティブにする
         try s.setActive(true, options: .notifyOthersOnDeactivation)

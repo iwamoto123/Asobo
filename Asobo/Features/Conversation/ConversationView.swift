@@ -107,13 +107,28 @@ public struct ConversationView: View {
                         .background(Color.blue.opacity(0.06))
                         .cornerRadius(8)
                     } else {
-                        Text(vm.aiResponseText.isEmpty ? "（AIの応答がここに表示されます）" : vm.aiResponseText)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(8)
+                        ScrollViewReader { proxy in
+                            ScrollView(.vertical, showsIndicators: false) {
+                                Text(vm.aiResponseText.isEmpty ? "（AIの応答がここに表示されます）" : vm.aiResponseText)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(8)
+                                    .id("aiResponseText")
+                                    .onChange(of: vm.aiResponseText) { newValue in
+                                        // ✅ テキストが更新されるたびに自動スクロール（最新のテキストを見せる）
+                                        if !newValue.isEmpty {
+                                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                                                withAnimation(.easeOut(duration: 0.2)) {
+                                                    proxy.scrollTo("aiResponseText", anchor: .bottom)
+                                                }
+                                            }
+                                        }
+                                    }
+                            }
+                            .frame(minHeight: 60, maxHeight: 200)  // ✅ 最大高さを増やして長いテキストも表示
                             .background(Color.blue.opacity(0.1))
                             .cornerRadius(8)
                             .font(.caption)
-                            .frame(minHeight: 60, maxHeight: 80)
+                        }
                     }
                 }
 

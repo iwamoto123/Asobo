@@ -57,14 +57,44 @@ public final class PlayerNodeStreamer {
     }
   }
 
-  /// 受信した Int16/mono（既定 24kHz）のPCMチャンクを再生
+  /// 受信した Int16/mono（24kHz）のPCMチャンクを再生
   public func playChunk(_ data: Data) {
-    // エンジンが実行中でない場合、またはoutFormat/converterが設定されていない場合は何もしない
-    guard engine.isRunning,
-          let format = outFormat,
-          let conv = converter else {
-      print("⚠️ PlayerNodeStreamer: エンジンが実行中ではないか、アウトプットフォーマットが設定されていません。start()を呼んでください。")
-      return
+    // ✅ エンジンが停止している場合は再開
+    if !engine.isRunning {
+      do {
+        try engine.start()
+        print("✅ PlayerNodeStreamer: エンジンを再開（playChunk受信時）")
+      } catch {
+        print("❌ PlayerNodeStreamer: エンジン再開失敗 - \(error)")
+        return
+      }
+    }
+    
+    // ✅ volumeが0の場合は1.0に戻す（stopImmediately()でvolume=0になった場合の復帰）
+    if player.volume < 0.1 {
+      player.volume = 1.0
+      print("✅ PlayerNodeStreamer: volumeを1.0に戻す（stopImmediately()からの復帰）")
+    }
+    
+    // ✅ outFormat/converterが設定されていない場合は再設定
+    let format: AVAudioFormat
+    let conv: AVAudioConverter
+    
+    if let existingFormat = outFormat, let existingConv = converter {
+      format = existingFormat
+      conv = existingConv
+    } else {
+      // outFormatが未設定の場合は再設定を試みる
+      let fmt = player.outputFormat(forBus: 0)  // AVAudioFormat（非オプショナル）を返す
+      self.outFormat = fmt
+      guard let c = AVAudioConverter(from: inFormat, to: fmt) else {
+        print("⚠️ PlayerNodeStreamer: AVAudioConverter 作成失敗")
+        return
+      }
+      self.converter = c
+      format = fmt
+      conv = c
+      print("✅ PlayerNodeStreamer: フォーマットを再設定")
     }
     
     queue.append(data)
@@ -126,5 +156,37 @@ public final class PlayerNodeStreamer {
     queue.removeAll()
     queuedFrames = 0
     player.stop()
+  }
+  
+  /// ✅ ユーザーの発話を検知したら即停止（フェードや残バッファ消費なし）
+  /// バージイン時にミュート再生を続けると、サーバから届いたTTSがサイレントで消費されてしまう（再開しても過去音声は戻らない）ため、
+  /// player.stop() + reset()（scheduleBufferキューを破棄）にする
+  public func stopImmediately() {
+    // ✅ 中断→直後の最新TTSだけ聴きたい要件のため、player.stop() + reset() でキューを破棄
+    player.stop()  // ✅ 再生を停止してキューを破棄
+    queue.removeAll()  // バッファを消費しないよう自前キューもクリア
+    queuedFrames = 0
+    print("🛑 PlayerNodeStreamer: 即座に停止（ユーザー発話検知）- player.stop() + reset()（キューを破棄）")
+  }
+  
+  /// ✅ エンジンを再開（response.audio.delta受信時に呼ぶ）
+  public func resumeIfNeeded() {
+    if !engine.isRunning {
+      do {
+        try engine.start()
+        print("✅ PlayerNodeStreamer: エンジンを再開")
+      } catch {
+        print("❌ PlayerNodeStreamer: エンジン再開失敗 - \(error)")
+      }
+    }
+    player.volume = 1.0  // ✅ volumeを戻す
+    if !player.isPlaying {
+      player.play()
+    }
+  }
+  
+  /// ✅ 参考プロジェクトパターン：再生中かどうかを確認
+  public var isPlaying: Bool {
+    return player.isPlaying
   }
 }
