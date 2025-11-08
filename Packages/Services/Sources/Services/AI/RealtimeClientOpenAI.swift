@@ -1002,8 +1002,23 @@ public final class RealtimeClientOpenAI: RealtimeClient {
                     print("⚠️ RealtimeClient: response.text.delta（旧仕様） - 無視（新仕様 response.output_text.delta を使用）")
                     break
                 case "response.audio_transcript.delta":
-                    // ✅ 非公式イベント：無視（重複表示を防ぐため、新仕様 response.output_text.delta のみ使用）
-                    print("⚠️ RealtimeClient: response.audio_transcript.delta（非公式イベント） - 無視（新仕様 response.output_text.delta を使用）")
+                    // ✅ 非公式イベント：互換性のため処理（サーバー側が旧仕様を送信している場合がある）
+                    // ✅ response_idが設定されていない場合は設定を試みる
+                    let responseId = obj["response_id"] as? String ?? activeResponseId
+                    if activeResponseId == nil, let id = responseId {
+                        activeResponseId = id
+                        print("✅ RealtimeClient: response.audio_transcript.delta - response_idを設定: \(id)")
+                    }
+                    
+                    if let s = obj["delta"] as? String, let id = responseId {
+                        // ✅ response_idごとにバッファに集約（重複表示を防ぐ）
+                        streamText[id, default: ""] += s
+                        print("📝 RealtimeClient: AI応答テキストデルタ受信（非公式イベント） - 「\(s)」, response_id: \(id), 累積: 「\(streamText[id] ?? "")」")
+                        // ✅ UIに送信
+                        textContinuation?.yield(s)
+                    } else {
+                        print("⚠️ RealtimeClient: response.audio_transcript.delta - deltaまたはresponse_idが見つかりません")
+                    }
                     break
                 case "response.output_audio.delta":
                     // ✅ 公式イベント名：response.output_audio.delta（response.audio.delta は旧仕様）
@@ -1036,8 +1051,35 @@ public final class RealtimeClientOpenAI: RealtimeClient {
                         print("📊 RealtimeClient: response.output_audio.delta - イベント内容: \(obj)")
                     }
                 case "response.audio.delta":
-                    // ✅ 旧仕様：無視（重複表示を防ぐため、新仕様 response.output_audio.delta のみ使用）
-                    print("⚠️ RealtimeClient: response.audio.delta（旧仕様） - 無視（新仕様 response.output_audio.delta を使用）")
+                    // ✅ 旧仕様：互換性のため処理（サーバー側が旧仕様を送信している場合がある）
+                    // ✅ response_idが設定されていない場合は設定を試みる
+                    if activeResponseId == nil, let responseId = obj["response_id"] as? String {
+                        activeResponseId = responseId
+                        print("✅ RealtimeClient: response.audio.delta - response_idを設定: \(responseId)")
+                    }
+                    
+                    // ✅ バージイン後のTTSは再生しない（キャンセル後の音声は破棄）
+                    if suppressCurrentResponseAudio {
+                        print("📊 RealtimeClient: response.audio.delta - 音声再生をスキップ（suppressCurrentResponseAudio=true）")
+                        print("⚠️ RealtimeClient: 音声再生がスキップされています - activeResponseId: \(activeResponseId ?? "nil"), suppressCurrentResponseAudio: \(suppressCurrentResponseAudio)")
+                        return
+                    }
+                    if let b64 = obj["delta"] as? String ?? obj["audio"] as? String,
+                       let data = Data(base64Encoded: b64) {
+                        // ✅ AI応答音声のデルタを受信（PCM16 @ 24kHz / mono）
+                        // ✅ 詳細ログ（最初の10回と、その後100回に1回程度）
+                        audioDeltaCount += 1
+                        let shouldLog = audioDeltaCount <= 10 || Int.random(in: 0..<100) == 0
+                        if shouldLog {
+                            print("🔊 RealtimeClient: AI応答音声デルタ受信（旧仕様） #\(audioDeltaCount) - \(data.count) bytes (PCM16 @ 24kHz / mono), activeResponseId: \(activeResponseId ?? "nil"), suppressCurrentResponseAudio: \(suppressCurrentResponseAudio)")
+                        }
+                        audioContinuation?.yield(data)
+                        // ✅ 参考プロジェクトパターン：AI音声受信時に録音停止をトリガー
+                        onAudioDeltaReceived?()
+                    } else {
+                        print("⚠️ RealtimeClient: response.audio.delta - データのデコードに失敗（delta/audioが見つかりません）")
+                        print("📊 RealtimeClient: response.audio.delta - イベント内容: \(obj)")
+                    }
                     break
                 case "response.done":
                     // ✅ アクティブレスポンスIDを厳密にクリア（response.cancelの送信制御のため）
