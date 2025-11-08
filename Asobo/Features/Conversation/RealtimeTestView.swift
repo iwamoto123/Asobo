@@ -324,10 +324,20 @@ public struct RealtimeTestView: View {
         let targetSampleRate: Float64 = 24000.0
         let frameLength = Int(pcmBuffer.frameLength)
         
+        // ✅ リサンプル（Float32 → Float32 @ 24kHz）
         let resampledData = resampleAudio(floatChannelData: floatChannelData.pointee, frameLength: frameLength, originalSampleRate: originalSampleRate, targetSampleRate: targetSampleRate)
         
-        let int16Data = resampledData.map { Int16($0 * Float(Int16.max)) }
+        // ✅ 量子化：Float32 → Int16（クリッピング処理付き）
+        // ✅ Float32は[-1.0, 1.0]の範囲を想定し、Int16は[-32768, 32767]に変換
+        var int16Data = [Int16](repeating: 0, count: resampledData.count)
+        for i in 0..<resampledData.count {
+            // ✅ クリッピング：[-1.0, 1.0]の範囲に制限
+            let clamped = max(-1.0, min(1.0, resampledData[i]))
+            // ✅ Float32 → Int16変換（リトルエンディアン）
+            int16Data[i] = Int16(clamped * Float(Int16.max))
+        }
         
+        // ✅ リトルエンディアンでDataを作成（iOSはリトルエンディアン）
         let audioData = Data(bytes: int16Data, count: int16Data.count * MemoryLayout<Int16>.size)
         
         return audioData.base64EncodedString()

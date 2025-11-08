@@ -552,23 +552,60 @@ public final class ConversationController: ObservableObject {
         receiveTextTask = Task { [weak self] in
             guard let self else { return }
             print("🔄 ConversationController: AI応答テキストループ開始")
+            // ✅ UIの無駄な再描画を抑制：テキスト更新をスロットリング（16-33ms程度でまとめて描画）
+            var textBuffer = ""
+            var lastUpdateTime = Date()
+            let throttleInterval: TimeInterval = 0.03  // 33ms（約30fps）
+            
             while !Task.isCancelled {
                 do {
                     if let part = try await self.realtimeClient?.nextPartialText() {
                         print("📝 ConversationController: AI応答テキスト受信 - \(part)")
-                        await MainActor.run { 
-                            // AI応答テキストを追記
-                            if self.aiResponseText.isEmpty { 
-                                self.aiResponseText = part 
-                            } else { 
-                                self.aiResponseText += part   // ← 追記
+                        // ✅ テキストをバッファに追加
+                        textBuffer += part
+                        
+                        // ✅ スロットリング：33ms経過したらUIに反映
+                        let now = Date()
+                        if now.timeIntervalSince(lastUpdateTime) >= throttleInterval {
+                            await MainActor.run {
+                                // AI応答テキストを更新
+                                if self.aiResponseText.isEmpty {
+                                    self.aiResponseText = textBuffer
+                                } else {
+                                    self.aiResponseText += textBuffer
+                                }
+                                print("📝 ConversationController: aiResponseText更新（スロットリング後） - \(self.aiResponseText)")
                             }
-                            print("📝 ConversationController: aiResponseText更新 - \(self.aiResponseText)")
+                            textBuffer = ""  // バッファをクリア
+                            lastUpdateTime = now
                         }
                     } else {
+                        // ✅ バッファに残っているテキストがあれば反映
+                        if !textBuffer.isEmpty {
+                            await MainActor.run {
+                                if self.aiResponseText.isEmpty {
+                                    self.aiResponseText = textBuffer
+                                } else {
+                                    self.aiResponseText += textBuffer
+                                }
+                                print("📝 ConversationController: aiResponseText更新（最終） - \(self.aiResponseText)")
+                            }
+                            textBuffer = ""
+                        }
                         try await Task.sleep(nanoseconds: 50_000_000) // idle 50ms
                     }
                 } catch { 
+                    // ✅ エラー時もバッファに残っているテキストがあれば反映
+                    if !textBuffer.isEmpty {
+                        await MainActor.run {
+                            if self.aiResponseText.isEmpty {
+                                self.aiResponseText = textBuffer
+                            } else {
+                                self.aiResponseText += textBuffer
+                            }
+                        }
+                        textBuffer = ""
+                    }
                     // CancellationErrorは正常な終了なのでログに出力しない
                     if !(error is CancellationError) {
                         print("❌ ConversationController: AI応答テキストループエラー - \(error)")

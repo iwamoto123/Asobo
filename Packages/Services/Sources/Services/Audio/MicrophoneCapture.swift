@@ -41,25 +41,31 @@ public final class MicrophoneCapture {
     inputNode.installTap(onBus: 0, bufferSize: framesPer20ms, format: inFormat) { [weak self] buffer, _ in
       guard let self else { return }
 
-      // 出力側（24kHz）で20ms相当=480フレームを目安に確保
-      let targetFrames = AVAudioFrameCount(self.outFormat.sampleRate * 0.02) // 480
-      guard let outBuf = AVAudioPCMBuffer(pcmFormat: self.outFormat, frameCapacity: targetFrames) else { return }
+      // ✅ 送る前に24kHz mono PCM16LEへ必ずダウンサンプル＆量子化
+      // ✅ AVAudioEngineのタップはFloat32が多い。常にAVAudioConverterで24kHz/mono/Int16に変換
+      // ✅ 変換用フォーマット（送信用）：24kHz/mono/PCM16LE
+      // ✅ 入力バッファのフォーマットから送信フォーマットへの変換を確実に実行
+      let ratio = self.outFormat.sampleRate / buffer.format.sampleRate
+      let framesOut = AVAudioFrameCount(Double(buffer.frameLength) * ratio + 8)  // 余裕を持たせる
+      guard let outBuf = AVAudioPCMBuffer(pcmFormat: self.outFormat, frameCapacity: framesOut) else { return }
+      outBuf.frameLength = framesOut
 
       var error: NSError?
-      let status = self.converter.convert(to: outBuf, error: &error) { _, outStatus in
+      let status = self.converter.convert(to: outBuf, error: &error) { inCount, outStatus in
         outStatus.pointee = .haveData
         return buffer
       }
 
       if (status == .haveData || status == .endOfStream), outBuf.frameLength > 0 {
         // ✅ バッファに蓄積（20msごとに追加）
+        // ✅ 必ずint16ChannelDataから取得（PCM16LE形式）
         guard let ch0 = outBuf.int16ChannelData else { return }
-        let bytes = Int(outBuf.frameLength) * MemoryLayout<Int16>.size
+        let byteCount = Int(outBuf.frameLength) * MemoryLayout<Int16>.size
         let ptr = ch0.pointee
         
         self.flushQueue.async {
-          // ✅ 音声データをバッファに追加
-          self.audioBuffer.append(Data(bytes: ptr, count: bytes))
+          // ✅ 音声データをバッファに追加（PCM16LE形式のData）
+          self.audioBuffer.append(Data(bytes: ptr, count: byteCount))
           
           // ✅ 200ms経過したらバッチ送信
           let now = Date()
