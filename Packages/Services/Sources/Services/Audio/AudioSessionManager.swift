@@ -1,6 +1,24 @@
 import Foundation
 import AVFoundation
 
+/// ✅ 音声入力が正常に動作するためのAudioSession設定
+/// 
+/// ## 重要な設定ポイント（AEC有効化）
+/// 1. **カテゴリ**: `.playAndRecord` - 録音と再生を同時に行う
+/// 2. **モード**: `.voiceChat` - AEC（エコーキャンセレーション）を有効化するために必須
+///    - Voice Processing I/Oが有効になり、AIのTTSがマイクに拾われないようにする
+///    - 48kHzで動作し、AGC/AECが適切に機能する
+/// 3. **サンプルレート**: 48kHz - iOSのVoiceProcessingは48kHzが安定
+/// 4. **IOバッファ**: 10ms - 低レイテンシーでAECの精度向上
+/// 
+/// ## 音声フォーマットの変換フロー
+/// - 入力: 48kHz/mono/Float32（デバイス依存、AEC適用後）
+/// - 変換: MicrophoneCaptureで24kHz/mono/PCM16に変換
+/// - 送信: OpenAI Realtime APIの要求仕様（24kHz/mono/PCM16）に合わせる
+/// 
+/// ## AEC（エコーキャンセレーション）について
+/// - `.voiceChat`モードでAECが有効化され、AIのTTSがマイクに拾われないようになる
+/// - マイクとプレイヤーを同じAVAudioEngineに統合することで、AECの効果が安定する
 public final class AudioSessionManager {
     public init() {}
     
@@ -10,21 +28,22 @@ public final class AudioSessionManager {
         // 既存のセッションを非アクティブにする（競合を防ぐ）
         try? s.setActive(false)
         
-        // ✅ 実機で確実に音を出すための設定
+        // ✅ AEC（エコーキャンセレーション）を有効化するための設定
         // .defaultToSpeaker: スピーカーに強制出力（重要！）
         // .allowBluetooth: Bluetoothデバイスを許可
-        // .mixWithOthers: 他のオーディオと混在可能
+        // .allowBluetoothA2DP: Bluetooth A2DPプロファイルを許可
         try s.setCategory(.playAndRecord,
-                          options: [.defaultToSpeaker, .allowBluetooth, .mixWithOthers])
-        // ✅ .measurementモードに変更（.voiceChatは端末や経路次第で16kHzに落ちたりAGC/AECが強くかかって振幅が潰れる）
-        // ✅ 入力は48kHz/mono/Float32で取り、アプリ内で24kHz/mono/PCM16に確実に変換するのが安定
-        try s.setMode(.measurement)
+                          options: [.defaultToSpeaker, .allowBluetooth, .allowBluetoothA2DP])
+        // ✅ .voiceChatモードに変更（AEC/NS/AGCを有効化するために必須）
+        // ✅ Voice Processing I/Oが有効になり、AIのTTSがマイクに拾われないようになる
+        // ✅ 48kHzで動作し、AGC/AECが適切に機能する
+        try s.setMode(.voiceChat)
         
-        // ✅ 48kHz/20msに設定（入力は48kHzで取り、アプリ内で24kHzに変換）
+        // ✅ 48kHz/10msに設定（iOSのVoiceProcessingは48kHzが安定）
         // ✅ 48kHzに上げると入力振幅とVADの反応が良くなる
         try s.setPreferredSampleRate(48_000)
-        // ✅ IOBufferDurationを20msに設定
-        try s.setPreferredIOBufferDuration(0.02)  // 20ms
+        // ✅ IOBufferDurationを10msに設定（AECの精度向上のため）
+        try s.setPreferredIOBufferDuration(0.01)  // 10ms
 
         // AudioSessionをアクティブにする
         try s.setActive(true, options: .notifyOthersOnDeactivation)

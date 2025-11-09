@@ -1,5 +1,17 @@
 import AVFoundation
 
+/// ✅ マイク入力キャプチャとフォーマット変換
+/// 
+/// ## 重要な設定ポイント
+/// 1. **出力フォーマット**: 24kHz/mono/PCM16LE（OpenAI Realtime APIの要求仕様）
+/// 2. **バッチ送信**: 200msごとにまとめて送信（ネットワーク効率とVADの精度向上）
+/// 3. **フォーマット変換**: AVAudioConverterで確実に24kHz/mono/PCM16に変換
+/// 
+/// ## 変換フロー
+/// - 入力: デバイス依存（通常48kHz/mono/Float32）
+/// - 変換: AVAudioConverterで24kHz/mono/PCM16LEに変換
+/// - バッファリング: 200ms分をまとめて送信
+/// - 出力: 24kHz/mono/PCM16LE形式のAVAudioPCMBuffer
 public final class MicrophoneCapture {
   private let engine = AVAudioEngine()
   private let outFormat: AVAudioFormat

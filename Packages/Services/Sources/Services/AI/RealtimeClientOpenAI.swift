@@ -297,7 +297,12 @@ public final class RealtimeClientOpenAI: RealtimeClient {
         
         // ✅ サーバーVADを有効化（推奨：まずはこれで正常化）
         // ✅ このモードでは、こちらから response.create を送らないでOK（サーバーが自動で応答を生成）
-        // ✅ thresholdを0.3に下げ、prefix_padding_msを500に増やす（低振幅の日本語でもspeech_startedが確実に発火、語頭欠落を防ぐ）
+        // 
+        // ## サーバーVAD設定の最適化（音声入力が正常に動作するための設定）
+        // - threshold: 0.3（0.5 → 0.3に下げて低振幅の日本語でも検出可能に）
+        // - silence_duration_ms: 700（無音が700ms続いたら発話終了と判定）
+        // - prefix_padding_ms: 500（300 → 500に増やして語頭欠落を防ぐ）
+        // - create_response: true（サーバーが自動で応答を生成）
         sessionDict["turn_detection"] = [
             "type": "server_vad",
             "threshold": NSDecimalNumber(string: "0.3"),  // ✅ 0.5 → 0.3（低振幅の日本語でも検出可能に）
@@ -321,6 +326,19 @@ public final class RealtimeClientOpenAI: RealtimeClient {
         print("✅ RealtimeClient: session.update送信完了、session.updated待機中")
     }
 
+    /// ✅ マイク入力音声データをサーバーに送信
+    /// 
+    /// ## 重要な処理ポイント
+    /// 1. **フォーマット検証**: 24kHz/mono/PCM16であることを確認
+    /// 2. **無音スキップ**: 完全にやめる（VADが文脈を掴めるようにする）
+    /// 3. **音声レベル測定**: 最大振幅と平均振幅を測定してVADの精度向上に貢献
+    /// 4. **重複送信防止**: isSendingAudioDataフラグで送信中の重複を防ぐ
+    /// 
+    /// ## 送信フォーマット
+    /// - 形式: base64エンコードされたPCM16データ
+    /// - サンプルレート: 24kHz
+    /// - チャンネル: モノラル（1ch）
+    /// - エンコーディング: PCM16LE
     public func sendMicrophonePCM(_ buffer: AVAudioPCMBuffer) async throws {
         // ✅ 参考プロジェクトパターン：送信中の重複送信を防ぐ
         guard !isSendingAudioData else {

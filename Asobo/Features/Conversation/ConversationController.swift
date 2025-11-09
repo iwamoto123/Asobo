@@ -413,11 +413,9 @@ public final class ConversationController: ObservableObject {
                     self.mic?.stop()
                     self.mic = MicrophoneCapture { [weak self] buf in
                         guard let self = self else { return }
-                        // ✅ AI音声再生中は音声送信をスキップ（onAudioDeltaReceivedで設定されたフラグをチェック）
-                        if self.isAIPlayingAudio {
-                            // AIが話している間は音声送信をスキップ
-                            return
-                        }
+                        // ✅ barge-inを可能にするため、AIが話している間もマイク入力を送信し続ける
+                        // ✅ サーバー側のVADがユーザーの発話を検出したら、speech_startedイベントでAI応答を中断する
+                        // ✅ AIの音声がマイクに拾われても、サーバー側のVADが適切に処理する（エコーキャンセレーションも有効）
                         Task { try? await client.sendMicrophonePCM(buf) }
                     }
                     do {
@@ -511,11 +509,9 @@ public final class ConversationController: ObservableObject {
         mic?.stop()
         mic = MicrophoneCapture { [weak self] buf in
             guard let self = self else { return }
-            // ✅ AI音声再生中は音声送信をスキップ（onAudioDeltaReceivedで設定されたフラグをチェック）
-            if self.isAIPlayingAudio {
-                // AIが話している間は音声送信をスキップ
-                return
-            }
+            // ✅ barge-inを可能にするため、AIが話している間もマイク入力を送信し続ける
+            // ✅ サーバー側のVADがユーザーの発話を検出したら、speech_startedイベントでAI応答を中断する
+            // ✅ AIの音声がマイクに拾われても、サーバー側のVADが適切に処理する（エコーキャンセレーションも有効）
             Task { try? await client.sendMicrophonePCM(buf) }
         }
         do {
