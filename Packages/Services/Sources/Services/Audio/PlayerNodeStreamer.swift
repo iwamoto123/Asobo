@@ -1,11 +1,43 @@
 import AVFoundation
 
+/// ✅ 出力RMSモニタリング用のクラス
+public final class OutputMonitor {
+  private var recentRMS: [Double] = []
+  private let windowSize: Int = 10  // 直近10フレーム（約200ms）
+  private let queue = DispatchQueue(label: "com.asobo.output.monitor")
+  
+  public var currentRMS: Double {
+    queue.sync {
+      guard !recentRMS.isEmpty else { return -60.0 }  // 無音時は-60dBFS
+      return recentRMS.reduce(0, +) / Double(recentRMS.count)
+    }
+  }
+  
+  public func updateRMS(_ rms: Double) {
+    queue.async {
+      self.recentRMS.append(rms)
+      if self.recentRMS.count > self.windowSize {
+        self.recentRMS.removeFirst()
+      }
+    }
+  }
+  
+  public func reset() {
+    queue.async {
+      self.recentRMS.removeAll()
+    }
+  }
+}
+
 public final class PlayerNodeStreamer {
   private let engine = AVAudioEngine()
   private let player = AVAudioPlayerNode()
   private var outFormat: AVAudioFormat?  // start()で設定される
   private let inFormat: AVAudioFormat
   private var converter: AVAudioConverter?  // start()で設定される
+  
+  // ✅ 出力RMSモニタリング
+  public let outputMonitor = OutputMonitor()
 
   // 受信チャンクを貯める簡易ジッタバッファ
   private var queue: [Data] = []
@@ -23,8 +55,12 @@ public final class PlayerNodeStreamer {
     self.inFormat = inFmt
 
     engine.attach(player)
-    // ✅ フォーマットは渡さず、エンジンに任せる（装置とミキサの整合を自動解決）
-    engine.connect(player, to: engine.mainMixerNode, format: nil)
+    // ✅ AEC対策：48kHz/1chで明示的に接続（AECは48kHz/モノのパスで最も安定）
+    // エンジン内は48kHz/monoで統一し、送信時に24kHzに変換
+    guard let mono48k = AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1) else {
+      fatalError("48kHz/1chフォーマット作成失敗")
+    }
+    engine.connect(player, to: engine.mainMixerNode, format: mono48k)
     
     // ⚠️ エンジンの開始は後でAudioSessionが設定された後に行う
     // 実機ではAudioSessionがアクティブになる前にエンジンを開始すると失敗する
@@ -40,21 +76,59 @@ public final class PlayerNodeStreamer {
     
     do {
       try engine.start()
-      // 実際にミキサへ接続された後のフォーマットを取得
-      let format = player.outputFormat(forBus: 0)
-      self.outFormat = format
+      // ✅ AEC対策：48kHz/1chフォーマットを明示的に使用
+      // エンジン内は48kHz/monoで統一（AECが最も安定する）
+      guard let mono48k = AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1) else {
+        throw NSError(domain: "PlayerNodeStreamer", code: -1, userInfo: [NSLocalizedDescriptionKey: "48kHz/1chフォーマット作成失敗"])
+      }
+      self.outFormat = mono48k
       
-      // 受信(Int16/24k/mono) → 出力(Float32/44.1/48k/ステレオ)へ必ず変換
-      guard let conv = AVAudioConverter(from: inFormat, to: format) else {
+      // 受信(Int16/24k/mono) → 出力(Float32/48k/mono)へ変換
+      guard let conv = AVAudioConverter(from: inFormat, to: mono48k) else {
         throw NSError(domain: "PlayerNodeStreamer", code: -1, userInfo: [NSLocalizedDescriptionKey: "AVAudioConverter 作成失敗"])
       }
       self.converter = conv
       
-      print("✅ PlayerNodeStreamer: エンジン開始成功 - outFormat: \(format.sampleRate)Hz, \(format.channelCount)ch")
+      // ✅ 出力RMSモニタリング用のタップを設定
+      // ⚠️ format: nil を使用（システムが適切なフォーマットを選択）
+      // エンジン開始後の実際の出力フォーマットを使用するため、nilを指定
+      let mixerNode = engine.mainMixerNode
+      mixerNode.installTap(onBus: 0, bufferSize: 1024, format: nil) { [weak self] buffer, _ in
+        guard let self = self else { return }
+        let rms = self.calculateRMS(from: buffer)
+        self.outputMonitor.updateRMS(rms)
+      }
+      
+      print("✅ PlayerNodeStreamer: エンジン開始成功 - outFormat: \(mono48k.sampleRate)Hz, \(mono48k.channelCount)ch (AEC最適化: 48kHz/mono)")
     } catch {
       print("❌ PlayerNodeStreamer: エンジン開始失敗 - \(error.localizedDescription)")
       throw error
     }
+  }
+  
+  /// ✅ RMS計算（dBFS）
+  private func calculateRMS(from buffer: AVAudioPCMBuffer) -> Double {
+    guard let channelData = buffer.floatChannelData else { return -60.0 }
+    let channelCount = Int(buffer.format.channelCount)
+    let frameLength = Int(buffer.frameLength)
+    
+    var sum: Float = 0.0
+    for ch in 0..<channelCount {
+      let channel = channelData[ch]
+      for i in 0..<frameLength {
+        let sample = channel[i]
+        sum += sample * sample
+      }
+    }
+    
+    let mean = sum / Float(frameLength * channelCount)
+    let rms = sqrt(mean)
+    
+    // dBFSに変換（0.0 = 0dBFS, 1.0 = 0dBFS）
+    if rms < 1e-10 {
+      return -60.0
+    }
+    return 20.0 * log10(Double(rms))
   }
 
   /// 受信した Int16/mono（24kHz）のPCMチャンクを再生
@@ -84,17 +158,20 @@ public final class PlayerNodeStreamer {
       format = existingFormat
       conv = existingConv
     } else {
-      // outFormatが未設定の場合は再設定を試みる
-      let fmt = player.outputFormat(forBus: 0)  // AVAudioFormat（非オプショナル）を返す
-      self.outFormat = fmt
-      guard let c = AVAudioConverter(from: inFormat, to: fmt) else {
+      // ✅ AEC対策：48kHz/1chフォーマットを明示的に使用
+      guard let mono48k = AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1) else {
+        print("⚠️ PlayerNodeStreamer: 48kHz/1chフォーマット作成失敗")
+        return
+      }
+      self.outFormat = mono48k
+      guard let c = AVAudioConverter(from: inFormat, to: mono48k) else {
         print("⚠️ PlayerNodeStreamer: AVAudioConverter 作成失敗")
         return
       }
       self.converter = c
-      format = fmt
+      format = mono48k
       conv = c
-      print("✅ PlayerNodeStreamer: フォーマットを再設定")
+      print("✅ PlayerNodeStreamer: フォーマットを再設定（48kHz/1ch）")
     }
     
     queue.append(data)
@@ -156,6 +233,10 @@ public final class PlayerNodeStreamer {
     queue.removeAll()
     queuedFrames = 0
     player.stop()
+    // ✅ 出力モニタリングをリセット
+    outputMonitor.reset()
+    // ✅ タップを削除
+    engine.mainMixerNode.removeTap(onBus: 0)
   }
   
   /// ✅ ユーザーの発話を検知したら即停止（フェードや残バッファ消費なし）

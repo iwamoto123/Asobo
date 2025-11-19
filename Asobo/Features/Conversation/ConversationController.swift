@@ -327,6 +327,8 @@ public final class ConversationController: ObservableObject {
                 // ✅ 応答が終わったら次ターンへ：まずは「待つ」
                 // ✅ AI音声再生フラグをリセット（次のターンで録音を再開できるように）
                 self.isAIPlayingAudio = false
+                // ✅ AEC対策：マイクに再生終了を通知
+                self.mic?.setAIPlayingAudio(false)
                 self.startWaiting()
             }
         }
@@ -335,9 +337,11 @@ public final class ConversationController: ObservableObject {
         realtimeClient?.onAudioDeltaReceived = { [weak self] in
             Task { @MainActor in
                 guard let self else { return }
-                // ✅ AI音声受信時にフラグを設定（sendMicrophonePCMの早期returnを一元化）
+                // ✅ AI音声受信時にフラグを設定（AEC対策：マイク送信をゲートで制御）
                 self.isAIPlayingAudio = true
-                print("🛑 ConversationController: AI音声受信 - 録音停止フラグ設定（isAIPlayingAudio=true）")
+                // ✅ AEC対策：マイクに再生開始を通知（ゲートを有効化）
+                self.mic?.setAIPlayingAudio(true)
+                print("🛑 ConversationController: AI音声受信 - マイク送信ゲート有効化（isAIPlayingAudio=true）")
             }
         }
         
@@ -411,11 +415,10 @@ public final class ConversationController: ObservableObject {
                         return
                     }
                     self.mic?.stop()
-                    self.mic = MicrophoneCapture { [weak self] buf in
+                    // ✅ 出力モニタを渡してAEC対策を有効化
+                    self.mic = MicrophoneCapture(outputMonitor: self.player.outputMonitor) { [weak self] buf in
                         guard let self = self else { return }
-                        // ✅ barge-inを可能にするため、AIが話している間もマイク入力を送信し続ける
-                        // ✅ サーバー側のVADがユーザーの発話を検出したら、speech_startedイベントでAI応答を中断する
-                        // ✅ AIの音声がマイクに拾われても、サーバー側のVADが適切に処理する（エコーキャンセレーションも有効）
+                        // ✅ AEC対策：再生中はゲートで送信を制御（バージイン時のみ送信）
                         Task { try? await client.sendMicrophonePCM(buf) }
                     }
                     do {
@@ -507,11 +510,10 @@ public final class ConversationController: ObservableObject {
         // ✅ interruptAndYield() が既に input_audio_buffer.clear を送信しているため、ここでは追加不要
 
         mic?.stop()
-        mic = MicrophoneCapture { [weak self] buf in
+        // ✅ 出力モニタを渡してAEC対策を有効化
+        mic = MicrophoneCapture(outputMonitor: player.outputMonitor) { [weak self] buf in
             guard let self = self else { return }
-            // ✅ barge-inを可能にするため、AIが話している間もマイク入力を送信し続ける
-            // ✅ サーバー側のVADがユーザーの発話を検出したら、speech_startedイベントでAI応答を中断する
-            // ✅ AIの音声がマイクに拾われても、サーバー側のVADが適切に処理する（エコーキャンセレーションも有効）
+            // ✅ AEC対策：再生中はゲートで送信を制御（バージイン時のみ送信）
             Task { try? await client.sendMicrophonePCM(buf) }
         }
         do {
