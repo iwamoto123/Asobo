@@ -30,7 +30,8 @@ public final class OutputMonitor {
 }
 
 public final class PlayerNodeStreamer {
-  private let engine = AVAudioEngine()
+  private let engine: AVAudioEngine
+  private var ownsEngine: Bool  // エンジンの所有権を持つかどうか
   private let player = AVAudioPlayerNode()
   private var outFormat: AVAudioFormat?  // start()で設定される
   private let inFormat: AVAudioFormat
@@ -44,8 +45,10 @@ public final class PlayerNodeStreamer {
   private var queuedFrames: AVAudioFrameCount = 0
   private let prebufferSec: Double = 0.2 // 200ms たまったらスタート（実機での安定性向上）
 
-  /// `sourceSampleRate` はサーバのPCMレートに合わせて（既定 24k）
-  public init(sourceSampleRate: Double = 24_000.0) {
+  /// ✅ 共通エンジンを使用する場合（AEC有効化のため推奨）
+  public init(sharedEngine: AVAudioEngine, sourceSampleRate: Double = 24_000.0, ownsEngine: Bool = false) {
+    self.engine = sharedEngine
+    self.ownsEngine = ownsEngine
     guard let inFmt = AVAudioFormat(commonFormat: .pcmFormatInt16,
                                     sampleRate: sourceSampleRate,
                                     channels: 1,
@@ -69,10 +72,39 @@ public final class PlayerNodeStreamer {
     engine.prepare()
   }
   
+  /// ✅ 独自エンジンを使用する場合（後方互換性のため）
+  public convenience init(sourceSampleRate: Double = 24_000.0) {
+    let engine = AVAudioEngine()
+    self.init(sharedEngine: engine, sourceSampleRate: sourceSampleRate, ownsEngine: true)
+  }
+  
   /// AudioSessionが設定された後にエンジンを開始する
   public func start() throws {
     // エンジンがまだ開始されていない場合のみ開始
-    guard !engine.isRunning else { return }
+    guard !engine.isRunning else {
+      // エンジンが既に開始されている場合は、フォーマットを再設定
+      let format = player.outputFormat(forBus: 0)
+      self.outFormat = format
+      if let conv = AVAudioConverter(from: inFormat, to: format) {
+        self.converter = conv
+      }
+      return
+    }
+    
+    // ✅ エンジンの所有権がある場合のみ開始
+    guard ownsEngine else {
+      // 共通エンジンの場合は、フォーマットを設定するだけ
+      guard let mono48k = AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1) else {
+        throw NSError(domain: "PlayerNodeStreamer", code: -1, userInfo: [NSLocalizedDescriptionKey: "48kHz/1chフォーマット作成失敗"])
+      }
+      self.outFormat = mono48k
+      guard let conv = AVAudioConverter(from: inFormat, to: mono48k) else {
+        throw NSError(domain: "PlayerNodeStreamer", code: -1, userInfo: [NSLocalizedDescriptionKey: "AVAudioConverter 作成失敗"])
+      }
+      self.converter = conv
+      print("✅ PlayerNodeStreamer: 共通エンジン使用 - outFormat: \(mono48k.sampleRate)Hz, \(mono48k.channelCount)ch")
+      return
+    }
     
     do {
       try engine.start()
@@ -133,14 +165,29 @@ public final class PlayerNodeStreamer {
 
   /// 受信した Int16/mono（24kHz）のPCMチャンクを再生
   public func playChunk(_ data: Data) {
-    // ✅ エンジンが停止している場合は再開
+    // ✅ エンジンが停止している場合は再開を試みる
     if !engine.isRunning {
-      do {
-        try engine.start()
-        print("✅ PlayerNodeStreamer: エンジンを再開（playChunk受信時）")
-      } catch {
-        print("❌ PlayerNodeStreamer: エンジン再開失敗 - \(error)")
-        return
+      if ownsEngine {
+        // 所有権がある場合は直接再開
+        do {
+          try engine.start()
+          print("✅ PlayerNodeStreamer: エンジンを再開（playChunk受信時、ownsEngine=true）")
+        } catch {
+          print("❌ PlayerNodeStreamer: エンジン再開失敗 - \(error)")
+          return
+        }
+      } else {
+        // 共通エンジンの場合：再開を試みる（Bluetooth接続時などに停止している可能性がある）
+        // ⚠️ 注意：共通エンジンの再開は、エンジンの所有者（ConversationController）が行うべきだが、
+        // ここで再開を試みることで、初回接続時の問題を回避できる
+        do {
+          try engine.start()
+          print("✅ PlayerNodeStreamer: 共通エンジンを再開（playChunk受信時、ownsEngine=false）")
+        } catch {
+          print("⚠️ PlayerNodeStreamer: 共通エンジン再開失敗 - \(error.localizedDescription)")
+          print("⚠️ PlayerNodeStreamer: エンジンが開始されていないため、音声再生をスキップします")
+          return
+        }
       }
     }
     
@@ -252,12 +299,17 @@ public final class PlayerNodeStreamer {
   
   /// ✅ エンジンを再開（response.audio.delta受信時に呼ぶ）
   public func resumeIfNeeded() {
+    // ✅ エンジンが停止している場合は再開を試みる（共通エンジンの場合も含む）
     if !engine.isRunning {
       do {
         try engine.start()
-        print("✅ PlayerNodeStreamer: エンジンを再開")
+        if ownsEngine {
+          print("✅ PlayerNodeStreamer: エンジンを再開（resumeIfNeeded、ownsEngine=true）")
+        } else {
+          print("✅ PlayerNodeStreamer: 共通エンジンを再開（resumeIfNeeded、ownsEngine=false）")
+        }
       } catch {
-        print("❌ PlayerNodeStreamer: エンジン再開失敗 - \(error)")
+        print("⚠️ PlayerNodeStreamer: エンジン再開失敗 - \(error.localizedDescription)")
       }
     }
     player.volume = 1.0  // ✅ volumeを戻す

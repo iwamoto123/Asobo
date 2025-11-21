@@ -19,9 +19,10 @@ import AVFoundation
 /// - **再生中のマイク送信ゲート**: AI再生中はマイク入力をサーバに送信しない（ハーフデュプレックス）
 /// - **バージイン検出**: バージイン検出時のみ送信を再開
 public final class MicrophoneCapture {
-  private let engine = AVAudioEngine()
+  private let engine: AVAudioEngine
+  private var ownsEngine: Bool  // エンジンの所有権を持つかどうか
   private let outFormat: AVAudioFormat
-  private let converter: AVAudioConverter
+  private var converter: AVAudioConverter?  // ✅ エンジン開始後に再作成する可能性があるため、varに変更
   private let onPCM: (AVAudioPCMBuffer) -> Void
   private var running = false
   
@@ -39,21 +40,34 @@ public final class MicrophoneCapture {
   private let playbackQuietDbThreshold: Double = -35.0  // 出力が-35dBFS以下でバージイン許可
   private var recentInputRMS: [Double] = []  // 直近200msの入力RMS
   private let rmsWindowSize: Int = 10  // 10フレーム（約200ms）
+  private var isFirstBuffer: Bool = true  // ✅ 初回バッファ受信フラグ（converter作成のため）
+  
+  // ✅ 初回接続時の音声認識問題対策：マイク開始直後の初期フレームをスキップ
+  private var startTime: Date?  // マイク開始時刻
+  private let initialSkipDurationMs: Double = 200.0  // 開始後200msは音声データを送信しない（初期ノイズ対策）
 
-  public init?(onPCM: @escaping (AVAudioPCMBuffer) -> Void, outputMonitor: OutputMonitor? = nil) {
+  /// ✅ 共通エンジンを使用する場合（AEC有効化のため推奨）
+  public init?(sharedEngine: AVAudioEngine, onPCM: @escaping (AVAudioPCMBuffer) -> Void, outputMonitor: OutputMonitor? = nil, ownsEngine: Bool = false) {
+    self.engine = sharedEngine
+    self.ownsEngine = ownsEngine
     self.onPCM = onPCM
     self.outputMonitor = outputMonitor
-    let inputNode = engine.inputNode
-    let inFormat  = inputNode.inputFormat(forBus: 0)
-    guard
-      let out = AVAudioFormat(commonFormat: .pcmFormatInt16,
-                              sampleRate: 24_000,  // ✅ 24kHzに変更（OpenAI Realtime APIの要求仕様に合わせる）
-                              channels: 1,
-                              interleaved: true),
-      let conv = AVAudioConverter(from: inFormat, to: out)
-    else { return nil }
+    // ✅ 出力フォーマットは固定（24kHz/mono/PCM16）
+    guard let out = AVAudioFormat(commonFormat: .pcmFormatInt16,
+                                  sampleRate: 24_000,  // ✅ 24kHzに変更（OpenAI Realtime APIの要求仕様に合わせる）
+                                  channels: 1,
+                                  interleaved: true) else {
+      return nil
+    }
     self.outFormat = out
-    self.converter = conv
+    // ✅ converterはstart()で作成（エンジン開始後のフォーマットを使用）
+    self.converter = nil
+  }
+  
+  /// ✅ 独自エンジンを使用する場合（後方互換性のため）
+  public convenience init?(onPCM: @escaping (AVAudioPCMBuffer) -> Void, outputMonitor: OutputMonitor? = nil) {
+    let engine = AVAudioEngine()
+    self.init(sharedEngine: engine, onPCM: onPCM, outputMonitor: outputMonitor, ownsEngine: true)
   }
   
   /// ✅ AI再生状態を設定
@@ -114,15 +128,90 @@ public final class MicrophoneCapture {
   public func start() throws {
     guard !running else { return }
     let inputNode = engine.inputNode
-    let inFormat  = inputNode.inputFormat(forBus: 0)
+    
+    // ✅ 既にタップがインストールされている場合は先に削除（エラー回避）
+    inputNode.removeTap(onBus: 0)
+    
+    // ✅ エンジンの所有権ロジック
+    if ownsEngine && !engine.isRunning {
+        try engine.start()
+        print("✅ MicrophoneCapture: エンジンを開始（start()呼び出し時、ownsEngine=true）")
+    } else if !ownsEngine && !engine.isRunning {
+        // 共通エンジンの場合、ここでstartできないが、ConversationController側でstart済みのはず
+        print("⚠️ MicrophoneCapture: エンジンが停止状態です")
+    }
+    
+    // ------------------------------------------------------------
+    // ✅ 修正ポイント: フォーマット決定ロジック (ファイナル)
+    // ------------------------------------------------------------
+    
+    var tapFormat: AVAudioFormat?
+    let inputFormat = inputNode.outputFormat(forBus: 0)
+    
+    if inputFormat.sampleRate > 0 && inputFormat.channelCount > 0 {
+        // エンジンがすでに有効なフォーマットを持っているならそれを使う
+        print("✅ MicrophoneCapture: 既存フォーマット使用: \(inputFormat.sampleRate)Hz")
+        tapFormat = inputFormat
+    } else {
+        // ⚠️ 0Hzの場合: nilはダメ(クラッシュ)、適当な48kもダメ(クラッシュ)
+        // iOSのVoiceProcessingIO入力の「正解」フォーマットを手動構築して渡す
+        print("⚠️ MicrophoneCapture: 0Hz検出 -> 48kHz/Float32を手動構築します")
+        
+        // 【重要】commonFormat: .pcmFormatFloat32, interleaved: false がiOSハードウェアの標準
+        tapFormat = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: 48000,
+            channels: 1,
+            interleaved: false
+        )
+    }
+    
+    // 万が一作成失敗したら安全に停止
+    guard let safeFormat = tapFormat else {
+        throw NSError(domain: "MicrophoneCapture", code: -1, userInfo: [
+            NSLocalizedDescriptionKey: "フォーマット構築失敗"
+        ])
+    }
 
-    // ✅ 入力側の tap フレーム数は「20ms 相当」（内部バッファリング用）
-    let framesPer20ms = AVAudioFrameCount(inFormat.sampleRate * 0.02)
+    // バッファサイズ計算
+    let framesPer20ms = AVAudioFrameCount(safeFormat.sampleRate * 0.02)
     audioBuffer.removeAll()
     lastFlushTime = Date()
+    isFirstBuffer = true  // ✅ 初回バッファ受信フラグをリセット
+    startTime = Date()  // ✅ マイク開始時刻を記録（初期フレームスキップ用）
 
-    inputNode.installTap(onBus: 0, bufferSize: framesPer20ms, format: inFormat) { [weak self] buffer, _ in
-      guard let self else { return }
+    // ------------------------------------------------------------
+    // ✅ Tapインストール (手動構築した safeFormat を使用)
+    // ------------------------------------------------------------
+    inputNode.installTap(onBus: 0, bufferSize: framesPer20ms, format: safeFormat) { [weak self] buffer, _ in
+        guard let self = self else { return }
+        
+        // --- Converter作成ロジック ---
+        if self.converter == nil || self.isFirstBuffer {
+            let actualFormat = buffer.format
+            if actualFormat.sampleRate == 0 { return } // ガード
+            
+            if self.converter == nil {
+                print("✅ MicrophoneCapture: Converter作成 Input:\(actualFormat.sampleRate)Hz -> Output:\(self.outFormat.sampleRate)Hz")
+                self.converter = AVAudioConverter(from: actualFormat, to: self.outFormat)
+            }
+            self.isFirstBuffer = false
+        }
+      
+      guard let converter = self.converter else { return }
+      
+      // ✅ 初回接続時の音声認識問題対策：マイク開始直後の初期フレームをスキップ
+      if let startTime = self.startTime {
+        let elapsed = Date().timeIntervalSince(startTime) * 1000.0  // ミリ秒
+        if elapsed < self.initialSkipDurationMs {
+          // 開始後200ms以内は音声データを送信しない（初期ノイズをスキップ）
+          return
+        } else {
+          // 200ms経過したら、以降は通常通り処理
+          self.startTime = nil  // フラグをクリア（一度だけチェック）
+          print("✅ MicrophoneCapture: 初期フレームスキップ期間終了（\(String(format: "%.1f", elapsed))ms経過）")
+        }
+      }
       
       // ✅ AEC対策：再生中ゲート制御
       let inputRMS = self.calculateRMS(from: buffer)
@@ -150,7 +239,7 @@ public final class MicrophoneCapture {
       outBuf.frameLength = framesOut
 
       var error: NSError?
-      let status = self.converter.convert(to: outBuf, error: &error) { inCount, outStatus in
+      let status = converter.convert(to: outBuf, error: &error) { inCount, outStatus in
         outStatus.pointee = .haveData
         return buffer
       }
@@ -194,12 +283,19 @@ public final class MicrophoneCapture {
       }
     }
 
-    try engine.start()
+    // ✅ エンジンの所有権がある場合のみ開始（または再開）
+    if ownsEngine && !engine.isRunning {
+      try engine.start()
+      print("✅ MicrophoneCapture: エンジンを開始（タップインストール後、ownsEngine=true）")
+    }
+    // 共通エンジンの場合、所有者が開始する必要があるため、ここでは開始しない
     running = true
   }
 
   public func stop() {
     guard running else { return }
+    // ✅ 開始時刻をリセット
+    startTime = nil
     // ✅ 残りのバッファをフラッシュ
     flushQueue.sync {
       if !audioBuffer.isEmpty {
@@ -220,7 +316,18 @@ public final class MicrophoneCapture {
       }
     }
     engine.inputNode.removeTap(onBus: 0)
-    engine.stop()
+    // ✅ エンジンの所有権がある場合のみ停止
+    if ownsEngine {
+      engine.stop()
+      engine.reset()  // ← 個別エンジンの場合、完全にリセット
+    }
+    
+    // ★ 再開に備えて初期化
+    converter = nil
+    userBargeIn = false
+    recentInputRMS.removeAll()
+    isFirstBuffer = true
+    
     running = false
   }
 }

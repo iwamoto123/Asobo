@@ -61,8 +61,10 @@ public final class ConversationController: ObservableObject {
 
     // MARK: - Realtime (OpenAI)
     private let audioSessionManager = AudioSessionManager()
+    // ✅ AEC有効化のため、共通のAVAudioEngineを使用
+    private let sharedAudioEngine = AVAudioEngine()
     private var mic: MicrophoneCapture?
-    private var player = PlayerNodeStreamer()            // 音声先出し（必要に応じて）
+    private var player: PlayerNodeStreamer            // 音声先出し（必要に応じて）
     private var realtimeClient: RealtimeClientOpenAI?
     private var receiveTextTask: Task<Void, Never>?
     private var receiveAudioTask: Task<Void, Never>?
@@ -76,13 +78,58 @@ public final class ConversationController: ObservableObject {
     ) {
         self.audioSession = audioSession
         self.speech = speech
+        // ✅ 共通エンジンを使用してPlayerNodeStreamerを初期化（AEC有効化のため）
+        self.player = PlayerNodeStreamer(sharedEngine: sharedAudioEngine)
     }
 
     deinit {
-        Task { @MainActor in
-            self.stopLocalTranscription()
-            self.stopRealtimeSession()
+        // ✅ deinitは同期的に実行される必要があるため、非同期処理は行わない
+        // 同期的に実行可能なクリーンアップのみを行う
+        
+        // セッション開始タスクをキャンセル
+        sessionStartTask?.cancel()
+        sessionStartTask = nil
+        
+        // 受信タスクをキャンセル
+        receiveTextTask?.cancel()
+        receiveTextTask = nil
+        receiveAudioTask?.cancel()
+        receiveAudioTask = nil
+        receiveInputTextTask?.cancel()
+        receiveInputTextTask = nil
+        
+        // マイクとプレイヤーを停止
+        mic?.stop()
+        mic = nil
+        player.stop()
+        
+        // 共通エンジンを停止
+        if sharedAudioEngine.isRunning {
+            sharedAudioEngine.stop()
         }
+        
+        // 促しタイマーを停止（deinit内では直接無効化）
+        // ✅ cancelNudge()は@MainActorで分離されているため、deinit内では直接タイマーを無効化
+        nudgeTimer?.invalidate()
+        nudgeTimer = nil
+        
+        // Local STTのクリーンアップ
+        // ✅ removeTapはタップが存在しない場合でもエラーを投げないため、安全に呼び出せる
+        audioEngine.inputNode.removeTap(onBus: 0)
+        if audioEngine.isRunning {
+            audioEngine.stop()
+        }
+        sttRequest?.endAudio()
+        sttTask?.cancel()
+        sttRequest = nil
+        sttTask = nil
+        
+        // realtimeClientのクリーンアップ（非同期処理は実行しない）
+        // finishSession()は非同期処理のため、deinit内では実行しない
+        // 代わりに、realtimeClientの参照をnilにして、deinit時に自動的にクリーンアップされるようにする
+        realtimeClient = nil
+        
+        print("✅ ConversationController: deinit - リソースクリーンアップ完了")
     }
 
     // MARK: - Permissions
@@ -189,8 +236,9 @@ public final class ConversationController: ObservableObject {
         // 既存のクライアントがあれば完全にクリーンアップ
         if realtimeClient != nil {
             print("🧹 ConversationController: 既存のクライアントをクリーンアップ中...")
-            Task {
-                try? await realtimeClient?.finishSession()
+            Task { [weak self] in
+                guard let self else { return }
+                try? await self.realtimeClient?.finishSession()
                 await MainActor.run {
                     self.realtimeClient = nil
                     self.startRealtimeSessionInternal()
@@ -210,8 +258,13 @@ public final class ConversationController: ObservableObject {
         do {
             try audioSessionManager.configure()
             
-            // AudioSession設定後にPlayerNodeStreamerのエンジンを開始
+            // ✅ 共通エンジンを開始（AudioSession設定後）
             // ⚠️ 重要な順序：AudioSessionを設定してからエンジンを開始
+            // ✅ 共通エンジンを開始することで、VoiceProcessingIO（AEC）が入出力の両方に効く
+            try sharedAudioEngine.start()
+            print("✅ ConversationController: 共通AudioEngine開始成功（AEC有効化）")
+            
+            // AudioSession設定後にPlayerNodeStreamerのエンジンを開始
             try player.start()
             
             // 音量確認（デバッグ用）
@@ -281,7 +334,7 @@ public final class ConversationController: ObservableObject {
             Task { @MainActor in
                 guard let self else { return }
                 // ユーザー発話を検知 → 促しタイマーは止める & AI音声を即停止
-                self.cancelNudge()
+                self.cancelNudge()  // ✅ ユーザーが話し始めたので促しをキャンセル
                 self.turnState = .listening
                 // ✅ ユーザーが話し始めたら即AI音声を止める
                 self.player.stopImmediately()
@@ -292,6 +345,8 @@ public final class ConversationController: ObservableObject {
             Task { @MainActor in
                 guard let self else { return }
                 self.turnState = .thinking
+                // ✅ 応答生成中なので促しをキャンセル
+                self.cancelNudge()
                 // 以降は Realtime 側が commit → response.create を送信してくれる設計にしている
             }
         }
@@ -299,6 +354,8 @@ public final class ConversationController: ObservableObject {
         realtimeClient?.onInputCommitted = { [weak self] transcript in
             Task { @MainActor in
                 guard let self else { return }
+                // ✅ 入力がコミットされたので促しをキャンセル
+                self.cancelNudge()
                 let t = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
                 if t.count < 2 {
                     // ✅ 聞き取り失敗時は必ず聞き返し（RealtimeClient側で処理済み）
@@ -316,6 +373,9 @@ public final class ConversationController: ObservableObject {
                 // ✅ 新しい応答が作成された時にテキストをクリア（前の応答のテキストを消す）
                 self.aiResponseText = ""
                 print("📝 ConversationController: 新しい応答開始 - aiResponseTextをクリア")
+                // ✅ 応答が来たので促しをキャンセル
+                self.cancelNudge()
+                self.turnState = .speaking
                 // ✅ 音声再生を再開（stopImmediately()でvolume=0になった場合の復帰）
                 self.player.resumeIfNeeded()
             }
@@ -324,12 +384,14 @@ public final class ConversationController: ObservableObject {
         realtimeClient?.onResponseDone = { [weak self] in
             Task { @MainActor in
                 guard let self else { return }
-                // ✅ 応答が終わったら次ターンへ：まずは「待つ」
+                // ✅ 応答が終わったら次ターンへ
                 // ✅ AI音声再生フラグをリセット（次のターンで録音を再開できるように）
                 self.isAIPlayingAudio = false
                 // ✅ AEC対策：マイクに再生終了を通知
                 self.mic?.setAIPlayingAudio(false)
-                self.startWaiting()
+                // ✅ 促しメッセージは送らない（音声入力ボタンを押していない状態では促さない）
+                // 音声入力ボタンを押した後に、返答がない場合のみ促しメッセージを送る
+                self.turnState = .waitingUser
             }
         }
         
@@ -342,6 +404,15 @@ public final class ConversationController: ObservableObject {
                 // ✅ AEC対策：マイクに再生開始を通知（ゲートを有効化）
                 self.mic?.setAIPlayingAudio(true)
                 print("🛑 ConversationController: AI音声受信 - マイク送信ゲート有効化（isAIPlayingAudio=true）")
+            }
+        }
+        
+        // ✅ session.updated受信時の処理（マイクはstartPTTRealtime()で開始するため、ここでは開始しない）
+        realtimeClient?.onSessionUpdated = { [weak self] in
+            Task { @MainActor in
+                guard let self else { return }
+                // ✅ セッション確立完了をログに記録
+                print("✅ ConversationController: session.updated受信完了 - 音声入力ボタンを押してマイクを開始してください")
             }
         }
         
@@ -376,7 +447,8 @@ public final class ConversationController: ObservableObject {
         errorMessage = nil
         turnState = .waitingUser  // セッション開始時はユーザーが話すのを待つ
 
-        sessionStartTask = Task {
+        sessionStartTask = Task { [weak self] in
+            guard let self else { return }
             do {
                 print("🚀 ConversationController: Realtimeセッション開始")
                 
@@ -399,7 +471,7 @@ public final class ConversationController: ObservableObject {
                     }
                 }
                 
-                try await realtimeClient?.startSession(child: ChildProfile.sample(), context: [])
+                try await self.realtimeClient?.startSession(child: ChildProfile.sample(), context: [])
                 print("✅ ConversationController: セッション開始成功")
                 
                 // 状態を更新
@@ -409,28 +481,12 @@ public final class ConversationController: ObservableObject {
                     self.mode = .realtime
                     self.startReceiveLoops()
                     
-                    // ✅ セッション開始時にマイクを開始して、常に音声入力を監視する
-                    guard let client = self.realtimeClient else {
-                        print("⚠️ ConversationController: セッション開始後、realtimeClientがnil")
-                        return
-                    }
-                    self.mic?.stop()
-                    // ✅ 出力モニタを渡してAEC対策を有効化
-                    self.mic = MicrophoneCapture(outputMonitor: self.player.outputMonitor) { [weak self] buf in
-                        guard let self = self else { return }
-                        // ✅ AEC対策：再生中はゲートで送信を制御（バージイン時のみ送信）
-                        Task { try? await client.sendMicrophonePCM(buf) }
-                    }
-                    do {
-                        try self.mic?.start()
-                        print("✅ ConversationController: マイク開始成功（常時監視モード）")
-                    } catch {
-                        print("⚠️ ConversationController: マイク開始失敗 - \(error.localizedDescription)")
-                        self.errorMessage = "マイク開始に失敗: \(error.localizedDescription)"
-                    }
+                    // ✅ マイクの開始は onSessionUpdated コールバックで行う（初期ノイズ対策のため）
+                    // session.updated受信後、500ms待ってからマイクを開始することで、
+                    // マイク開始直後の初期ノイズが誤って音声として認識されるのを防ぐ
                     
-                    // ✅ セッション開始後、まずはユーザーの声を待つ
-                    self.startWaiting()
+                    // ✅ セッション開始時は促しメッセージを送らない（音声入力ボタンを押してから促す）
+                    // turnStateは.waitingUserのまま（音声入力ボタンを押すまで待機）
                 }
             } catch {
                 print("❌ ConversationController: セッション開始失敗 - \(error.localizedDescription)")
@@ -472,6 +528,17 @@ public final class ConversationController: ObservableObject {
         mic?.stop(); mic = nil
         player.stop()
         
+        // ★ 重要：先にセッションを非アクティブ化（他アプリへも通知）
+        let s = AVAudioSession.sharedInstance()
+        try? s.setActive(false, options: [.notifyOthersOnDeactivation])
+        
+        // ★ エンジンを完全に解体
+        sharedAudioEngine.inputNode.removeTap(onBus: 0)   // 冪等
+        if sharedAudioEngine.isRunning {
+            sharedAudioEngine.stop()
+        }
+        sharedAudioEngine.reset()                          // ← これが2回目クラッシュの予防線
+        
         // ✅ 促しタイマーを停止
         cancelNudge()
         
@@ -488,8 +555,11 @@ public final class ConversationController: ObservableObject {
         // エラーメッセージをクリア
         errorMessage = nil
         
-        Task {
-            try? await realtimeClient?.finishSession()
+        // ✅ realtimeClientのクリーンアップ（非同期処理）
+        // finishSession()は非同期処理のため、Task内で実行
+        Task { [weak self] in
+            guard let self else { return }
+            try? await self.realtimeClient?.finishSession()
             await MainActor.run {
                 self.realtimeClient = nil
                 print("✅ ConversationController: リソースクリーンアップ完了")
@@ -501,31 +571,115 @@ public final class ConversationController: ObservableObject {
         guard let client = realtimeClient else {
             self.errorMessage = "Realtimeクライアントが初期化されていません"; return
         }
+        
+        // ✅ 初回接続時の音声認識問題対策：session.updated受信まで待機
+        // sessionIsUpdatedがfalseの場合は、session.updated受信まで待機してからマイクを開始
+        if !client.isSessionUpdated {
+            print("⚠️ ConversationController: session.updated未受信のため、受信まで待機してからマイクを開始します")
+            Task { [weak self, weak client] in
+                guard let self, let client else { return }
+                // session.updated受信を待機（最大5秒）
+                var waited = 0.0
+                let maxWait = 5.0  // 最大5秒待機
+                let checkInterval = 0.1  // 100msごとにチェック
+                
+                while !client.isSessionUpdated && waited < maxWait {
+                    try? await Task.sleep(nanoseconds: UInt64(checkInterval * 1_000_000_000))
+                    waited += checkInterval
+                }
+                
+                if client.isSessionUpdated {
+                    print("✅ ConversationController: session.updated受信確認 - マイクを開始します")
+                    await MainActor.run {
+                        self.startPTTRealtimeInternal()
+                    }
+                } else {
+                    print("⚠️ ConversationController: session.updated受信タイムアウト - マイクを開始しますが、音声認識が正常に動作しない可能性があります")
+                    await MainActor.run {
+                        self.startPTTRealtimeInternal()
+                    }
+                }
+            }
+            return
+        }
+        
+        // ✅ session.updated受信済みの場合は即座にマイクを開始
+        startPTTRealtimeInternal()
+    }
+    
+    private func startPTTRealtimeInternal() {
+        guard let client = realtimeClient else {
+            self.errorMessage = "Realtimeクライアントが初期化されていません"; return
+        }
         cancelNudge()             // ✅ ユーザーが話し始めるので促しを止める
         // 🔇 いま流れているAI音声を止める（barge-in 前提）
         player.stop()
-        Task { try? await client.interruptAndYield() }   // ← サーバ側の発話も中断
+        Task { [weak client] in
+            try? await client?.interruptAndYield()   // ← サーバ側の発話も中断
+        }
 
         // ✅ 公式パターン: PTT開始時に input_audio_buffer.clear を送信（interruptAndYield内で送信されるため追加不要）
         // ✅ interruptAndYield() が既に input_audio_buffer.clear を送信しているため、ここでは追加不要
 
         mic?.stop()
-        // ✅ 出力モニタを渡してAEC対策を有効化
-        mic = MicrophoneCapture(outputMonitor: player.outputMonitor) { [weak self] buf in
+        
+        // ✅ Task内で実行
+        Task { @MainActor [weak self] in
             guard let self = self else { return }
-            // ✅ AEC対策：再生中はゲートで送信を制御（バージイン時のみ送信）
-            Task { try? await client.sendMicrophonePCM(buf) }
-        }
-        do {
-            try mic?.start()
-            isRecording = true
-            transcript = ""
-            turnState = .listening
-        } catch {
-            self.errorMessage = "マイク開始に失敗: \(error.localizedDescription)"
-            isRecording = false
+            
+            // 1. エンジンがいったん動いているなら停止（再構成のため）
+            // VoiceProcessingIOは構成変更時に停止しているのが最も安全
+            if self.sharedAudioEngine.isRunning {
+                self.sharedAudioEngine.stop()
+            }
+            
+            // 2. マイクを初期化 & Start (ここで Tap をインストール)
+            // エンジンは停止状態だが、Tapインストールは可能
+            self.mic = MicrophoneCapture(sharedEngine: self.sharedAudioEngine, onPCM: { [weak self] buf in
+                guard let self = self else { return }
+                Task { [weak client = self.realtimeClient] in
+                    try? await client?.sendMicrophonePCM(buf)
+                }
+            }, outputMonitor: self.player.outputMonitor)
+            
+            do {
+                // ここで Tap がインストールされる (フォーマット補正込み)
+                try self.mic?.start()
+            } catch {
+                self.errorMessage = "マイク設定失敗: \(error.localizedDescription)"
+                self.isRecording = false
+                return
+            }
+            
+            // 3. その後で、エンジンを Prepare & Start
+            self.sharedAudioEngine.prepare()
+            do {
+                try self.sharedAudioEngine.start()
+                print("✅ ConversationController: エンジン再開成功")
+            } catch {
+                print("❌ ConversationController: エンジン開始失敗: \(error)")
+                self.errorMessage = "オーディオエンジンの開始に失敗しました"
+                self.isRecording = false
+                return
+            }
+            
+            // 4. 状態更新
+            self.isRecording = true
+            self.transcript = ""
+            self.turnState = .listening
+            
+            // 促しタイマー開始
+            Task { [weak self] in
+                guard let self = self else { return }
+                try? await Task.sleep(nanoseconds: 250_000_000)
+                await MainActor.run {
+                    self.startWaitingForResponse()
+                }
+            }
+            print("✅ ConversationController: PTT開始シーケンス完了")
         }
     }
+    
 
     public func stopPTTRealtime() {
         isRecording = false
@@ -663,6 +817,18 @@ public final class ConversationController: ObservableObject {
                 do {
                     if let chunk = try await self.realtimeClient?.nextAudioChunk() {
                         await MainActor.run { self.isPlayingAudio = true }
+                        
+                        // ✅ エンジンが停止している場合は再開を試みる（初回接続時やBluetooth接続時の問題対策）
+                        if !self.sharedAudioEngine.isRunning {
+                            do {
+                                try self.sharedAudioEngine.start()
+                                print("✅ ConversationController: 共通エンジンを再開（音声再生ループ内）")
+                            } catch {
+                                print("⚠️ ConversationController: 共通エンジン再開失敗 - \(error.localizedDescription)")
+                                // エンジン再開に失敗しても、playChunk内で再試行される可能性があるため、続行
+                            }
+                        }
+                        
                         // ✅ 音声再生を再開（stopImmediately()でvolume=0になった場合の復帰）
                         // 注: onResponseCreatedでも呼び出しているが、念のためここでも呼び出す
                         self.player.resumeIfNeeded()
@@ -846,39 +1012,41 @@ public final class ConversationController: ObservableObject {
     
     // MARK: - 促しタイマー機能
     
-    // ✅ 「待つ→促す」タイマー実装
-    private func startWaiting() {
-        turnState = .waitingUser
+    // ✅ 音声入力ボタンを押した後、返答がない場合の促しタイマー
+    private func startWaitingForResponse() {
         cancelNudge()
         nudgeTimer?.invalidate()
-        nudgeTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: false) { [weak self] _ in
-            Task { await self?.sendNudge(index: 0) }
+        // ✅ 音声入力ボタンを押してから5秒経過しても返答がない場合に促しメッセージを送る
+        nudgeTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: false) { [weak self] _ in
+            Task { await self?.sendNudgeIfNoResponse() }
         }
     }
     
-    private func scheduleNextNudge(_ idx: Int) {
-        guard idx < 2 else { return } // 最大3回(0,1,2)で制限
-        nudgeTimer?.invalidate()
-        nudgeTimer = Timer.scheduledTimer(withTimeInterval: 8.0, repeats: false) { [weak self] _ in
-            Task { await self?.sendNudge(index: idx + 1) }
-        }
-    }
-    
-    private func cancelNudge() {
-        nudgeTimer?.invalidate()
-        nudgeTimer = nil
-    }
-    
-    private func sendNudge(index: Int) async {
+    // ✅ 返答がない場合の促しメッセージ送信
+    private func sendNudgeIfNoResponse() async {
         guard isRealtimeActive else { return }
-        // ✅ ユーザーが話している最中は促しメッセージを送信しない
+        // ✅ ユーザーが話している最中、または既に応答が来ている場合は促しメッセージを送信しない
         if case .listening = turnState {
             print("⚠️ ConversationController: ユーザーが話しているため nudge をスキップ")
             cancelNudge()
             return
         }
-        turnState = .nudgedByAI(index)
-        await realtimeClient?.nudge(kind: index)
-        scheduleNextNudge(index)
+        if case .thinking = turnState {
+            print("⚠️ ConversationController: 既に応答生成中なので nudge をスキップ")
+            cancelNudge()
+            return
+        }
+        if case .speaking = turnState {
+            print("⚠️ ConversationController: 既にAIが話しているので nudge をスキップ")
+            cancelNudge()
+            return
+        }
+        // ✅ シンプルな促しメッセージを送信
+        await realtimeClient?.nudge(kind: 0)
+    }
+    
+    private func cancelNudge() {
+        nudgeTimer?.invalidate()
+        nudgeTimer = nil
     }
 }

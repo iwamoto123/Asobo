@@ -31,6 +31,7 @@ public final class RealtimeClientOpenAI: RealtimeClient {
     public var onSpeechStopped: (() -> Void)?
     public var onError: ((Error) -> Void)?  // ✅ エラー発生時に呼ばれる（response.doneでstatus == "failed"の場合など）
     public var onAudioDeltaReceived: (() -> Void)?  // ✅ 参考プロジェクトパターン：AI音声受信時に録音停止をトリガー
+    public var onSessionUpdated: (() -> Void)?  // ✅ session.updated受信時に呼ばれる（マイク開始のタイミング制御用）
 
     // 出力ストリーム（AsyncStream）
     private var audioContinuation: AsyncStream<Data>.Continuation?
@@ -75,6 +76,11 @@ public final class RealtimeClientOpenAI: RealtimeClient {
     
     // ✅ セッション確立フラグ（session.updated受信までappendを送らない）
     private var sessionIsUpdated: Bool = false
+    
+    // ✅ セッション確立状態を外部から確認可能にする（初回接続時のマイク開始タイミング制御用）
+    public var isSessionUpdated: Bool {
+        return sessionIsUpdated
+    }
     
     // ✅ 参考プロジェクトパターン：送信中の重複送信を防ぐフラグ
     private var isSendingAudioData: Bool = false
@@ -661,10 +667,11 @@ public final class RealtimeClientOpenAI: RealtimeClient {
             return
         }
         
+        // ✅ シンプルな促しメッセージ（返答がない場合の短い確認）
         let variants = [
-            "どうしたの？きょうは なにを はなそうか？",
-            "おはなし きいてるよ。すきなこと、なんでも いってみてね。",
-            "もしもし？きこえてるよ。いま どんな きぶん？"
+            "聞こえていますか？",
+            "もう一度お願いします。",
+            "すみません、聞き取れませんでした。"
         ]
         let line = variants[kind % variants.count]
         do {
@@ -1435,6 +1442,8 @@ public final class RealtimeClientOpenAI: RealtimeClient {
                     } else {
                         print("   ⚠️ session 本体が取得できませんでした")
                     }
+                    // ✅ session.updated受信時にコールバックを呼び出す（マイク開始のタイミング制御用）
+                    onSessionUpdated?()
                 case "error":
                     if let error = obj["error"] as? [String: Any] {
                         print("❌ RealtimeClient: サーバーエラー - \(error)")
