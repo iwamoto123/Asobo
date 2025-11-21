@@ -663,26 +663,31 @@ public final class RealtimeClientOpenAI: RealtimeClient {
         
         // ✅ ユーザーが話している最中は促しメッセージを送信しない（lastAppendAtが最近更新されている場合）
         if let lastAppend = lastAppendAt, Date().timeIntervalSince(lastAppend) < 2.0 {
-            print("⚠️ RealtimeClient: ユーザーが話している可能性があるため nudge をスキップ（最後のappendから \(String(format: "%.1f", Date().timeIntervalSince(lastAppend)))秒経過）")
+            print("⚠️ RealtimeClient: ユーザーが話している可能性があるため nudge をスキップ")
             return
         }
+    
         
-        // ✅ シンプルな促しメッセージ（返答がない場合の短い確認）
+        // ✅ メッセージの定義（子供向けに優しく変更）
         let variants = [
-            "聞こえていますか？",
-            "もう一度お願いします。",
-            "すみません、聞き取れませんでした。"
+            "あれ？どうしたの？",           // 0: 優しく問いかけ
+            "お話、きかせて？",             // 1: 誘いかけ
+            "もしもーし、聞こえてるかな？"    // 2: 通信確認っぽく
         ]
-        let line = variants[kind % variants.count]
+        
+        // インデックスが範囲外にならないよう安全策
+        let index = kind % variants.count
+        let line = variants[index]
+        
         do {
             try await send(json: [
                 "type": "response.create",
                 "response": [
-                    "modalities": ["audio","text"],
-                    "instructions": line
+                    "modalities": ["audio", "text"],
+                    "instructions": line // ✅ ここに直接メッセージを指定
                 ]
             ])
-            print("✅ RealtimeClient: 促しメッセージ送信（kind: \(kind)）")
+            print("✅ RealtimeClient: 促しメッセージ送信（kind: \(kind), msg: \(line)）")
         } catch {
             print("❌ RealtimeClient: 促しメッセージ送信失敗 - \(error)")
         }

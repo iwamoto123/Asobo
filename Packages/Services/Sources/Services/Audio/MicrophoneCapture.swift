@@ -4,14 +4,14 @@ import AVFoundation
 /// 
 /// ## 重要な設定ポイント
 /// 1. **出力フォーマット**: 24kHz/mono/PCM16LE（OpenAI Realtime APIの要求仕様）
-/// 2. **バッチ送信**: 200msごとにまとめて送信（ネットワーク効率とVADの精度向上）
+/// 2. **バッチ送信**: 60msごとにまとめて送信（反応速度重視、AECが効いているため短縮可能）
 /// 3. **フォーマット変換**: AVAudioConverterで確実に24kHz/mono/PCM16に変換
 /// 
 /// ## 変換フロー
 /// - 入力: デバイス依存（通常48kHz/mono/Float32、AEC適用後）
 /// - エンジン内: 48kHz/monoで処理（AEC最適化のため）
 /// - 送信時変換: AVAudioConverterで24kHz/mono/PCM16LEに変換（サーバ送信の直前）
-/// - バッファリング: 200ms分をまとめて送信
+/// - バッファリング: 60ms分をまとめて送信（反応速度重視）
 /// - 出力: 24kHz/mono/PCM16LE形式のAVAudioPCMBuffer
 /// 
 /// ## AEC対策
@@ -26,9 +26,11 @@ public final class MicrophoneCapture {
   private let onPCM: (AVAudioPCMBuffer) -> Void
   private var running = false
   
-  // ✅ バッチ送信用：20ms×10（=200ms）をまとめて送信
+  // ✅ バッチ送信用：60msごとにまとめて送信（反応速度重視）
+  // 変更前: 200ms (安定重視)
+  // 変更後: 60ms (反応速度重視、AECが効いているため短縮可能)
   private var audioBuffer: Data = Data()
-  private let batchDurationMs: Double = 200.0  // 200msバッチ
+  private let batchDurationMs: Double = 60.0  // 60msバッチ
   private var lastFlushTime: Date = Date()
   private let flushQueue = DispatchQueue(label: "com.asobo.audio.flush")
   
@@ -36,10 +38,16 @@ public final class MicrophoneCapture {
   private var isAIPlayingAudio: Bool = false
   private var userBargeIn: Bool = false
   private var outputMonitor: OutputMonitor?
-  private let rmsMarginDb: Double = 12.0  // 入力RMSが出力RMS+12dB以上でバージイン
-  private let playbackQuietDbThreshold: Double = -35.0  // 出力が-35dBFS以下でバージイン許可
-  private var recentInputRMS: [Double] = []  // 直近200msの入力RMS
-  private let rmsWindowSize: Int = 10  // 10フレーム（約200ms）
+  // 変更前: 12.0 (AECなし時の安全マージン)
+  // 変更後: 4.0 (AECありなら、わずかでも上回ればユーザーの声とみなす)
+  private let rmsMarginDb: Double = 4.0  // 入力RMSが出力RMS+4dB以上でバージイン
+  // 変更前: -35.0 (かなり静かじゃないと許可しない)
+  // 変更後: -20.0 (多少BGMが鳴っていても、声が大きければ許可)
+  private let playbackQuietDbThreshold: Double = -20.0  // 出力が-20dBFS以下でバージイン許可
+  private var recentInputRMS: [Double] = []  // 直近60msの入力RMS
+  // 変更前: 10 (約200msの平均を見るため遅い)
+  // 変更後: 3 (約60msの平均で判断、一瞬の発話に反応させる)
+  private let rmsWindowSize: Int = 3  // 3フレーム（約60ms）
   private var isFirstBuffer: Bool = true  // ✅ 初回バッファ受信フラグ（converter作成のため）
   
   // ✅ 初回接続時の音声認識問題対策：マイク開始直後の初期フレームをスキップ
@@ -107,13 +115,13 @@ public final class MicrophoneCapture {
   
   /// ✅ バージイン判定
   private func checkBargeIn(inputRMS: Double, outputRMS: Double) -> Bool {
-    // 直近200msの入力RMSを記録
+    // 直近60msの入力RMSを記録（反応速度重視）
     recentInputRMS.append(inputRMS)
     if recentInputRMS.count > rmsWindowSize {
       recentInputRMS.removeFirst()
     }
     
-    // 直近200msの平均入力RMS
+    // 直近60msの平均入力RMS
     let avgInputRMS = recentInputRMS.reduce(0, +) / Double(recentInputRMS.count)
     
     // AECが効いていない場合、Echo成分で InputRMS が高くなる。
@@ -276,7 +284,7 @@ public final class MicrophoneCapture {
           // ✅ 音声データをバッファに追加（PCM16LE形式のData）
           self.audioBuffer.append(Data(bytes: ptr, count: byteCount))
           
-          // ✅ 200ms経過したらバッチ送信
+          // ✅ 60ms経過したらバッチ送信（反応速度重視）
           let now = Date()
           let elapsed = now.timeIntervalSince(self.lastFlushTime) * 1000.0  // ミリ秒
           if elapsed >= self.batchDurationMs && !self.audioBuffer.isEmpty {
@@ -297,7 +305,7 @@ public final class MicrophoneCapture {
                 guard let basePtr = rawPtr.baseAddress?.assumingMemoryBound(to: Int16.self) else { return }
                 batchCh0.pointee.initialize(from: basePtr, count: batchFrames)
               }
-              self.onPCM(batchBuf)  // ← 200msバッチでコールバック
+              self.onPCM(batchBuf)  // ← 60msバッチでコールバック
             }
           }
         }
