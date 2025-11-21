@@ -29,7 +29,7 @@ public final class ConversationController: ObservableObject {
     private var isAIPlayingAudio: Bool = false
     
     // ✅ ターン状態（拡張版）
-    enum TurnState {
+    enum TurnState: Equatable {
         case idle               // セッション前 or 終了後
         case waitingUser        // 初回/毎ターン：まずユーザーの声を待つ
         case nudgedByAI(Int)   // 促し(何回目かインデックス)
@@ -329,6 +329,25 @@ public final class ConversationController: ObservableObject {
 
         realtimeClient = RealtimeClientOpenAI(url: url, apiKey: key)
         
+        // ✅ 重要: Playerの状態変化を監視して、正確なタイミングでマイクのゲートを開閉する
+        player.onPlaybackStateChange = { [weak self] isPlaying in
+            Task { @MainActor in
+                guard let self = self else { return }
+                self.isAIPlayingAudio = isPlaying
+                self.mic?.setAIPlayingAudio(isPlaying)
+                
+                if isPlaying {
+                    print("🔊 ConversationController: 再生開始 - マイクゲート閉 (AEC/BargeInモード)")
+                } else {
+                    print("🔇 ConversationController: 再生完全終了 - マイクゲート開")
+                    // 促しタイマー等の再開ロジックがあればここに入れる
+                    if self.turnState == .speaking {
+                        self.turnState = .waitingUser
+                    }
+                }
+            }
+        }
+        
         // Realtimeのイベントにフック
         realtimeClient?.onSpeechStarted = { [weak self] in
             Task { @MainActor in
@@ -385,25 +404,33 @@ public final class ConversationController: ObservableObject {
             Task { @MainActor in
                 guard let self else { return }
                 // ✅ 応答が終わったら次ターンへ
-                // ✅ AI音声再生フラグをリセット（次のターンで録音を再開できるように）
-                self.isAIPlayingAudio = false
-                // ✅ AEC対策：マイクに再生終了を通知
-                self.mic?.setAIPlayingAudio(false)
+                // ✅ ここでの isAIPlayingAudio = false は【削除】する
+                // 理由: サーバ送信完了 != 再生終了。ここでfalseにすると、まだ喋ってるのにマイクが開いてしまう。
+                // 実際の再生終了は player.onPlaybackStateChange で検知する
+                
+                // self.isAIPlayingAudio = false  // <-- 削除
+                // self.mic?.setAIPlayingAudio(false) // <-- 削除
+                
+                print("✅ Server Response Done (音声はまだ再生中の可能性あり)")
                 // ✅ 促しメッセージは送らない（音声入力ボタンを押していない状態では促さない）
                 // 音声入力ボタンを押した後に、返答がない場合のみ促しメッセージを送る
-                self.turnState = .waitingUser
+                // turnStateは player.onPlaybackStateChange で更新される
             }
         }
         
-        // ✅ 参考プロジェクトパターン：AI音声受信時に録音停止をトリガー
+        // ✅ 参考プロジェクトパターン：AI音声受信時の処理
+        // 注意: isAIPlayingAudio フラグの制御は player.onPlaybackStateChange に移行
+        // ここではログ出力のみ（デバッグ用）
         realtimeClient?.onAudioDeltaReceived = { [weak self] in
             Task { @MainActor in
                 guard let self else { return }
-                // ✅ AI音声受信時にフラグを設定（AEC対策：マイク送信をゲートで制御）
-                self.isAIPlayingAudio = true
-                // ✅ AEC対策：マイクに再生開始を通知（ゲートを有効化）
-                self.mic?.setAIPlayingAudio(true)
-                print("🛑 ConversationController: AI音声受信 - マイク送信ゲート有効化（isAIPlayingAudio=true）")
+                // ✅ ここでの isAIPlayingAudio = true は【削除】する（Playerに任せる）
+                // 理由: サーバ受信 != 再生開始。実際の再生開始は player.onPlaybackStateChange で検知する
+                
+                // self.isAIPlayingAudio = true  // <-- 削除
+                // self.mic?.setAIPlayingAudio(true) // <-- 削除
+                
+                print("📥 ConversationController: AI音声受信（再生状態はPlayerが管理）")
             }
         }
         

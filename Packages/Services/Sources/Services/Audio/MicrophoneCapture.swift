@@ -116,18 +116,39 @@ public final class MicrophoneCapture {
     // 直近200msの平均入力RMS
     let avgInputRMS = recentInputRMS.reduce(0, +) / Double(recentInputRMS.count)
     
+    // AECが効いていない場合、Echo成分で InputRMS が高くなる。
+    // そのため、単なる差分ではなく、絶対値としてのOutput音量も考慮する。
+    
+    // 条件調整案:
+    // 出力が大きい(>-30dB)時は、マージンを大きく取る（AIが叫んでる時は誤爆しやすい）
+    let dynamicMargin = (outputRMS > -20.0) ? rmsMarginDb + 6.0 : rmsMarginDb
+    
     // バージイン条件：
-    // 1. 入力RMSが出力RMS+マージン以上
+    // 1. 入力RMSが出力RMS+動的マージン以上
     // 2. 出力RMSが一定以下（スピーカーが鳴っていない）
-    let condition1 = avgInputRMS > (outputRMS + rmsMarginDb)
+    let condition1 = avgInputRMS > (outputRMS + dynamicMargin)
     let condition2 = outputRMS < playbackQuietDbThreshold
     
+    // condition2 (Outputが静か) は、「相手が黙っている時の割り込み」用。
+    // 「相手が喋っている時の割り込み」を許容するなら condition1 だけで勝負する必要がある。
+    // 現状は両方の条件を満たす必要がある（より厳格な判定）
     return condition1 && condition2
   }
 
   public func start() throws {
     guard !running else { return }
     let inputNode = engine.inputNode
+    
+    // ✅ 追加: 強力なAEC有効化設定 (iOS 13+)
+    // VoiceProcessingモードであっても、明示的にバイパス無効（＝処理有効）を設定するのが安全
+    if #available(iOS 13.0, *) {
+      do {
+        try inputNode.setVoiceProcessingEnabled(true)
+        print("✅ MicrophoneCapture: VoiceProcessingEnabled = true")
+      } catch {
+        print("⚠️ MicrophoneCapture: VoiceProcessingEnabled設定失敗 - \(error)")
+      }
+    }
     
     // ✅ 既にタップがインストールされている場合は先に削除（エラー回避）
     inputNode.removeTap(onBus: 0)

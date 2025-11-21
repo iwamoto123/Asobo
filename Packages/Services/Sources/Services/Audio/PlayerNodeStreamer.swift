@@ -44,6 +44,13 @@ public final class PlayerNodeStreamer {
   private var queue: [Data] = []
   private var queuedFrames: AVAudioFrameCount = 0
   private let prebufferSec: Double = 0.2 // 200ms たまったらスタート（実機での安定性向上）
+  
+  // ✅ 追加: 正確な再生状態追跡用
+  private var pendingBufferCount: Int = 0
+  private let stateLock = NSLock()
+  
+  // ✅ 追加: 再生状態変更通知クロージャ
+  public var onPlaybackStateChange: ((Bool) -> Void)?
 
   /// ✅ 共通エンジンを使用する場合（AEC有効化のため推奨）
   public init(sharedEngine: AVAudioEngine, sourceSampleRate: Double = 24_000.0, ownsEngine: Bool = false) {
@@ -271,8 +278,41 @@ public final class PlayerNodeStreamer {
       return
     }
 
-    // ここで多少まとまった塊として再生に渡す
-    player.scheduleBuffer(outBuf, completionHandler: nil)
+    // ---------------------------------------------------------
+    // ✅ 修正箇所: completionHandlerでバッファ消化を追跡
+    // ---------------------------------------------------------
+    
+    // 1. スケジュール前にカウンタを増やす
+    stateLock.lock()
+    let wasEmpty = (pendingBufferCount == 0)
+    pendingBufferCount += 1
+    stateLock.unlock()
+    
+    if wasEmpty {
+      // 再生開始を通知
+      DispatchQueue.main.async {
+        self.onPlaybackStateChange?(true)
+      }
+    }
+
+    // 2. バッファをスケジュール（completionHandlerで消化を追跡）
+    player.scheduleBuffer(outBuf, completionHandler: { [weak self] in
+      guard let self = self else { return }
+      self.stateLock.lock()
+      self.pendingBufferCount -= 1
+      let isNowEmpty = (self.pendingBufferCount <= 0)
+      // カウンタが負にならないように補正（stopImmediately時の対策）
+      if self.pendingBufferCount < 0 { self.pendingBufferCount = 0 }
+      self.stateLock.unlock()
+      
+      if isNowEmpty {
+        // ✅ 全バッファ再生終了＝本当に音が止まった
+        DispatchQueue.main.async {
+          self.onPlaybackStateChange?(false)
+        }
+      }
+    })
+    
     if !player.isPlaying { player.play() }
   }
 
@@ -280,6 +320,16 @@ public final class PlayerNodeStreamer {
     queue.removeAll()
     queuedFrames = 0
     player.stop()
+    
+    // ✅ カウンタをリセットして停止状態を即時通知
+    stateLock.lock()
+    pendingBufferCount = 0
+    stateLock.unlock()
+    
+    DispatchQueue.main.async {
+      self.onPlaybackStateChange?(false)
+    }
+    
     // ✅ 出力モニタリングをリセット
     outputMonitor.reset()
     // ✅ タップを削除
@@ -294,7 +344,17 @@ public final class PlayerNodeStreamer {
     player.stop()  // ✅ 再生を停止してキューを破棄
     queue.removeAll()  // バッファを消費しないよう自前キューもクリア
     queuedFrames = 0
-    print("🛑 PlayerNodeStreamer: 即座に停止（ユーザー発話検知）- player.stop() + reset()（キューを破棄）")
+    
+    // ✅ カウンタをリセットして停止状態を即時通知
+    stateLock.lock()
+    pendingBufferCount = 0
+    stateLock.unlock()
+    
+    DispatchQueue.main.async {
+      self.onPlaybackStateChange?(false)
+    }
+    
+    print("🛑 PlayerNodeStreamer: 即時停止（バッファ破棄）")
   }
   
   /// ✅ エンジンを再開（response.audio.delta受信時に呼ぶ）
