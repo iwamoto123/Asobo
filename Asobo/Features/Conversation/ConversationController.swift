@@ -8,6 +8,7 @@ import Speech
 import Domain
 import Services
 import Support
+import DataStores
 
 @MainActor
 public final class ConversationController: ObservableObject {
@@ -43,6 +44,16 @@ public final class ConversationController: ObservableObject {
     // ✅ 「待つ→促す」タイマー
     private var nudgeTimer: Timer?
     
+    // ✅ 追加: 最後に「ユーザーの声（環境音含む）」が閾値を超えた時刻
+    private var lastUserVoiceActivityTime: Date = Date()
+    
+    // ✅ 追加: 無音判定の閾値（-50dBより大きければ「何か音がしている」とみなす）
+    // 調整目安: -40dB(普通) 〜 -60dB(静寂)。-50dBは「ささやき声や環境音」レベル
+    private let silenceThresholdDb: Double = -50.0
+    
+    // ✅ 追加: speech_startedが来ていない警告のカウンター
+    private var speechStartedMissingCount: Int = 0
+    
     // デバッグ用プロパティ
     @Published public var aiResponseText: String = ""
     @Published public var isPlayingAudio: Bool = false
@@ -70,6 +81,40 @@ public final class ConversationController: ObservableObject {
     private var receiveAudioTask: Task<Void, Never>?
     private var receiveInputTextTask: Task<Void, Never>?
     private var sessionStartTask: Task<Void, Never>?     // セッション開始タスクの管理
+    
+    // MARK: - Firebase保存
+    private let firebaseRepository = FirebaseConversationsRepository()
+    private var currentSessionId: String?
+    // TODO: 本来はFirebase Authから取得する必要がある
+    private var currentUserId: String = "dummy_parent_uid"
+    // TODO: 選択中の子供IDを設定する必要がある
+    private var currentChildId: String = "dummy_child_uid"
+    private var turnCount: Int = 0
+    
+    /// Firebaseエラーの詳細ログ出力（Permission deniedの場合にセキュリティルールの設定方法を案内）
+    private func logFirebaseError(_ error: Error, operation: String) {
+        let errorString = String(describing: error)
+        print("❌ ConversationController: \(operation)失敗 - \(errorString)")
+        
+        // Permission deniedエラーの場合、セキュリティルールの設定方法を案内
+        if errorString.contains("Permission denied") || errorString.contains("Missing or insufficient permissions") {
+            print("""
+            ⚠️ セキュリティルールエラーが発生しました。
+            開発環境では、Firebaseコンソールで以下のルールを設定してください:
+            
+            rules_version = '2';
+            service cloud.firestore {
+              match /databases/{database}/documents {
+                match /{document=**} {
+                  allow read, write: if true;
+                }
+              }
+            }
+            
+            詳細は FIREBASE_SUMMARY.md を参照してください。
+            """)
+        }
+    }
 
     // MARK: - Lifecycle
     public init(
@@ -357,9 +402,26 @@ public final class ConversationController: ObservableObject {
                 // ユーザー発話を検知 → 促しタイマーは止める & AI音声を即停止
                 print("🎤 ConversationController: ユーザー発話検知 -> タイマーキャンセル")
                 self.cancelNudge()  // ✅ ユーザーが話し始めたので促しをキャンセル
+                self.speechStartedMissingCount = 0  // ✅ カウンターをリセット
                 self.turnState = .listening
                 // ✅ ユーザーが話し始めたら即AI音声を止める
                 self.player.stopImmediately()
+            }
+        }
+        
+        // ✅ 追加: speech_startedが来ていない警告のコールバック
+        realtimeClient?.onSpeechStartedMissing = { [weak self] in
+            Task { @MainActor in
+                guard let self else { return }
+                self.speechStartedMissingCount += 1
+                print("⚠️ ConversationController: speech_started未検出警告 #\(self.speechStartedMissingCount)")
+                
+                // 2回警告が出たら促しメッセージを送信
+                if self.speechStartedMissingCount >= 2 {
+                    print("🚀 ConversationController: speech_started未検出が2回に達したため、促しメッセージを送信します")
+                    self.speechStartedMissingCount = 0  // リセット
+                    await self.sendNudgeIfNoResponse()
+                }
             }
         }
         
@@ -369,6 +431,7 @@ public final class ConversationController: ObservableObject {
                 self.turnState = .thinking
                 // ✅ 応答生成中なので促しをキャンセル
                 self.cancelNudge()
+                self.speechStartedMissingCount = 0  // ✅ カウンターをリセット
                 // 以降は Realtime 側が commit → response.create を送信してくれる設計にしている
             }
         }
@@ -378,6 +441,7 @@ public final class ConversationController: ObservableObject {
                 guard let self else { return }
                 // ✅ 入力がコミットされたので促しをキャンセル
                 self.cancelNudge()
+                self.speechStartedMissingCount = 0  // ✅ カウンターをリセット
                 let t = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
                 if t.count < 2 {
                     // ✅ 聞き取り失敗時は必ず聞き返し（RealtimeClient側で処理済み）
@@ -385,6 +449,36 @@ public final class ConversationController: ObservableObject {
                 } else {
                     // ✅ 聞き取り成功 → 応答生成中
                     self.turnState = .thinking
+                    
+                    // ✅ Firebaseにユーザーの発言を保存
+                    if let sessionId = self.currentSessionId {
+                        let turn = FirebaseTurn(
+                            role: .child,
+                            text: t,
+                            timestamp: Date()
+                        )
+                        Task {
+                            do {
+                                try await self.firebaseRepository.addTurn(
+                                    userId: self.currentUserId,
+                                    childId: self.currentChildId,
+                                    sessionId: sessionId,
+                                    turn: turn
+                                )
+                                // ターン数を更新
+                                self.turnCount += 1
+                                try? await self.firebaseRepository.updateTurnCount(
+                                    userId: self.currentUserId,
+                                    childId: self.currentChildId,
+                                    sessionId: sessionId,
+                                    turnCount: self.turnCount
+                                )
+                                print("✅ ConversationController: ユーザーの発言をFirebaseに保存 - 「\(t)」")
+                            } catch {
+                                self.logFirebaseError(error, operation: "ユーザーの発言保存")
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -409,6 +503,39 @@ public final class ConversationController: ObservableObject {
                 
                 print("✅ ConversationController: AIの応答完了 (onResponseDone)")
                 
+                // ✅ FirebaseにAIの応答を保存
+                if let sessionId = self.currentSessionId, !self.aiResponseText.isEmpty {
+                    let aiText = self.aiResponseText.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !aiText.isEmpty {
+                        let turn = FirebaseTurn(
+                            role: .ai,
+                            text: aiText,
+                            timestamp: Date()
+                        )
+                        Task {
+                            do {
+                                try await self.firebaseRepository.addTurn(
+                                    userId: self.currentUserId,
+                                    childId: self.currentChildId,
+                                    sessionId: sessionId,
+                                    turn: turn
+                                )
+                                // ターン数を更新
+                                self.turnCount += 1
+                                try? await self.firebaseRepository.updateTurnCount(
+                                    userId: self.currentUserId,
+                                    childId: self.currentChildId,
+                                    sessionId: sessionId,
+                                    turnCount: self.turnCount
+                                )
+                                print("✅ ConversationController: AIの応答をFirebaseに保存 - 「\(aiText)」")
+                            } catch {
+                                self.logFirebaseError(error, operation: "AIの応答保存")
+                            }
+                        }
+                    }
+                }
+                
                 // ✅ 応答が終わったら次ターンへ
                 // ✅ ここでの isAIPlayingAudio = false は【削除】する
                 // 理由: サーバ送信完了 != 再生終了。ここでfalseにすると、まだ喋ってるのにマイクが開いてしまう。
@@ -417,8 +544,10 @@ public final class ConversationController: ObservableObject {
                 // self.isAIPlayingAudio = false  // <-- 削除
                 // self.mic?.setAIPlayingAudio(false) // <-- 削除
                 
-                // 状態更新（再生終了時に player.onPlaybackStateChange でも更新されるが、念のため）
-                // turnStateは player.onPlaybackStateChange で更新される
+                // ✅ 状態更新: 応答完了後はユーザーの入力を待つ状態にする
+                // 注意: player.onPlaybackStateChange でも更新されるが、念のためここでも更新
+                // これにより、促しメッセージが正しく送信される
+                self.turnState = .waitingUser
                 
                 // ---------------------------------------------------
                 // ✅ 追加: ここで必ずタイマーをスタートさせる
@@ -484,6 +613,35 @@ public final class ConversationController: ObservableObject {
         aiResponseText = ""
         errorMessage = nil
         turnState = .waitingUser  // セッション開始時はユーザーが話すのを待つ
+
+        // ✅ Firebaseにセッションを作成
+        let newSessionId = UUID().uuidString
+        self.currentSessionId = newSessionId
+        self.turnCount = 0
+        
+        let session = FirebaseConversationSession(
+            id: newSessionId,
+            mode: .freeTalk,
+            startedAt: Date(),
+            interestContext: [],
+            summaries: [],
+            newVocabulary: [],
+            turnCount: 0
+        )
+        
+        Task { [weak self] in
+            guard let self = self else { return }
+            do {
+                try await self.firebaseRepository.createSession(
+                    userId: self.currentUserId,
+                    childId: self.currentChildId,
+                    session: session
+                )
+                print("✅ ConversationController: Firebaseセッション作成完了 - sessionId: \(newSessionId)")
+            } catch {
+                self.logFirebaseError(error, operation: "Firebaseセッション作成")
+            }
+        }
 
         sessionStartTask = Task { [weak self] in
             guard let self else { return }
@@ -601,8 +759,30 @@ public final class ConversationController: ObservableObject {
         Task { [weak self] in
             guard let self else { return }
             try? await self.realtimeClient?.finishSession()
+            
+            // ✅ Firebaseにセッション終了を記録
+            if let sessionId = self.currentSessionId {
+                let endedAt = Date()
+                do {
+                    try await self.firebaseRepository.finishSession(
+                        userId: self.currentUserId,
+                        childId: self.currentChildId,
+                        sessionId: sessionId,
+                        endedAt: endedAt
+                    )
+                    print("✅ ConversationController: Firebaseセッション終了更新完了 - sessionId: \(sessionId)")
+                    
+                    // ✅ 会話終了後の分析処理を実行
+                    await self.analyzeSession(sessionId: sessionId)
+                } catch {
+                    self.logFirebaseError(error, operation: "Firebaseセッション終了更新")
+                }
+            }
+            
             await MainActor.run {
                 self.realtimeClient = nil
+                self.currentSessionId = nil
+                self.turnCount = 0
                 print("✅ ConversationController: リソースクリーンアップ完了")
             }
         }
@@ -683,10 +863,28 @@ public final class ConversationController: ObservableObject {
                 }
             }, outputMonitor: self.player.outputMonitor)
             
+            // -------------------------------------------------------
+            // ✅ 追加: マイクの音量を監視して、音がしていれば時刻を更新
+            // -------------------------------------------------------
+            self.mic?.onVolume = { [weak self] rms in
+                // バックグラウンドスレッドから呼ばれるためMainActorへ
+                Task { @MainActor [weak self] in
+                    guard let self = self else { return }
+                    
+                    // 閾値(-50dB)より大きければ「音がしている」とみなして時刻更新
+                    if rms > self.silenceThresholdDb {
+                        self.lastUserVoiceActivityTime = Date()
+                    }
+                }
+            }
+            
+            // マイク開始時に時刻をリセット
+            self.lastUserVoiceActivityTime = Date()
+            
             do {
                 // ここで Tap がインストールされる (フォーマット補正込み)
                 try self.mic?.start()
-            } catch {
+        } catch {
                 self.errorMessage = "マイク設定失敗: \(error.localizedDescription)"
                 self.isRecording = false
                 return
@@ -1073,29 +1271,45 @@ public final class ConversationController: ObservableObject {
         }
     }
     
-    // ✅ 修正: 詳細なデバッグログを追加
+    // ✅ 修正: サーバーの状態に関わらず、実際の無音時間が長ければ促す
     private func sendNudgeIfNoResponse() async {
         guard isRealtimeActive else {
             print("⚠️ ConversationController: セッションがアクティブでないため nudge スキップ")
             return
         }
         
-        // 現在の状態をログ出力
-        print("🧐 ConversationController: Nudge判定 - 現在のTurnState: \(turnState)")
+        // 最後に音がしてから何秒経過したか
+        let silenceDuration = Date().timeIntervalSince(lastUserVoiceActivityTime)
+        print("🧐 ConversationController: Nudge判定 - State: \(turnState), 実際の無音経過時間: \(String(format: "%.1f", silenceDuration))秒")
         
-        // 状態によるガード
+        // ---------------------------------------------------------
+        // 判定ロジック:
+        // 1. ユーザーが話している(.listening)ことになっているが、
+        // 2. 実はここ3秒以上、マイク入力が静か(-50dB以下)である場合
+        //    → 「VADの誤検知（または張り付き）」とみなして、強制的に促しを実行する
+        // ---------------------------------------------------------
+        
+        let isActuallySilent = silenceDuration > 2.5 // 少し余裕を見て2.5秒以上静かなら無音とする
+        
         if case .listening = turnState {
-            print("⚠️ ConversationController: ユーザーが話している(listening)ため nudge をスキップ")
-            cancelNudge()
-            return
+            if isActuallySilent {
+                print("🚀 ConversationController: Stateはlisteningですが、実際には無音(\(String(format: "%.1f", silenceDuration))s)のため、促しを強制実行します")
+                // そのまま下へ流して実行させる
+            } else {
+                print("⚠️ ConversationController: ユーザーが実際に話している(音量大)ため nudge をスキップ")
+                cancelNudge()
+                return
+            }
         }
+        
+        // 他の状態（AIが考えている、話している）の場合は従来どおりスキップ
         if case .thinking = turnState {
             print("⚠️ ConversationController: 応答生成中(thinking)のため nudge をスキップ")
             cancelNudge()
             return
         }
         if case .speaking = turnState {
-            print("⚠️ ConversationController: AIが話している(speaking)ため nudge をスキップ")
+            print("⚠️ ConversationController: AIが話している(speaking)のため nudge をスキップ")
             cancelNudge()
             return
         }
@@ -1108,5 +1322,147 @@ public final class ConversationController: ObservableObject {
     private func cancelNudge() {
         nudgeTimer?.invalidate()
         nudgeTimer = nil
+    }
+    
+    // MARK: - 会話分析機能
+    
+    /// 会話終了後の分析処理（要約・興味タグ・新出語彙の抽出）
+    /// - Parameter sessionId: 分析対象のセッションID
+    private func analyzeSession(sessionId: String) async {
+        print("📊 ConversationController: 会話分析開始 - sessionId: \(sessionId)")
+        
+        do {
+            // 1. Firestoreからこのセッションの全ターンを取得
+            let turns = try await firebaseRepository.fetchTurns(
+                userId: currentUserId,
+                childId: currentChildId,
+                sessionId: sessionId
+            )
+            
+            guard !turns.isEmpty else {
+                print("⚠️ ConversationController: ターンが存在しないため分析をスキップ")
+            return
+        }
+            
+            // 2. テキストを連結してプロンプト作成
+            let conversationLog = turns.compactMap { turn -> String? in
+                guard let text = turn.text, !text.isEmpty else { return nil }
+                let roleLabel = turn.role == .child ? "子ども" : "AI"
+                return "\(roleLabel): \(text)"
+            }.joined(separator: "\n")
+            
+            guard !conversationLog.isEmpty else {
+                print("⚠️ ConversationController: 会話テキストが存在しないため分析をスキップ")
+                return
+            }
+            
+            print("📝 ConversationController: 会話ログ（\(turns.count)ターン）\n\(conversationLog)")
+            
+            // 3. OpenAI Chat Completion (gpt-4o-mini) に投げる
+            let prompt = """
+            以下の親子の会話ログを分析し、JSON形式で出力してください。
+            
+            出力項目:
+            - summary: 30文字程度の要約（親向け）
+            - interests: 子どもが興味を示したトピック（dinosaurs, space, cooking, animals, vehicles, music, sports, crafts, stories, insects, princess, heroes, robots, nature, others から選択。英語のenum値で配列で出力）
+            - newWords: 子どもが使った特徴的な単語や成長を感じる言葉（3つまで、配列で出力）
+            
+            会話ログ:
+            \(conversationLog)
+            
+            JSON形式で出力してください。例:
+            {
+              "summary": "恐竜について話しました",
+              "interests": ["dinosaurs", "animals"],
+              "newWords": ["ティラノサウルス", "草食", "肉食"]
+            }
+            """
+            
+            struct Payload: Encodable {
+                let model: String
+                let messages: [[String: String]]
+                let response_format: [String: String]
+                let temperature: Double
+            }
+            
+            let payload = Payload(
+                model: "gpt-4o-mini",
+                messages: [
+                    ["role": "system", "content": "あなたは会話分析の専門家です。JSON形式のみで回答してください。"],
+                    ["role": "user", "content": prompt]
+                ],
+                response_format: ["type": "json_object"],
+                temperature: 0.3
+            )
+            
+            let endpoint = (Bundle.main.object(forInfoDictionaryKey: "API_BASE") as? String)
+                .flatMap(URL.init(string:)) ?? URL(string: "https://api.openai.com/v1")!
+            
+            var req = URLRequest(url: endpoint.appendingPathComponent("chat/completions"))
+            req.httpMethod = "POST"
+            req.addValue("application/json", forHTTPHeaderField: "Content-Type")
+            req.addValue("Bearer \(AppConfig.openAIKey)", forHTTPHeaderField: "Authorization")
+            req.httpBody = try JSONEncoder().encode(payload)
+            
+            let (data, response) = try await URLSession.shared.data(for: req)
+            
+            if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode != 200 {
+                print("❌ ConversationController: 分析API呼び出し失敗 - Status: \(httpResponse.statusCode)")
+                if let errorData = String(data: data, encoding: .utf8) {
+                    print("   Error: \(errorData)")
+                }
+                return
+            }
+            
+            // 4. JSONレスポンスをパース
+            struct AnalysisResponse: Decodable {
+                struct Choice: Decodable {
+                    struct Message: Decodable {
+                        let content: String
+                    }
+                    let message: Message
+                }
+                let choices: [Choice]
+            }
+            
+            struct AnalysisResult: Decodable {
+                let summary: String?
+                let interests: [String]?
+                let newWords: [String]?
+            }
+            
+            let decoded = try JSONDecoder().decode(AnalysisResponse.self, from: data)
+            guard let content = decoded.choices.first?.message.content else {
+                print("❌ ConversationController: 分析結果が空です")
+                return
+            }
+            
+            // JSON文字列をパース
+            guard let jsonData = content.data(using: .utf8),
+                  let result = try? JSONDecoder().decode(AnalysisResult.self, from: jsonData) else {
+                print("❌ ConversationController: 分析結果のJSONパース失敗 - content: \(content)")
+                return
+            }
+            
+            // 5. 結果をFirestoreに保存
+            let summaries = result.summary.map { [$0] } ?? []
+            let interests = (result.interests ?? []).compactMap { FirebaseInterestTag(rawValue: $0) }
+            let newVocabulary = result.newWords ?? []
+            
+            try await firebaseRepository.updateAnalysis(
+                userId: currentUserId,
+                childId: currentChildId,
+                sessionId: sessionId,
+                summaries: summaries,
+                interests: interests,
+                newVocabulary: newVocabulary
+            )
+            print("✅ ConversationController: 分析結果をFirebaseに保存完了")
+            
+            print("✅ ConversationController: 会話分析完了 - summary: \(summaries.first ?? "なし"), interests: \(interests.map { $0.rawValue }), vocabulary: \(newVocabulary)")
+            
+        } catch {
+            logFirebaseError(error, operation: "会話分析")
+        }
     }
 }

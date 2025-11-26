@@ -24,6 +24,8 @@ public final class MicrophoneCapture {
   private let outFormat: AVAudioFormat
   private var converter: AVAudioConverter?  // ✅ エンジン開始後に再作成する可能性があるため、varに変更
   private let onPCM: (AVAudioPCMBuffer) -> Void
+  // ✅ 追加: 音量レベル（dB）を通知するコールバック
+  public var onVolume: ((Double) -> Void)?
   private var running = false
   
   // ✅ バッチ送信用：60msごとにまとめて送信（反応速度重視）
@@ -244,6 +246,12 @@ public final class MicrophoneCapture {
       
       // ✅ AEC対策：再生中ゲート制御
       let inputRMS = self.calculateRMS(from: buffer)
+      
+      // -------------------------------------------------------
+      // ✅ 追加: 計算したRMS音量を外部へ通知
+      // -------------------------------------------------------
+      self.onVolume?(inputRMS)
+      
       let outputRMS = self.outputMonitor?.currentRMS ?? -60.0
       
       if self.isAIPlayingAudio && !self.userBargeIn {

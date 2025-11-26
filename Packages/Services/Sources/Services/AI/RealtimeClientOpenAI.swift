@@ -32,6 +32,7 @@ public final class RealtimeClientOpenAI: RealtimeClient {
     public var onError: ((Error) -> Void)?  // ✅ エラー発生時に呼ばれる（response.doneでstatus == "failed"の場合など）
     public var onAudioDeltaReceived: (() -> Void)?  // ✅ 参考プロジェクトパターン：AI音声受信時に録音停止をトリガー
     public var onSessionUpdated: (() -> Void)?  // ✅ session.updated受信時に呼ばれる（マイク開始のタイミング制御用）
+    public var onSpeechStartedMissing: (() -> Void)?  // ✅ speech_startedが来ていない警告が出た時に呼ばれる
 
     // 出力ストリーム（AsyncStream）
     private var audioContinuation: AsyncStream<Data>.Continuation?
@@ -456,6 +457,8 @@ public final class RealtimeClientOpenAI: RealtimeClient {
             if speechStartedAt == nil && turnAccumulatedMs > 300.0 {
                 if appendCount <= 10 || appendCount % 20 == 0 {
                     print("⚠️ RealtimeClient: speech_startedが来ていません（累積時間: \(String(format: "%.1f", turnAccumulatedMs))ms, バッファ: \(bufferedBytes)bytes, 最大振幅: \(String(format: "%.1f", maxAmplitudePercent))%）- VADが音声を検出できていない可能性があります")
+                    // ✅ コールバックを呼び出して、Controller側でカウントできるようにする
+                    onSpeechStartedMissing?()
                 }
             }
             
@@ -661,10 +664,15 @@ public final class RealtimeClientOpenAI: RealtimeClient {
             return
         }
         
-        // ✅ ユーザーが話している最中は促しメッセージを送信しない（lastAppendAtが最近更新されている場合）
-        if let lastAppend = lastAppendAt, Date().timeIntervalSince(lastAppend) < 2.0 {
-            print("⚠️ RealtimeClient: ユーザーが話している可能性があるため nudge をスキップ")
-            return
+        // ✅ ユーザーが話している最中は促しメッセージを送信しない
+        // ただし、speech_startedが来ていない場合（VADが音声を検出していない場合）は、
+        // 実際にはユーザーが話していない可能性が高いため、このチェックをスキップする
+        if speechStartedAt != nil {
+            // speech_startedが来ている場合のみ、lastAppendAtをチェック
+            if let lastAppend = lastAppendAt, Date().timeIntervalSince(lastAppend) < 2.0 {
+                print("⚠️ RealtimeClient: ユーザーが話している可能性があるため nudge をスキップ")
+                return
+            }
         }
     
         

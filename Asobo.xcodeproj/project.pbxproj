@@ -10,6 +10,11 @@
 		1405B2902E75306B002102AE /* Services in Frameworks */ = {isa = PBXBuildFile; productRef = 1405B28F2E75306B002102AE /* Services */; };
 		1405B2932E753077002102AE /* Support in Frameworks */ = {isa = PBXBuildFile; productRef = 1405B2922E753077002102AE /* Support */; };
 		1405B2962E753081002102AE /* Domain in Frameworks */ = {isa = PBXBuildFile; productRef = 1405B2952E753081002102AE /* Domain */; };
+		1441538C2ED1983E006341CB /* FirebaseAnalytics in Frameworks */ = {isa = PBXBuildFile; productRef = 1441538B2ED1983E006341CB /* FirebaseAnalytics */; };
+		1441538E2ED1983E006341CB /* FirebaseAnalyticsCore in Frameworks */ = {isa = PBXBuildFile; productRef = 1441538D2ED1983E006341CB /* FirebaseAnalyticsCore */; };
+		144153902ED1983E006341CB /* FirebaseAuth in Frameworks */ = {isa = PBXBuildFile; productRef = 1441538F2ED1983E006341CB /* FirebaseAuth */; };
+		144153922ED1983E006341CB /* FirebaseFirestore in Frameworks */ = {isa = PBXBuildFile; productRef = 144153912ED1983E006341CB /* FirebaseFirestore */; };
+		144153952ED5E753006341CB /* DataStores in Frameworks */ = {isa = PBXBuildFile; productRef = 144153942ED5E753006341CB /* DataStores */; };
 		146EA9CB2E87A63F00BBD955 /* Debug.xcconfig in Resources */ = {isa = PBXBuildFile; fileRef = 146EA9CA2E87A63F00BBD955 /* Debug.xcconfig */; };
 		146EA9CD2E87A65400BBD955 /* Release.xcconfig in Resources */ = {isa = PBXBuildFile; fileRef = 146EA9CC2E87A65400BBD955 /* Release.xcconfig */; };
 /* End PBXBuildFile section */
@@ -76,8 +81,13 @@
 			buildActionMask = 2147483647;
 			files = (
 				1405B2962E753081002102AE /* Domain in Frameworks */,
+				144153902ED1983E006341CB /* FirebaseAuth in Frameworks */,
 				1405B2932E753077002102AE /* Support in Frameworks */,
+				1441538E2ED1983E006341CB /* FirebaseAnalyticsCore in Frameworks */,
+				144153952ED5E753006341CB /* DataStores in Frameworks */,
+				1441538C2ED1983E006341CB /* FirebaseAnalytics in Frameworks */,
 				1405B2902E75306B002102AE /* Services in Frameworks */,
+				144153922ED1983E006341CB /* FirebaseFirestore in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -98,6 +108,13 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		144153962ED5E81E006341CB /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
 		1497CE5F2E72D88900051217 = {
 			isa = PBXGroup;
 			children = (
@@ -107,6 +124,7 @@
 				1497CE692E72D88900051217 /* Products */,
 				146EA9CA2E87A63F00BBD955 /* Debug.xcconfig */,
 				146EA9CC2E87A65400BBD955 /* Release.xcconfig */,
+				144153962ED5E81E006341CB /* Frameworks */,
 			);
 			sourceTree = "<group>";
 		};
@@ -143,6 +161,11 @@
 				1405B28F2E75306B002102AE /* Services */,
 				1405B2922E753077002102AE /* Support */,
 				1405B2952E753081002102AE /* Domain */,
+				1441538B2ED1983E006341CB /* FirebaseAnalytics */,
+				1441538D2ED1983E006341CB /* FirebaseAnalyticsCore */,
+				1441538F2ED1983E006341CB /* FirebaseAuth */,
+				144153912ED1983E006341CB /* FirebaseFirestore */,
+				144153942ED5E753006341CB /* DataStores */,
 			);
 			productName = Asobo;
 			productReference = 1497CE682E72D88900051217 /* Asobo.app */;
@@ -230,6 +253,8 @@
 				1405B28E2E75306A002102AE /* XCLocalSwiftPackageReference "Packages/Services" */,
 				1405B2912E753077002102AE /* XCLocalSwiftPackageReference "Packages/Support" */,
 				1405B2942E753081002102AE /* XCLocalSwiftPackageReference "Packages/Domain" */,
+				1441538A2ED1983E006341CB /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */,
+				144153932ED5E753006341CB /* XCLocalSwiftPackageReference "Packages/DataStores" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 1497CE692E72D88900051217 /* Products */;
@@ -430,7 +455,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = Asobo/Asobo.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 7;
+				CURRENT_PROJECT_VERSION = 8;
 				DEVELOPMENT_TEAM = XT522XX64M;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -470,7 +495,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = Asobo/Asobo.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 7;
+				CURRENT_PROJECT_VERSION = 8;
 				DEVELOPMENT_TEAM = XT522XX64M;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -508,7 +533,7 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 7;
+				CURRENT_PROJECT_VERSION = 8;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Asobo/App/Resources/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.5;
@@ -531,7 +556,7 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 7;
+				CURRENT_PROJECT_VERSION = 8;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Asobo/App/Resources/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.5;
@@ -553,7 +578,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 7;
+				CURRENT_PROJECT_VERSION = 8;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Asobo/App/Resources/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.5;
@@ -575,7 +600,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 7;
+				CURRENT_PROJECT_VERSION = 8;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Asobo/App/Resources/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.5;
@@ -647,7 +672,22 @@
 			isa = XCLocalSwiftPackageReference;
 			relativePath = Packages/Domain;
 		};
+		144153932ED5E753006341CB /* XCLocalSwiftPackageReference "Packages/DataStores" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Packages/DataStores;
+		};
 /* End XCLocalSwiftPackageReference section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		1441538A2ED1983E006341CB /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/firebase/firebase-ios-sdk";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 12.6.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
 		1405B28F2E75306B002102AE /* Services */ = {
@@ -661,6 +701,30 @@
 		1405B2952E753081002102AE /* Domain */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = Domain;
+		};
+		1441538B2ED1983E006341CB /* FirebaseAnalytics */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 1441538A2ED1983E006341CB /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
+			productName = FirebaseAnalytics;
+		};
+		1441538D2ED1983E006341CB /* FirebaseAnalyticsCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 1441538A2ED1983E006341CB /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
+			productName = FirebaseAnalyticsCore;
+		};
+		1441538F2ED1983E006341CB /* FirebaseAuth */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 1441538A2ED1983E006341CB /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
+			productName = FirebaseAuth;
+		};
+		144153912ED1983E006341CB /* FirebaseFirestore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 1441538A2ED1983E006341CB /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
+			productName = FirebaseFirestore;
+		};
+		144153942ED5E753006341CB /* DataStores */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = DataStores;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
