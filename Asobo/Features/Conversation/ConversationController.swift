@@ -385,10 +385,11 @@ public final class ConversationController: ObservableObject {
                     print("🔊 ConversationController: 再生開始 - マイクゲート閉 (AEC/BargeInモード)")
                 } else {
                     print("🔇 ConversationController: 再生完全終了 - マイクゲート開")
-                    // ✅ AIが話し終わったら、ユーザーの入力を待つ状態にしてタイマーを開始
+                    // ✅ AIが完全に話し終わったら、ユーザーの入力を待つ状態にしてタイマーを開始
+                    // 注意: 実際の音声再生が終了した時点でタイマーをセットする（onResponseDoneではなく）
                     if self.turnState == .speaking {
                         self.turnState = .waitingUser
-                        // ★ START THE TIMER HERE (After AI finishes speaking)
+                        print("⏰ ConversationController: AIの音声再生完全終了 -> 促しタイマーを開始")
                         self.startWaitingForResponse()
                     }
                 }
@@ -486,6 +487,11 @@ public final class ConversationController: ObservableObject {
         realtimeClient?.onResponseCreated = { [weak self] in
             Task { @MainActor in
                 guard let self else { return }
+                // ✅ 既にAIが話している場合は新しい応答をブロック（ターン制御のため）
+                if case .speaking = self.turnState {
+                    print("⚠️ ConversationController: 既にAIが話しているため、新しい応答をブロック（turnState: .speaking）")
+                    return
+                }
                 // ✅ 新しい応答が作成された時にテキストをクリア（前の応答のテキストを消す）
                 self.aiResponseText = ""
                 print("📝 ConversationController: 新しい応答開始 - aiResponseTextをクリア")
@@ -544,17 +550,14 @@ public final class ConversationController: ObservableObject {
                 // self.isAIPlayingAudio = false  // <-- 削除
                 // self.mic?.setAIPlayingAudio(false) // <-- 削除
                 
-                // ✅ 状態更新: 応答完了後はユーザーの入力を待つ状態にする
-                // 注意: player.onPlaybackStateChange でも更新されるが、念のためここでも更新
-                // これにより、促しメッセージが正しく送信される
-                self.turnState = .waitingUser
+                // ✅ 状態更新: サーバー送信完了時点では turnState を変更しない
+                // 理由: 実際の音声再生が終了するまで .speaking のままにしておくことで、
+                // AIが話している途中で新しい応答が生成されるのを防ぐ
+                // 実際の音声再生が終了した時点（player.onPlaybackStateChange）で .waitingUser に変更する
+                // これにより、AIが話している途中でタイマーが発火するのを防ぐ
+                print("📊 ConversationController: onResponseDone - turnStateは.speakingのまま（実際の音声再生終了まで待機）")
                 
-                // ---------------------------------------------------
-                // ✅ 追加: ここで必ずタイマーをスタートさせる
-                // 注意: player.onPlaybackStateChange でもタイマーを開始するが、
-                // 念のためここでも開始（重複しても cancelNudge() で既存タイマーはキャンセルされる）
-                // ---------------------------------------------------
-                self.startWaitingForResponse()
+                // 注意: タイマーは player.onPlaybackStateChange で再生完全終了時にセットする
             }
         }
         
@@ -907,14 +910,8 @@ public final class ConversationController: ObservableObject {
             self.transcript = ""
             self.turnState = .listening
             
-            // 促しタイマー開始
-            Task { [weak self] in
-                guard let self = self else { return }
-                try? await Task.sleep(nanoseconds: 250_000_000)
-                await MainActor.run {
-                    self.startWaitingForResponse()
-                }
-            }
+            // 注意: 促しタイマーは onResponseDone でのみセットする（AI応答完了時のみ）
+            // ユーザーが話し始めた直後はタイマーをセットしない
             print("✅ ConversationController: PTT開始シーケンス完了")
         }
     }
@@ -1251,9 +1248,9 @@ public final class ConversationController: ObservableObject {
     
     // MARK: - 促しタイマー機能
     
-    // ✅ 修正: タイマー開始ロジック（3.0秒に短縮、デバッグログ強化）
+    // ✅ 修正: タイマー開始ロジック（10.0秒に延長、デバッグログ強化）
     private func startWaitingForResponse() {
-        print("⏰ ConversationController: 促しタイマーをセットしました (3秒後に発火)")
+        print("⏰ ConversationController: 促しタイマーをセットしました (10秒後に発火)")
         
         // 既存のタイマーがあればキャンセル
         cancelNudge()
@@ -1262,7 +1259,7 @@ public final class ConversationController: ObservableObject {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
             
-            self.nudgeTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: false) { [weak self] _ in
+            self.nudgeTimer = Timer.scheduledTimer(withTimeInterval: 10.0, repeats: false) { [weak self] _ in
                 Task { @MainActor [weak self] in
                     print("⏰ ConversationController: 促しタイマー発火！ -> 状態チェック開始")
                     await self?.sendNudgeIfNoResponse()
@@ -1285,11 +1282,11 @@ public final class ConversationController: ObservableObject {
         // ---------------------------------------------------------
         // 判定ロジック:
         // 1. ユーザーが話している(.listening)ことになっているが、
-        // 2. 実はここ3秒以上、マイク入力が静か(-50dB以下)である場合
+        // 2. 実はここ4秒以上、マイク入力が静か(-50dB以下)である場合
         //    → 「VADの誤検知（または張り付き）」とみなして、強制的に促しを実行する
         // ---------------------------------------------------------
         
-        let isActuallySilent = silenceDuration > 2.5 // 少し余裕を見て2.5秒以上静かなら無音とする
+        let isActuallySilent = silenceDuration > 4.0 // 少し余裕を見て4.0秒以上静かなら無音とする
         
         if case .listening = turnState {
             if isActuallySilent {
@@ -1322,6 +1319,19 @@ public final class ConversationController: ObservableObject {
     private func cancelNudge() {
         nudgeTimer?.invalidate()
         nudgeTimer = nil
+    }
+    
+    // ✅ セッション開始時に最初の質問を生成する
+    public func requestInitialGreeting() {
+        guard isRealtimeActive else {
+            print("⚠️ ConversationController: セッションがアクティブでないため initial greeting スキップ")
+            return
+        }
+        
+        Task {
+            print("🚀 ConversationController: 最初の質問を生成中...")
+            await realtimeClient?.nudge(kind: 0)
+        }
     }
     
     // MARK: - 会話分析機能

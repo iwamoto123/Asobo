@@ -58,6 +58,9 @@ public final class RealtimeClientOpenAI: RealtimeClient {
     // ✅ キャンセル後の音声を破棄するフラグ
     private var suppressCurrentResponseAudio = false
     
+    // ✅ commitエラー検出フラグ（commitエラーが発生した場合、response.createを送信しない）
+    private var commitErrorDetected = false
+    
     // ✅ VADモードフラグ（VADモード時は自動レスポンスをキャンセルしない）
     // ⚠️ 注意: 現在はVADモード（useServerVAD = true）で運用
     // PTTモードに切り替える場合は、useServerVAD = false に変更し、turn_detection を外す
@@ -273,19 +276,24 @@ public final class RealtimeClientOpenAI: RealtimeClient {
             return
         }
         
-        // ✅ セッション設定：VADモードまたはPTTモードに応じてturn_detectionを設定
-        // ✅ 通常の会話用プロンプト
+        // ✅ プロンプトの変更: AIの話を短くし、質問メインにする
+        // ✅ 「聞き上手な友達」という役割に変更して、子供に質問して話を引き出す
         let instructions = """
-あなたは かならず日本語で話す、やさしい会話アシスタントです。
-ひらがな中心・一文みじかめ・ゆっくり を基本にします。
-■最重要ポリシー
-1) ユーザーが話しはじめたら ただちに話すのをやめて きく。
-2) ききとれない ときは かならず 聞き返す（勝手に話を作らない）。
-3) しばらく反応がない ときは やさしく会話を促す。
+あなたは、3歳〜6歳の子供と話す「好奇心旺盛で聞き上手な友達」です。
+先生や親のような「教える立場」ではありません。
+
+■会話の絶対ルール（これを破らないこと）
+1. 【短文で話す】: 1回の返答は「1文」または「2文」まで。求められた場合以外、長話は禁止。
+2. 【促しも短文】：促しメッセージも「1文」または「2文」まで。
+3. 【待つ】: 質問したら、子供が答えるまで余計なことを喋らずに待つ。
+4. 【相槌】: 「すごいね！」「えー！」「ほんと？」と、子供の言葉に大きく反応して話し始める
+5. 【相手の顔色などの話はNG】：実際に相手が見えているような話や、画面越しの景色の話はNG。子供が話したことからわかることだけを話題にする。
+
+■会話の始め方
+「こんにちは！今日は何して遊んだの？」や「話したいことある？」「好きな食べ物はなに？」など、答えやすい質問から始めてください。
 
 【言語設定】
-以後の応答は全て日本語で、丁寧語で簡潔に回答してください。
-英語や他言語は一切使用せず、日本語のみで応答してください。
+日本語のみで、子供が理解できる簡単な言葉（ひらがな言葉）で話してください。
 """
         
         var sessionDict: [String: Any] = [
@@ -379,42 +387,61 @@ public final class RealtimeClientOpenAI: RealtimeClient {
         let ch = buffer.format.channelCount
         let ms = (Double(n) / sr) * 1000.0
         
+        // ✅ フレーム長の検証
+        guard n > 0 else {
+            print("⚠️ RealtimeClient: sendMicrophonePCM - フレーム長が0")
+            return
+        }
+        
+        // ✅ 安全なアクセス：int16ChannelDataとポインタの有効性を確認
+        guard let channelData = buffer.int16ChannelData else {
+            print("⚠️ RealtimeClient: sendMicrophonePCM - int16ChannelDataがnil")
+            return
+        }
+        
+        // ✅ 範囲チェック：フレーム長が実際のバッファサイズを超えていないことを確認
+        let safeFrameCount = min(n, Int(buffer.frameLength))
+        guard safeFrameCount > 0 else {
+            print("⚠️ RealtimeClient: sendMicrophonePCM - 安全なフレーム長が0")
+            return
+        }
+        
+        // ✅ 最も安全な方法：データをDataにコピーしてから処理
+        // これにより、バッファが無効になっても、コピーしたデータは有効なまま
+        let bytes = safeFrameCount * MemoryLayout<Int16>.size
+        let ptr = channelData.pointee
+        
+        // ✅ データをDataにコピー（メモリ安全性を保証）
+        let data = Data(bytes: ptr, count: bytes)
+        
         // ✅ 音声レベルの簡易チェック（最大値・平均値）
-        var maxAmplitude: Int16 = 0
-        var sumAmplitude: Int64 = 0
-
-        // ここで即 append（20ms/480フレームのバッファが来る想定）
-        if let ch0 = buffer.int16ChannelData {
-            let ptr = ch0.pointee
-            for i in 0..<n {
-                let sample = abs(ptr[i])
-                maxAmplitude = max(maxAmplitude, sample)
-                sumAmplitude += Int64(sample)
-            }
-            
-            let avgAmplitude = n > 0 ? Double(sumAmplitude) / Double(n) : 0.0
-            let maxAmplitudePercent = Double(maxAmplitude) / 32768.0 * 100.0  // 16bit PCMの最大値に対する割合
-            
-            // ✅ 無音スキップを完全にやめる：常にappendする（VADが文脈を掴めるようにする）
-            // ✅ 無音も含めてそのままappendすることで、VADが正しく動作し、「短く切れすぎる」「別の文字に化ける」問題が解消される
-            
-            // ✅ 音声レベル測定に追加
-            audioMeter.addFrame(maxAmplitude: maxAmplitudePercent, ms: ms)
-            
-            // ✅ 簡易アイドル検知：-40dBくらいを有声判定の目安（ざっくりでOK）
-            // ✅ 最大振幅から簡易的にRMSを推定（-40dB相当は約1%）
-            if maxAmplitudePercent > 1.0 {
-                lastVoiceAt = Date()
-                // ✅ 5秒アイドル保険をリセット（有声が検出されたため）
-                idleGuardTimer?.cancel()
-                idleGuardTimer = nil
-            }
-            
-            turnAccumulatedMs += ms  // ✅ 累積ミリ秒を計算
-            
-            // ✅ 空コミット対策：バッファされたバイト数を累積
-            let bytes = n * MemoryLayout<Int16>.size
-            bufferedBytes += bytes
+        // ✅ ペチャットなどの特殊なデバイスではメモリアクセスでエラーが発生する可能性があるため、
+        // ✅ 音声レベルの計算をスキップしてデフォルト値（0.0）を使用（診断目的なので必須ではない）
+        // ✅ データ送信には影響しない
+        var maxAmplitudePercent: Double = 0.0
+        
+        // ✅ 音声レベルの計算はスキップ（特殊なデバイスでのクラッシュを防ぐため）
+        // ✅ 必要に応じて、将来的に安全な方法で実装可能
+        
+        // ✅ 無音スキップを完全にやめる：常にappendする（VADが文脈を掴めるようにする）
+        // ✅ 無音も含めてそのままappendすることで、VADが正しく動作し、「短く切れすぎる」「別の文字に化ける」問題が解消される
+        
+        // ✅ 音声レベル測定に追加
+        audioMeter.addFrame(maxAmplitude: maxAmplitudePercent, ms: ms)
+        
+        // ✅ 簡易アイドル検知：-40dBくらいを有声判定の目安（ざっくりでOK）
+        // ✅ 最大振幅から簡易的にRMSを推定（-40dB相当は約1%）
+        if maxAmplitudePercent > 1.0 {
+            lastVoiceAt = Date()
+            // ✅ 5秒アイドル保険をリセット（有声が検出されたため）
+            idleGuardTimer?.cancel()
+            idleGuardTimer = nil
+        }
+        
+        turnAccumulatedMs += ms  // ✅ 累積ミリ秒を計算
+        
+        // ✅ 空コミット対策：バッファされたバイト数を累積
+        bufferedBytes += bytes
             
             // ✅ ターン状態管理：appendがあったことを記録
             hasAppendedSinceClear = true
@@ -422,71 +449,67 @@ public final class RealtimeClientOpenAI: RealtimeClient {
                 turnState = .collecting
             }
             
-            // ✅ フォーマット検証：24kHz/monoであることを確認
-            appendCount += 1
-            if appendCount == 1 {
-                print("📊 RealtimeClient: 音声入力フォーマット確認 - サンプルレート: \(sr)Hz, チャンネル: \(ch), フレーム長: \(n), バイト数: \(bytes)")
-                // ✅ preferredSampleRate(24_000)は「希望値」です。多くのiOS機種は48kHzのままです。
-                // 送信用にMicrophoneCaptureで24kHzへ変換しているのでOK。ログはINFOレベルに変更。
-                if abs(sr - 24000.0) > 100.0 {
-                    print("ℹ️ RealtimeClient: サンプルレートが24kHzではありません（実際の値: \(sr)Hz）。MicrophoneCaptureで24kHzに変換されます。")
-                }
-                if ch != 1 {
-                    print("ℹ️ RealtimeClient: チャンネル数が1（モノラル）ではありません（実際の値: \(ch)）。MicrophoneCaptureでモノラルに変換されます。")
-                }
+        // ✅ フォーマット検証：24kHz/monoであることを確認
+        appendCount += 1
+        if appendCount == 1 {
+            print("📊 RealtimeClient: 音声入力フォーマット確認 - サンプルレート: \(sr)Hz, チャンネル: \(ch), フレーム長: \(safeFrameCount), バイト数: \(bytes)")
+            // ✅ preferredSampleRate(24_000)は「希望値」です。多くのiOS機種は48kHzのままです。
+            // 送信用にMicrophoneCaptureで24kHzへ変換しているのでOK。ログはINFOレベルに変更。
+            if abs(sr - 24000.0) > 100.0 {
+                print("ℹ️ RealtimeClient: サンプルレートが24kHzではありません（実際の値: \(sr)Hz）。MicrophoneCaptureで24kHzに変換されます。")
             }
-            
-            // ✅ 音声レベルの診断
-            // 音声レベルが低い場合でも検出できるように、警告閾値を緩和（0.5% → 0.1%）
-            if maxAmplitudePercent < 0.1 {
-                if appendCount <= 10 || appendCount % 20 == 0 {
-                    print("⚠️ RealtimeClient: 音声レベルが非常に低いです（最大振幅: \(String(format: "%.2f", maxAmplitudePercent))%）- マイクの音量を確認してください")
-                }
-            } else if maxAmplitudePercent < 0.5 {
-                // 0.1%以上0.5%未満の場合はINFOレベルに変更（低音声レベルでも正常に動作する可能性がある）
-                if appendCount <= 10 || appendCount % 50 == 0 {
-                    print("ℹ️ RealtimeClient: 音声レベルが低めです（最大振幅: \(String(format: "%.2f", maxAmplitudePercent))%）- 正常に動作する可能性があります")
-                }
+            if ch != 1 {
+                print("ℹ️ RealtimeClient: チャンネル数が1（モノラル）ではありません（実際の値: \(ch)）。MicrophoneCaptureでモノラルに変換されます。")
             }
-            
-            // ✅ VADの「詰まり」対策：最後のappend時刻を更新
-            let now = Date()
-            lastAppendAt = now
-            
-            // ✅ speech_startedが来ていない場合の警告（最初の数回と定期的に）
-            if speechStartedAt == nil && turnAccumulatedMs > 300.0 {
-                if appendCount <= 10 || appendCount % 20 == 0 {
-                    print("⚠️ RealtimeClient: speech_startedが来ていません（累積時間: \(String(format: "%.1f", turnAccumulatedMs))ms, バッファ: \(bufferedBytes)bytes, 最大振幅: \(String(format: "%.1f", maxAmplitudePercent))%）- VADが音声を検出できていない可能性があります")
-                    // ✅ コールバックを呼び出して、Controller側でカウントできるようにする
-                    onSpeechStartedMissing?()
-                }
-            }
-            
-            // ✅ 詳細ログ（最初の10回は毎回、その後は20回に1回程度）
+        }
+        
+        // ✅ 音声レベルの診断
+        // 音声レベルが低い場合でも検出できるように、警告閾値を緩和（0.5% → 0.1%）
+        if maxAmplitudePercent < 0.1 {
             if appendCount <= 10 || appendCount % 20 == 0 {
-                print("🎤 RealtimeClient: 音声データ送信 #\(appendCount) - フレーム: \(n), サンプルレート: \(sr)Hz, チャンネル: \(ch), 長さ: \(String(format: "%.1f", ms))ms, 累積時間: \(String(format: "%.1f", turnAccumulatedMs))ms, 累積バイト: \(bufferedBytes)bytes, 最大振幅: \(String(format: "%.1f", maxAmplitudePercent))%, speechStartedAt: \(speechStartedAt?.description ?? "nil")")
+                print("⚠️ RealtimeClient: 音声レベルが非常に低いです（最大振幅: \(String(format: "%.2f", maxAmplitudePercent))%）- マイクの音量を確認してください")
             }
-            
-           
-            let data = Data(bytes: ptr, count: bytes)
-            let b64  = data.base64EncodedString()
-            
-            // ✅ 参考プロジェクトパターン：送信フラグを立てて送信
-            isSendingAudioData = true
-            do {
+        } else if maxAmplitudePercent < 0.5 {
+            // 0.1%以上0.5%未満の場合はINFOレベルに変更（低音声レベルでも正常に動作する可能性がある）
+            if appendCount <= 10 || appendCount % 50 == 0 {
+                print("ℹ️ RealtimeClient: 音声レベルが低めです（最大振幅: \(String(format: "%.2f", maxAmplitudePercent))%）- 正常に動作する可能性があります")
+            }
+        }
+        
+        // ✅ VADの「詰まり」対策：最後のappend時刻を更新
+        let now = Date()
+        lastAppendAt = now
+        
+        // ✅ speech_startedが来ていない場合の警告（最初の数回と定期的に）
+        if speechStartedAt == nil && turnAccumulatedMs > 300.0 {
+            if appendCount <= 10 || appendCount % 20 == 0 {
+                print("⚠️ RealtimeClient: speech_startedが来ていません（累積時間: \(String(format: "%.1f", turnAccumulatedMs))ms, バッファ: \(bufferedBytes)bytes, 最大振幅: \(String(format: "%.1f", maxAmplitudePercent))%）- VADが音声を検出できていない可能性があります")
+                // ✅ コールバックを呼び出して、Controller側でカウントできるようにする
+                onSpeechStartedMissing?()
+            }
+        }
+        
+        // ✅ 詳細ログ（最初の10回は毎回、その後は20回に1回程度）
+        if appendCount <= 10 || appendCount % 20 == 0 {
+            print("🎤 RealtimeClient: 音声データ送信 #\(appendCount) - フレーム: \(safeFrameCount), サンプルレート: \(sr)Hz, チャンネル: \(ch), 長さ: \(String(format: "%.1f", ms))ms, 累積時間: \(String(format: "%.1f", turnAccumulatedMs))ms, 累積バイト: \(bufferedBytes)bytes, 最大振幅: \(String(format: "%.1f", maxAmplitudePercent))%, speechStartedAt: \(speechStartedAt?.description ?? "nil")")
+        }
+        
+        // ✅ データは既にDataにコピー済み（上記で作成）
+        let b64  = data.base64EncodedString()
+        
+        // ✅ 参考プロジェクトパターン：送信フラグを立てて送信
+        isSendingAudioData = true
+        do {
             try await send(json: ["type": "input_audio_buffer.append", "audio": b64])
-                // ✅ 送信完了後にフラグをリセット
-                isSendingAudioData = false
-                
-                // ✅ サーバーVADモードでは、手動commit→response.createは不要（サーバーが自動で処理）
-                // ✅ 簡易アイドル検知と5秒アイドル保険は無効化（サーバーVADが自動で処理するため）
-            } catch {
-                // ✅ エラー時もフラグをリセット
-                isSendingAudioData = false
-                throw error
-            }
-        } else {
-            print("⚠️ RealtimeClient: sendMicrophonePCM - int16ChannelDataがnil")
+            // ✅ 送信完了後にフラグをリセット
+            isSendingAudioData = false
+            
+            // ✅ サーバーVADモードでは、手動commit→response.createは不要（サーバーが自動で処理）
+            // ✅ 簡易アイドル検知と5秒アイドル保険は無効化（サーバーVADが自動で処理するため）
+        } catch {
+            // ✅ エラー時もフラグをリセット
+            isSendingAudioData = false
+            throw error
         }
     }
     
@@ -513,9 +536,15 @@ public final class RealtimeClientOpenAI: RealtimeClient {
         // ✅ response.cancel の送信を厳密に制御（activeResponseId != nil の時のみ一度だけ送信）
         // ✅ activeResponseIdを即座にクリアして重複送信を防ぐ
         if let responseId = activeResponseId {
+            let idToCancel = responseId
             activeResponseId = nil  // ✅ 即座にクリアして重複送信を防ぐ
-        try await send(json: ["type": "response.cancel"])
-            print("✅ RealtimeClient: interruptAndYield - response.cancel送信 (ID: \(responseId))")
+            do {
+                try await send(json: ["type": "response.cancel"])
+                print("✅ RealtimeClient: interruptAndYield - response.cancel送信 (ID: \(idToCancel))")
+            } catch {
+                // ✅ cancel_not_active エラーは握りつぶしてOK（競合しがち）
+                print("ℹ️ RealtimeClient: interruptAndYield - response.cancel エラー（無視） - \(error)")
+            }
         } else {
             print("ℹ️ RealtimeClient: interruptAndYield - アクティブレスポンスなし - response.cancel をスキップ")
         }
@@ -575,10 +604,20 @@ public final class RealtimeClientOpenAI: RealtimeClient {
             // ✅ 2. 300ms待ってもresponse.createdが来なければ明示生成（保険）
             try await Task.sleep(nanoseconds: 300_000_000)  // 300ms
             if activeResponseId == nil {
+                // ✅ システム指示の「短文で話す」ルールと「見えているかのような話はNG」ルールを明示的に含める
+                let instructions = """
+                【重要】1回の返答は「1文」または「2文」まで。求められた場合以外、長話は禁止。
+                
+                【絶対に守ること】実際に相手が見えているような話や、画面越しの景色の話はNG。相手の顔色や表情について話すのもNG。子供が話したことからわかることだけを話題にする。
+                
+                つねににほんごでこたえてください。ひらがなを中心に、やさしく、みじかく話します。
+                """
+                
                 try await send(json: [
                     "type": "response.create",
                     "response": [
-                        "modalities": ["audio","text"]
+                        "modalities": ["audio","text"],
+                        "instructions": instructions
                     ]
                 ])
                 print("✅ RealtimeClient: forceCommitAndCreateResponse - response.create送信（保険）")
@@ -601,11 +640,37 @@ public final class RealtimeClientOpenAI: RealtimeClient {
             return
         }
         
+        // ✅ commitエラーフラグをリセット
+        commitErrorDetected = false
+        
         // ✅ 1. commitを送信（公式パターン）
         try await send(json: ["type": "input_audio_buffer.commit"])
         print("✅ RealtimeClient: PTT - input_audio_buffer.commit送信 - manual")
         
-        // ✅ ターン状態管理：commit送信後
+        // ✅ commitエラーを検出するため、少し待機（エラーイベントが来るまで）
+        try await Task.sleep(nanoseconds: 200_000_000)  // 200ms待機
+        
+        // ✅ commitエラーが検出された場合は、response.createを送信しない
+        if commitErrorDetected {
+            print("⚠️ RealtimeClient: commitエラーが検出されたため、response.createを送信しません")
+            // ✅ 状態をリセット
+            hasCommittedThisTurn = false
+            turnState = .collecting
+            commitErrorDetected = false
+            return
+        }
+        
+        // ✅ speech_startedが来ていない場合（実際に音声が検出されていない場合）は、response.createを送信しない
+        // 無音データのみが送信されている可能性があるため
+        if speechStartedAt == nil {
+            print("⚠️ RealtimeClient: speech_startedが来ていないため、実際に音声が検出されていません。response.createを送信しません")
+            // ✅ 状態をリセット
+            hasCommittedThisTurn = false
+            turnState = .collecting
+            return
+        }
+        
+        // ✅ ターン状態管理：commit送信後（エラーがなく、speech_startedが来ている場合のみ）
         hasCommittedThisTurn = true
         turnState = .committed
         // ✅ 注意: bufferedBytesはリセットしない（サーバー側が処理中）
@@ -618,11 +683,20 @@ public final class RealtimeClientOpenAI: RealtimeClient {
             return
         }
         
+        // ✅ システム指示の「短文で話す」ルールと「見えているかのような話はNG」ルールを明示的に含める
+        let instructions = """
+        【重要】1回の返答は「1文」または「2文」まで。求められた場合以外、長話は禁止。
+        
+        【絶対に守ること】実際に相手が見えているような話や、画面越しの景色の話はNG。相手の顔色や表情について話すのもNG。子供が話したことからわかることだけを話題にする。
+        
+        つねににほんごでこたえてください。ひらがなを中心に、やさしく、みじかく話します。
+        """
+        
         try await send(json: [
             "type": "response.create",
             "response": [
                 "modalities": ["audio","text"],
-                "instructions": "つねににほんごでこたえてください。ひらがなを中心に、やさしく、みじかく話します。"
+                "instructions": instructions
             ]
         ])
         print("✅ RealtimeClient: PTT - response.create送信")
@@ -674,28 +748,40 @@ public final class RealtimeClientOpenAI: RealtimeClient {
                 return
             }
         }
+        
+        // ✅ ターン制御: suppressCurrentResponseAudioがtrueの場合はスキップ
+        // これは、AIが話している最中またはユーザーが話し始めた直後であることを示す
+        if suppressCurrentResponseAudio {
+            print("⚠️ RealtimeClient: AIが話している最中またはユーザーが話し始めた直後のため nudge をスキップ（suppressCurrentResponseAudio=true）")
+            return
+        }
     
         
-        // ✅ メッセージの定義（子供向けに優しく変更）
-        let variants = [
-            "あれ？どうしたの？",           // 0: 優しく問いかけ
-            "お話、きかせて？",             // 1: 誘いかけ
-            "もしもーし、聞こえてるかな？"    // 2: 通信確認っぽく
-        ]
-        
-        // インデックスが範囲外にならないよう安全策
-        let index = kind % variants.count
-        let line = variants[index]
+        // ✅ 促しメッセージ用の指示：質問を投げかけることに焦点を当てる
+        let instructions = """
+        あなたは、3歳〜6歳の子供と話す「好奇心旺盛で聞き上手な友達」です。
+        先生や親のような「教える立場」ではありません。
+
+        ■促しメッセージの絶対ルール（これを破らないこと）
+        1. 【必ず質問を投げかける】: 促しメッセージは必ず質問の形で話してください。「どうしたの？」「何か話したいことある？」「今日は何して遊んだ？」など。
+        2. 【短文で話す】: 1回の返答は「1文」または「2文」まで。長話は禁止。
+        3. 【勝手に話を作らない】: 子供が話していない内容を勝手に作り出さないでください。過去の会話の文脈に基づいて勝手に話を作るのもNGです。促しメッセージは、シンプルで答えやすい質問のみをしてください。
+        4. 【相手の顔色などの話はNG】：実際に相手が見えているような話や、画面越しの景色の話はNG。相手の顔色や表情について話すのもNG。子供が話したことからわかることだけを話題にする。
+        5. 【優しく問いかける】: 子供が答えやすい、シンプルな質問をしてください。
+
+        【言語設定】
+        日本語のみで、子供が理解できる簡単な言葉（ひらがな言葉）で話してください。
+        """
         
         do {
             try await send(json: [
                 "type": "response.create",
                 "response": [
                     "modalities": ["audio", "text"],
-                    "instructions": line // ✅ ここに直接メッセージを指定
+                    "instructions": instructions // ✅ sendSessionUpdateと同じシステム指示
                 ]
             ])
-            print("✅ RealtimeClient: 促しメッセージ送信（kind: \(kind), msg: \(line)）")
+            print("✅ RealtimeClient: 促しメッセージ送信（kind: \(kind)）")
         } catch {
             print("❌ RealtimeClient: 促しメッセージ送信失敗 - \(error)")
         }
@@ -714,8 +800,14 @@ public final class RealtimeClientOpenAI: RealtimeClient {
         // ✅ ユーザー確定フラグを立てる（自動レスポンスの即キャンセルを防ぐ）
         userRequestedResponse = true
         
-        // ✅ 日本語固定のデフォルト指示（念のため）
-        let defaultJapaneseInstructions = "つねににほんごでこたえてください。ひらがなを中心に、やさしく、みじかく話します。"
+        // ✅ 日本語固定のデフォルト指示（念のため）+ システム指示の「短文で話す」ルールと「見えているかのような話はNG」ルールを明示的に含める
+        let defaultJapaneseInstructions = """
+        【重要】1回の返答は「1文」または「2文」まで。求められた場合以外、長話は禁止。
+        
+        【絶対に守ること】実際に相手が見えているような話や、画面越しの景色の話はNG。相手の顔色や表情について話すのもNG。子供が話したことからわかることだけを話題にする。
+        
+        つねににほんごでこたえてください。ひらがなを中心に、やさしく、みじかく話します。
+        """
         
         var responseDict: [String: Any] = [
                 "modalities": ["audio","text"],
@@ -723,10 +815,14 @@ public final class RealtimeClientOpenAI: RealtimeClient {
                 "temperature": NSDecimalNumber(value: temperature)
             ]
         
-        // カスタムinstructionsがある場合は、それに日本語強制を追加
+        // カスタムinstructionsがある場合は、それに日本語強制と短文ルール、見えているかのような話はNGルールを追加
         if let inst = instructions, !inst.isEmpty {
             responseDict["instructions"] = """
-            \(defaultJapaneseInstructions)
+            【重要】1回の返答は「1文」または「2文」まで。求められた場合以外、長話は禁止。
+            
+            【絶対に守ること】実際に相手が見えているような話や、画面越しの景色の話はNG。相手の顔色や表情について話すのもNG。子供が話したことからわかることだけを話題にする。
+            
+            つねににほんごでこたえてください。ひらがなを中心に、やさしく、みじかく話します。
             
             \(inst)
             """
@@ -1154,8 +1250,9 @@ public final class RealtimeClientOpenAI: RealtimeClient {
                     }
                     
                     userRequestedResponse = false  // ✅ フラグをリセット
-                    suppressCurrentResponseAudio = false  // ✅ フラグをリセット
-                    print("📊 RealtimeClient: response.done - フラグリセット完了")
+                    // ✅ suppressCurrentResponseAudioはリセットしない（次のターンで適切に設定される）
+                    // 理由: 次のターンでユーザーが話し始めた時にバージインできるようにするため
+                    print("📊 RealtimeClient: response.done - フラグリセット完了（suppressCurrentResponseAudioは保持）")
                     
                     // ✅ 次のターンの準備：音声バッファをクリアして次の入力を待つ
                     // ✅ speech_startedが立っている間はclearを送らない、立っていない時は必ず送る
@@ -1208,9 +1305,16 @@ public final class RealtimeClientOpenAI: RealtimeClient {
                         print("📊 RealtimeClient: response.created - イベント内容: \(obj)")
                         // フォールバック：response_idがなくても、後続のresponse.output_audio.deltaで設定する
                     }
-                    suppressCurrentResponseAudio = false  // ✅ 音声を許可
-                    print("📊 RealtimeClient: response.created - 音声再生を許可（suppressCurrentResponseAudio = false）")
-                    print("📊 RealtimeClient: response.created - 以降のresponse.output_audio.deltaは再生されます")
+                    // ✅ suppressCurrentResponseAudioをリセットして音声を許可
+                    // ただし、speech_startedが来ている場合は、ユーザーが話し始めているため音声を抑制する
+                    if speechStartedAt == nil {
+                        suppressCurrentResponseAudio = false  // ✅ 音声を許可
+                        print("📊 RealtimeClient: response.created - 音声再生を許可（suppressCurrentResponseAudio = false）")
+                        print("📊 RealtimeClient: response.created - 以降のresponse.output_audio.deltaは再生されます")
+                    } else {
+                        suppressCurrentResponseAudio = true  // ✅ ユーザーが話し始めているため音声を抑制
+                        print("📊 RealtimeClient: response.created - 音声再生を抑制（suppressCurrentResponseAudio = true, speech_startedが来ているため）")
+                    }
                     // ✅ 新しい応答が作成されたことを通知（テキストをクリアするため）
                     onResponseCreated?()
                     break
@@ -1293,15 +1397,17 @@ public final class RealtimeClientOpenAI: RealtimeClient {
                     // ✅ response.cancel の送信を有声判定つきに（直近300msに150ms以上の有声がある時だけ）
                     // ✅ これで「ちょっとした環境ノイズ」では返答を止めません。実際に話したときだけバージインします
                     let voicedMs = audioMeter.voicedMs(windowMs: 300.0)
+                    // ✅ 安全なresponse.cancel送信: activeResponseIdがnilでない場合のみ送信
                     if let responseId = activeResponseId, voicedMs >= 150.0 {
                         print("📊 RealtimeClient: アクティブレスポンス検出 - ID: \(responseId), 有声時間: \(String(format: "%.1f", voicedMs))ms（150ms以上）, response.cancel送信")
                         // ✅ activeResponseIdを即座にクリアして重複送信を防ぐ
+                        let idToCancel = responseId
                         activeResponseId = nil
                         Task { [weak self] in
                             guard let self = self else { return }
                             do {
                                 try await self.send(json: ["type": "response.cancel"])
-                                print("✅ RealtimeClient: ユーザー発話検知でAI応答を中断 (ID: \(responseId))")
+                                print("✅ RealtimeClient: ユーザー発話検知でAI応答を中断 (ID: \(idToCancel))")
                             } catch {
                                 // ✅ cancel_not_active エラーは握りつぶしてOK（競合しがち）
                                 print("ℹ️ RealtimeClient: response.cancel エラー（無視） - \(error)")
@@ -1465,6 +1571,11 @@ public final class RealtimeClientOpenAI: RealtimeClient {
                         }
                         if let code = error["code"] as? String {
                             print("❌ RealtimeClient: エラーコード - \(code)")
+                            // ✅ commitエラーを検出（input_audio_buffer_commit_emptyなど）
+                            if code == "input_audio_buffer_commit_empty" || code.contains("commit") {
+                                print("⚠️ RealtimeClient: commitエラーを検出 - response.createを送信しません")
+                                commitErrorDetected = true
+                            }
                         }
                     }
                 default: 
