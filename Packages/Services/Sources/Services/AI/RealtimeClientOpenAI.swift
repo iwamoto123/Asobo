@@ -283,11 +283,12 @@ public final class RealtimeClientOpenAI: RealtimeClient {
 先生や親のような「教える立場」ではありません。
 
 ■会話の絶対ルール（これを破らないこと）
-1. 【短文で話す】: 1回の返答は「1文」または「2文」まで。求められた場合以外、長話は禁止。
-2. 【促しも短文】：促しメッセージも「1文」または「2文」まで。
-3. 【待つ】: 質問したら、子供が答えるまで余計なことを喋らずに待つ。
-4. 【相槌】: 「すごいね！」「えー！」「ほんと？」と、子供の言葉に大きく反応して話し始める
-5. 【相手の顔色などの話はNG】：実際に相手が見えているような話や、画面越しの景色の話はNG。子供が話したことからわかることだけを話題にする。
+1. 【基本的には短文で話す】1回の返答は「1文」または「2文」までで、ユーザーが答えやすい、話しやすい投げかけをして。
+2. 【知識は共有】ただし、ユーザーから質問された場合は、ちゃんとタメになる会話をすること。知識やナレッジが増えるように話してください。
+3. 【促しは質問】：促しメッセージも「1文」または「2文」まで。
+4. 【待つ】: 質問したら、子供が答えるまで余計なことを喋らずに待つ。
+5. 【相槌】: 「すごいね！」「えー！」「ほんと？」と、子供の言葉に大きく反応して話し始める
+6. 【相手の顔色などの話はNG】：実際に相手が見えているような話や、画面越しの景色の話はNG。子供が話したことからわかることだけを話題にする。
 
 ■会話の始め方
 「こんにちは！今日は何して遊んだの？」や「話したいことある？」「好きな食べ物はなに？」など、答えやすい質問から始めてください。
@@ -606,8 +607,8 @@ public final class RealtimeClientOpenAI: RealtimeClient {
             if activeResponseId == nil {
                 // ✅ システム指示の「短文で話す」ルールと「見えているかのような話はNG」ルールを明示的に含める
                 let instructions = """
-                【重要】1回の返答は「1文」または「2文」まで。求められた場合以外、長話は禁止。
-                
+                【重要】1回の返答は「1文」または「2文」まで。ただし、ユーザーから質問された場合は、ちゃんとタメになる会話をすること。知識やナレッジが増えるように話してください。
+                        
                 【絶対に守ること】実際に相手が見えているような話や、画面越しの景色の話はNG。相手の顔色や表情について話すのもNG。子供が話したことからわかることだけを話題にする。
                 
                 つねににほんごでこたえてください。ひらがなを中心に、やさしく、みじかく話します。
@@ -685,7 +686,7 @@ public final class RealtimeClientOpenAI: RealtimeClient {
         
         // ✅ システム指示の「短文で話す」ルールと「見えているかのような話はNG」ルールを明示的に含める
         let instructions = """
-        【重要】1回の返答は「1文」または「2文」まで。求められた場合以外、長話は禁止。
+        【重要】1回の返答は「1文」または「2文」まで。ただし、ユーザーから質問された場合は、ちゃんとタメになる会話をすること。知識やナレッジが増えるように話してください。
         
         【絶対に守ること】実際に相手が見えているような話や、画面越しの景色の話はNG。相手の顔色や表情について話すのもNG。子供が話したことからわかることだけを話題にする。
         
@@ -1566,16 +1567,42 @@ public final class RealtimeClientOpenAI: RealtimeClient {
                 case "error":
                     if let error = obj["error"] as? [String: Any] {
                         print("❌ RealtimeClient: サーバーエラー - \(error)")
+                        var errorMessage: String?
+                        var errorCode: String?
+                        
                         if let message = error["message"] as? String {
+                            errorMessage = message
                             print("❌ RealtimeClient: エラーメッセージ - \(message)")
                         }
                         if let code = error["code"] as? String {
+                            errorCode = code
                             print("❌ RealtimeClient: エラーコード - \(code)")
                             // ✅ commitエラーを検出（input_audio_buffer_commit_emptyなど）
                             if code == "input_audio_buffer_commit_empty" || code.contains("commit") {
                                 print("⚠️ RealtimeClient: commitエラーを検出 - response.createを送信しません")
                                 commitErrorDetected = true
                             }
+                        }
+                        
+                        // ✅ エラー時にonErrorコールバックを呼び出す
+                        let errorDescription = errorMessage ?? errorCode ?? "Unknown error"
+                        let nsError = NSError(domain: "RealtimeClient", code: -1, userInfo: [
+                            NSLocalizedDescriptionKey: errorDescription,
+                            "error": error
+                        ])
+                        onError?(nsError)
+                        
+                        // ✅ 重大なエラーの場合は、接続を閉じる（onStateChangeで通知）
+                        // 注意: すべてのエラーで接続を閉じるのではなく、重大なエラーのみ
+                        // input_audio_buffer_commit_emptyなどの一部のエラーは、接続を維持したまま処理可能
+                        let isCriticalError = errorCode == "input_audio_buffer_commit_empty" || 
+                                            errorCode?.contains("invalid_request_error") == true ||
+                                            errorCode?.contains("server_error") == true
+                        
+                        if isCriticalError {
+                            print("⚠️ RealtimeClient: 重大なエラーを検出 - 接続を閉じます")
+                            state = .closed(nsError)
+                            onStateChange?(state)
                         }
                     }
                 default: 

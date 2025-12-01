@@ -162,8 +162,17 @@ public final class FirebaseConversationsRepository {
                     print("🔍 FirebaseConversationsRepository: interestContext (その他): \(interestContext)")
                 } else {
                     // interestContextが存在しない場合は空配列を設定
-                    print("🔍 FirebaseConversationsRepository: interestContext が存在しないため空配列を設定")
+                    print("⚠️ FirebaseConversationsRepository: interestContext が存在しないため空配列を設定")
                     data["interestContext"] = []
+                }
+                
+                // summariesの値を確認
+                if let summaries = data["summaries"] as? [String] {
+                    print("🔍 FirebaseConversationsRepository: summaries (String配列): \(summaries)")
+                } else if data["summaries"] == nil {
+                    print("⚠️ FirebaseConversationsRepository: summaries が存在しないため空配列を設定")
+                } else {
+                    print("🔍 FirebaseConversationsRepository: summaries (その他): \(String(describing: data["summaries"]))")
                 }
                 
                 // modeがStringの場合はそのまま
@@ -175,7 +184,7 @@ public final class FirebaseConversationsRepository {
                     data["mode"] = "freeTalk"
                 }
                 
-                // summariesが存在しない場合は空配列を設定
+                // summariesが存在しない場合は空配列を設定（上記のログ出力の後に処理）
                 if data["summaries"] == nil {
                     data["summaries"] = []
                 }
@@ -220,6 +229,8 @@ public final class FirebaseConversationsRepository {
                 // デコードを試みる
                 do {
                     let session = try decoder.decode(FirebaseConversationSession.self, from: jsonData)
+                    // デコード後のデータをログ出力
+                    print("✅ FirebaseConversationsRepository: セッションデコード成功 - sessionId: \(session.id ?? "nil"), summaries: \(session.summaries), interestContext: \(session.interestContext.map { $0.rawValue })")
                     decodedSessions.append(session)
                 } catch let decodeError {
                     let errorDescription = String(describing: decodeError)
@@ -360,6 +371,8 @@ public final class FirebaseConversationsRepository {
         interests: [FirebaseInterestTag],
         newVocabulary: [String]
     ) async throws {
+        print("🔄 FirebaseConversationsRepository: updateAnalysis開始 - sessionId: \(sessionId), summaries: \(summaries), interests: \(interests.map { $0.rawValue }), vocabulary: \(newVocabulary)")
+        
         let ref = db.collection("users").document(userId)
             .collection("children").document(childId)
             .collection("sessions").document(sessionId)
@@ -367,12 +380,21 @@ public final class FirebaseConversationsRepository {
         // InterestTagをString配列に変換して保存
         let interestRawValues = interests.map { $0.rawValue }
         
-        try await ref.updateData([
+        let updateData: [String: Any] = [
             "summaries": summaries,
             "interestContext": interestRawValues,
             "newVocabulary": newVocabulary
-        ])
-        print("✅ FirebaseConversationsRepository: 分析結果更新 - sessionId: \(sessionId), summaries: \(summaries.count), interests: \(interests.count), vocabulary: \(newVocabulary.count)")
+        ]
+        
+        print("🔄 FirebaseConversationsRepository: updateAnalysis - 保存データ: \(updateData)")
+        
+        do {
+            try await ref.updateData(updateData)
+            print("✅ FirebaseConversationsRepository: 分析結果更新成功 - sessionId: \(sessionId), summaries: \(summaries.count), interests: \(interests.count), vocabulary: \(newVocabulary.count)")
+        } catch {
+            print("❌ FirebaseConversationsRepository: 分析結果更新失敗 - sessionId: \(sessionId), error: \(error)")
+            throw error
+        }
     }
 }
 

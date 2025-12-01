@@ -602,12 +602,30 @@ public final class ConversationController: ObservableObject {
                     if let error = error {
                         self?.errorMessage = "接続エラー: \(error.localizedDescription)"
                     }
+                    // ✅ 接続が閉じられた場合、セッション終了処理を実行
+                    // これにより、エラー時でも確実にanalyzeSessionが呼ばれる
+                    print("🔄 ConversationController: onStateChange(.closed) - stopRealtimeSessionを呼び出します")
+                    self?.stopRealtimeSession()
                 case .idle:
                     self?.isRealtimeConnecting = false
                     self?.isRealtimeActive = false
                 default:
                     self?.isRealtimeConnecting = false
                     self?.isRealtimeActive = false
+                }
+            }
+        }
+        
+        // ✅ エラーコールバックを設定（onStateChangeの補完として）
+        realtimeClient?.onError = { [weak self] error in
+            Task { @MainActor in
+                print("❌ ConversationController: RealtimeClientエラー検出 - \(error.localizedDescription)")
+                self?.errorMessage = "エラー: \(error.localizedDescription)"
+                // 注意: onStateChangeで既にstopRealtimeSessionが呼ばれるため、ここでは呼ばない
+                // ただし、onStateChangeが呼ばれない場合の保険として、ここでも呼ぶ
+                if self?.isRealtimeActive == true {
+                    print("🔄 ConversationController: onError - stopRealtimeSessionを呼び出します（保険）")
+                    self?.stopRealtimeSession()
                 }
             }
         }
@@ -760,11 +778,18 @@ public final class ConversationController: ObservableObject {
         // ✅ realtimeClientのクリーンアップ（非同期処理）
         // finishSession()は非同期処理のため、Task内で実行
         Task { [weak self] in
-            guard let self else { return }
+            guard let self else { 
+                print("⚠️ ConversationController: stopRealtimeSession - selfがnilのため処理をスキップ")
+                return 
+            }
+            
+            print("🔄 ConversationController: stopRealtimeSession - realtimeClient.finishSession()を呼び出し中...")
             try? await self.realtimeClient?.finishSession()
+            print("✅ ConversationController: stopRealtimeSession - realtimeClient.finishSession()完了")
             
             // ✅ Firebaseにセッション終了を記録
             if let sessionId = self.currentSessionId {
+                print("🔄 ConversationController: stopRealtimeSession - セッション終了処理開始 - sessionId: \(sessionId)")
                 let endedAt = Date()
                 do {
                     try await self.firebaseRepository.finishSession(
@@ -776,10 +801,15 @@ public final class ConversationController: ObservableObject {
                     print("✅ ConversationController: Firebaseセッション終了更新完了 - sessionId: \(sessionId)")
                     
                     // ✅ 会話終了後の分析処理を実行
+                    print("🔄 ConversationController: stopRealtimeSession - 分析処理を開始します - sessionId: \(sessionId)")
                     await self.analyzeSession(sessionId: sessionId)
+                    print("✅ ConversationController: stopRealtimeSession - 分析処理完了 - sessionId: \(sessionId)")
                 } catch {
+                    print("❌ ConversationController: stopRealtimeSession - エラー発生: \(error)")
                     self.logFirebaseError(error, operation: "Firebaseセッション終了更新")
                 }
+            } else {
+                print("⚠️ ConversationController: stopRealtimeSession - currentSessionIdがnilのため、セッション終了処理をスキップ")
             }
             
             await MainActor.run {
@@ -1342,6 +1372,7 @@ public final class ConversationController: ObservableObject {
         print("📊 ConversationController: 会話分析開始 - sessionId: \(sessionId)")
         
         do {
+            print("📊 ConversationController: analyzeSession - エラーキャッチブロック開始")
             // 1. Firestoreからこのセッションの全ターンを取得
             let turns = try await firebaseRepository.fetchTurns(
                 userId: currentUserId,
@@ -1350,9 +1381,11 @@ public final class ConversationController: ObservableObject {
             )
             
             guard !turns.isEmpty else {
-                print("⚠️ ConversationController: ターンが存在しないため分析をスキップ")
-            return
-        }
+                print("⚠️ ConversationController: ターンが存在しないため分析をスキップ - sessionId: \(sessionId)")
+                return
+            }
+            
+            print("📊 ConversationController: 取得したターン数 - \(turns.count)")
             
             // 2. テキストを連結してプロンプト作成
             let conversationLog = turns.compactMap { turn -> String? in
@@ -1361,8 +1394,10 @@ public final class ConversationController: ObservableObject {
                 return "\(roleLabel): \(text)"
             }.joined(separator: "\n")
             
+            print("📊 ConversationController: 会話テキストの長さ - \(conversationLog.count)文字, テキストありのターン数: \(turns.filter { $0.text != nil && !$0.text!.isEmpty }.count)")
+            
             guard !conversationLog.isEmpty else {
-                print("⚠️ ConversationController: 会話テキストが存在しないため分析をスキップ")
+                print("⚠️ ConversationController: 会話テキストが存在しないため分析をスキップ - sessionId: \(sessionId), ターン数: \(turns.count)")
                 return
             }
             
@@ -1448,9 +1483,18 @@ public final class ConversationController: ObservableObject {
             }
             
             // JSON文字列をパース
-            guard let jsonData = content.data(using: .utf8),
-                  let result = try? JSONDecoder().decode(AnalysisResult.self, from: jsonData) else {
-                print("❌ ConversationController: 分析結果のJSONパース失敗 - content: \(content)")
+            print("🔍 ConversationController: 分析結果のJSON文字列 - content: \(content)")
+            guard let jsonData = content.data(using: .utf8) else {
+                print("❌ ConversationController: JSON文字列のdata変換失敗")
+                return
+            }
+            
+            let result: AnalysisResult
+            do {
+                result = try JSONDecoder().decode(AnalysisResult.self, from: jsonData)
+                print("✅ ConversationController: 分析結果のJSONパース成功 - summary: \(result.summary ?? "nil"), interests: \(result.interests ?? []), newWords: \(result.newWords ?? [])")
+            } catch {
+                print("❌ ConversationController: 分析結果のJSONパース失敗 - error: \(error), content: \(content)")
                 return
             }
             
@@ -1458,6 +1502,8 @@ public final class ConversationController: ObservableObject {
             let summaries = result.summary.map { [$0] } ?? []
             let interests = (result.interests ?? []).compactMap { FirebaseInterestTag(rawValue: $0) }
             let newVocabulary = result.newWords ?? []
+            
+            print("🔍 ConversationController: 保存前のデータ - summaries: \(summaries), interests: \(interests.map { $0.rawValue }), newVocabulary: \(newVocabulary)")
             
             try await firebaseRepository.updateAnalysis(
                 userId: currentUserId,
@@ -1472,6 +1518,11 @@ public final class ConversationController: ObservableObject {
             print("✅ ConversationController: 会話分析完了 - summary: \(summaries.first ?? "なし"), interests: \(interests.map { $0.rawValue }), vocabulary: \(newVocabulary)")
             
         } catch {
+            print("❌ ConversationController: analyzeSession - エラー発生: \(error)")
+            print("❌ ConversationController: analyzeSession - エラーの詳細: \(String(describing: error))")
+            if let nsError = error as NSError? {
+                print("❌ ConversationController: analyzeSession - NSError詳細 - domain: \(nsError.domain), code: \(nsError.code), userInfo: \(nsError.userInfo)")
+            }
             logFirebaseError(error, operation: "会話分析")
         }
     }

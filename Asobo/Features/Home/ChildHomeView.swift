@@ -2,8 +2,9 @@ import SwiftUI
 
 // MARK: - Color Palette
 extension Color {
-    static let anoneBgTop = Color(red: 1.0, green: 0.97, blue: 0.90) // Cream
-    static let anoneBgBottom = Color(red: 1.0, green: 0.85, blue: 0.75) // Apricot
+    // 変更点: より暖かみのあるオレンジ・ベージュ系の薄いグラデーションに変更
+    static let anoneBgTop = Color(red: 1.0, green: 0.96, blue: 0.91) // Warm Milk
+    static let anoneBgBottom = Color(red: 1.0, green: 0.88, blue: 0.80) // Soft Peach Orange
     static let anoneButton = Color(red: 1.0, green: 0.6, blue: 0.5) // Living Coral
     static let anoneHeartLight = Color(red: 1.0, green: 0.75, blue: 0.7) // Light Pink
     static let anoneHeartDark = Color(red: 0.95, green: 0.5, blue: 0.45) // Deep Coral
@@ -113,24 +114,29 @@ public struct ChildHomeView: View {
             if initialGreetingText.isEmpty {
                 initialGreetingText = greetingPatterns.randomElement() ?? greetingPatterns[0]
             }
-            if !hasStartedSession {
-                hasStartedSession = true
-                controller.mode = .realtime
-                controller.requestPermissions()
+            
+            // ✅ セッションが停止している場合は再開する（タブ切り替え後の復帰対応）
+            if !controller.isRealtimeActive && !controller.isRealtimeConnecting {
+                if !hasStartedSession {
+                    hasStartedSession = true
+                    controller.mode = .realtime
+                    controller.requestPermissions()
+                }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                     controller.startRealtimeSession()
                 }
             }
-            startBlinkingAnimation()
-            startSquintingAnimation()
+            
+            startEyeAnimation()
             startNoddingAnimation()
         }
+        .onDisappear {
+            // ✅ タブを離れた時にセッションを停止（オプション：必要に応じてコメントアウト）
+            // 注意: これを有効にすると、タブを切り替えるたびにセッションが停止・再開される
+            // controller.stopRealtimeSession()
+        }
         .onChange(of: controller.isRecording) { isRecording in
-            if isRecording {
-                startBlinkingAnimation(fast: true)
-            } else {
-                startBlinkingAnimation(fast: false)
-            }
+            // 録音中の頻度調整は、startEyeAnimation内で管理
         }
     }
     
@@ -156,27 +162,24 @@ public struct ChildHomeView: View {
     }
     
     // アニメーションロジック（既存のゆっくりしたアニメーションを維持）
-    private func startBlinkingAnimation(fast: Bool = false) {
+    // まばたきとsquintingを1つのタスクで管理し、同時に起こらないようにする
+    private func startEyeAnimation() {
         Task {
             while true {
-                let baseInterval: TimeInterval = fast ? 2.0 : 4.0
-                let randomInterval = baseInterval + Double.random(in: 0...5.0)
-                try? await Task.sleep(nanoseconds: UInt64(randomInterval * 1_000_000_000))
-                await MainActor.run {
-                    withAnimation(.spring(response: 0.6, dampingFraction: 0.8, blendDuration: 0.2)) {
-                        isBlinking = true
-                    }
-                }
-                try? await Task.sleep(nanoseconds: UInt64(0.5 * 1_000_000_000))
-                try? await Task.sleep(nanoseconds: UInt64(0.2 * 1_000_000_000))
-                await MainActor.run {
-                    withAnimation(.spring(response: 0.7, dampingFraction: 0.75, blendDuration: 0.2)) {
-                        isBlinking = false
-                    }
-                }
-                if fast {
-                    try? await Task.sleep(nanoseconds: UInt64(0.3 * 1_000_000_000))
+                // まばたきかsquintingかをランダムに選ぶ
+                let isBlink = Bool.random()
+                
+                if isBlink {
+                    // まばたき（頻度を減らす）
+                    let baseInterval: TimeInterval = controller.isRecording ? 3.0 : 6.0
+                    let randomInterval = baseInterval + Double.random(in: 0...6.0)
+                    try? await Task.sleep(nanoseconds: UInt64(randomInterval * 1_000_000_000))
+                    
                     await MainActor.run {
+                        // squintingが有効な場合は待機
+                        if isSquinting {
+                            return
+                        }
                         withAnimation(.spring(response: 0.6, dampingFraction: 0.8, blendDuration: 0.2)) {
                             isBlinking = true
                         }
@@ -188,26 +191,26 @@ public struct ChildHomeView: View {
                             isBlinking = false
                         }
                     }
-                }
-            }
-        }
-    }
-    
-    private func startSquintingAnimation() {
-        Task {
-            while true {
-                let randomInterval = Double.random(in: 5.0...12.0)
-                try? await Task.sleep(nanoseconds: UInt64(randomInterval * 1_000_000_000))
-                await MainActor.run {
-                    withAnimation(.spring(response: 0.4, dampingFraction: 0.7, blendDuration: 0.1)) {
-                        isSquinting = true
+                } else {
+                    // squinting
+                    let randomInterval = Double.random(in: 6.0...15.0)
+                    try? await Task.sleep(nanoseconds: UInt64(randomInterval * 1_000_000_000))
+                    
+                    await MainActor.run {
+                        // まばたきが有効な場合は待機
+                        if isBlinking {
+                            return
+                        }
+                        withAnimation(.spring(response: 0.4, dampingFraction: 0.7, blendDuration: 0.1)) {
+                            isSquinting = true
+                        }
                     }
-                }
-                let squintDuration = Double.random(in: 0.5...1.5)
-                try? await Task.sleep(nanoseconds: UInt64(squintDuration * 1_000_000_000))
-                await MainActor.run {
-                    withAnimation(.spring(response: 0.4, dampingFraction: 0.7, blendDuration: 0.1)) {
-                        isSquinting = false
+                    let squintDuration = Double.random(in: 0.5...1.5)
+                    try? await Task.sleep(nanoseconds: UInt64(squintDuration * 1_000_000_000))
+                    await MainActor.run {
+                        withAnimation(.spring(response: 0.4, dampingFraction: 0.7, blendDuration: 0.1)) {
+                            isSquinting = false
+                        }
                     }
                 }
             }
@@ -302,16 +305,8 @@ struct MocchyBearView: View {
             .offset(y: isNodding ? size * 0.03 : 0)
             .scaleEffect(x: isPressed ? 1.02 : 1.0, y: isPressed ? 0.98 : 1.0) // 顔も一緒に潰れる
             
-            // 4. ハートのボタン & エフェクト
-            ZStack {
-                // パーティクルエフェクト（録音中のみ表示）
-                if isRecording {
-                    ParticleEffectView(size: size)
-                }
-                
-                // ハート本体
-                HeartButtonBody(size: size, isRecording: isRecording, isPressed: isPressed)
-            }
+            // 4. ハートのボタン
+            HeartButtonBody(size: size, isRecording: isRecording, isPressed: isPressed)
             .offset(y: size * 0.32) // 少し上に配置
             .scaleEffect(x: isPressed ? 0.95 : 1.0, y: isPressed ? 0.95 : 1.0) // ボタン自体も縮む
             .gesture(
@@ -478,26 +473,13 @@ struct ParticleEffectView: View {
     let size: CGFloat
     @State private var animate = false
     
-    // 真上（270度）を除外して角度を計算
-    private func targetAngle(for index: Int) -> Double {
-        let angle = Double(index) * 60.0
-        // 真上（270度）に近い240度と300度を下方向に変更
-        if abs(angle - 240) < 1 { // 左上（真上に近い）
-            return 120 // 左下に変更
-        } else if abs(angle - 300) < 1 { // 右上（真上に近い）
-            return 60 // 右下に変更
-        } else {
-            return angle // その他の方向はそのまま
-        }
-    }
-    
     var body: some View {
         ZStack {
             ForEach(0..<6, id: \.self) { i in
                 ParticleHeart(
                     size: size,
                     index: i,
-                    targetAngle: targetAngle(for: i),
+                    targetAngle: Double(i) * 60.0,
                     animate: animate
                 )
             }
@@ -527,8 +509,8 @@ private struct ParticleHeart: View {
             )
             .frame(width: size * 0.05, height: size * 0.05)
             .offset(
-                x: animate ? cos(radians) * size * 0.4 : 0,
-                y: animate ? sin(radians) * size * 0.4 : 0
+                x: animate ? cos(radians) * size * 1.5 : 0,
+                y: animate ? sin(radians) * size * 1.5 : 0
             )
             .opacity(animate ? 0 : 1)
             .rotationEffect(.degrees(targetAngle))

@@ -227,12 +227,13 @@ struct ChatBubbleView: View {
     }
     
     var body: some View {
-        HStack(alignment: .bottom, spacing: 8) {
+        HStack(alignment: .top, spacing: 8) {
             if isChild {
-                // 子どもの発言（右側・緑色）LINE風
+                // 子どもの発言（右側・緑色）
                 Spacer(minLength: 60)
                 
-                HStack(alignment: .bottom, spacing: 6) {
+                // ✅ alignment: .bottom にして時刻を下に揃える
+                HStack(alignment: .bottom, spacing: 4) {
                     // タイムスタンプ
                     Text(timeFormatter.string(from: turn.timestamp))
                         .font(.system(size: 11))
@@ -251,8 +252,9 @@ struct ChatBubbleView: View {
                         .frame(maxWidth: 280, alignment: .trailing)
                 }
             } else {
-                // AIの発言（左側・グレー）LINE風
-                HStack(alignment: .bottom, spacing: 6) {
+                // AIの発言（左側・グレー）
+                // アイコンと吹き出し群はTop揃え
+                HStack(alignment: .top, spacing: 8) {
                     // AIアイコン
                     Circle()
                         .fill(Color.gray.opacity(0.3))
@@ -263,22 +265,25 @@ struct ChatBubbleView: View {
                                 .foregroundColor(.gray)
                         )
                     
-                    // 吹き出し
-                    Text(turn.text ?? "")
-                        .font(.system(size: 16))
-                        .foregroundColor(.primary)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 10)
-                        .background(
-                            RoundedRectangle(cornerRadius: 18)
-                                .fill(Color(uiColor: .systemGray5))
-                        )
-                        .frame(maxWidth: 280, alignment: .leading)
-                    
-                    // タイムスタンプ
-                    Text(timeFormatter.string(from: turn.timestamp))
-                        .font(.system(size: 11))
-                        .foregroundColor(.secondary)
+                    // ✅ 吹き出しと時刻はBottom揃え
+                    HStack(alignment: .bottom, spacing: 4) {
+                        // 吹き出し
+                        Text(turn.text ?? "")
+                            .font(.system(size: 16))
+                            .foregroundColor(.primary)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 10)
+                            .background(
+                                RoundedRectangle(cornerRadius: 18)
+                                    .fill(Color(uiColor: .systemGray5))
+                            )
+                            .frame(maxWidth: 280, alignment: .leading)
+                        
+                        // タイムスタンプ
+                        Text(timeFormatter.string(from: turn.timestamp))
+                            .font(.system(size: 11))
+                            .foregroundColor(.secondary)
+                    }
                 }
                 
                 Spacer(minLength: 60)
