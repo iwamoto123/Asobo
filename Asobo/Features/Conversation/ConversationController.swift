@@ -59,6 +59,9 @@ public final class ConversationController: ObservableObject {
     @Published public var isPlayingAudio: Bool = false
     @Published public var hasMicrophonePermission: Bool = false
     
+    // ✅ 新しい応答が作成された時にtextBufferをクリアするためのフラグ
+    private var shouldClearTextBuffer: Bool = false
+    
     // AI呼び出し用フィールド
     @Published public var isThinking: Bool = false   // ぐるぐる表示用
     private var lastAskedText: String = ""           // 同文の連投防止
@@ -444,9 +447,21 @@ public final class ConversationController: ObservableObject {
                 self.cancelNudge()
                 self.speechStartedMissingCount = 0  // ✅ カウンターをリセット
                 let t = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
-                if t.count < 2 {
-                    // ✅ 聞き取り失敗時は必ず聞き返し（RealtimeClient側で処理済み）
+                if t.isEmpty || t.count < 2 {
+                    // ✅ 聞き取り失敗時は必ず聞き返し
+                    print("⚠️ ConversationController: 聞き取り失敗 - テキスト: 「\(t)」（空または2文字未満）")
                     self.turnState = .clarifying
+                    
+                    // ✅ 既存の応答をキャンセルして、聞き返しメッセージを送信
+                    Task { [weak self] in
+                        guard let self else { return }
+                        do {
+                            try await self.realtimeClient?.requestClarification()
+                            print("✅ ConversationController: 聞き返しメッセージ送信完了")
+                        } catch {
+                            print("❌ ConversationController: 聞き返しメッセージ送信失敗 - \(error)")
+                        }
+                    }
                 } else {
                     // ✅ 聞き取り成功 → 応答生成中
                     self.turnState = .thinking
@@ -494,7 +509,9 @@ public final class ConversationController: ObservableObject {
                 }
                 // ✅ 新しい応答が作成された時にテキストをクリア（前の応答のテキストを消す）
                 self.aiResponseText = ""
-                print("📝 ConversationController: 新しい応答開始 - aiResponseTextをクリア")
+                // ✅ textBufferもクリアするためのフラグを立てる
+                self.shouldClearTextBuffer = true
+                print("📝 ConversationController: 新しい応答開始 - aiResponseTextをクリア、textBufferクリアフラグを設定")
                 // ✅ 応答が来たので促しをキャンセル
                 self.cancelNudge()
                 self.turnState = .speaking
@@ -977,6 +994,15 @@ public final class ConversationController: ObservableObject {
             
             while !Task.isCancelled {
                 do {
+                    // ✅ 新しい応答が作成された場合はtextBufferをクリア
+                    if await MainActor.run { self.shouldClearTextBuffer } {
+                        await MainActor.run {
+                            self.shouldClearTextBuffer = false
+                        }
+                        textBuffer = ""
+                        print("📝 ConversationController: 新しい応答検出 - textBufferをクリア")
+                    }
+                    
                     if let part = try await self.realtimeClient?.nextPartialText() {
                         print("📝 ConversationController: AI応答テキスト受信 - \(part)")
                         // ✅ テキストをバッファに追加
@@ -998,6 +1024,15 @@ public final class ConversationController: ObservableObject {
                             lastUpdateTime = now
                         }
                     } else {
+                        // ✅ 新しい応答が作成された場合はtextBufferをクリア（最終処理前にもチェック）
+                        if await MainActor.run { self.shouldClearTextBuffer } {
+                            await MainActor.run {
+                                self.shouldClearTextBuffer = false
+                            }
+                            textBuffer = ""
+                            print("📝 ConversationController: 新しい応答検出（最終処理前） - textBufferをクリア")
+                        }
+                        
                         // ✅ バッファに残っているテキストがあれば反映
                         if !textBuffer.isEmpty {
                             await MainActor.run {
@@ -1013,6 +1048,15 @@ public final class ConversationController: ObservableObject {
                         try await Task.sleep(nanoseconds: 50_000_000) // idle 50ms
                     }
                 } catch { 
+                    // ✅ 新しい応答が作成された場合はtextBufferをクリア（エラー処理前にもチェック）
+                    if await MainActor.run { self.shouldClearTextBuffer } {
+                        await MainActor.run {
+                            self.shouldClearTextBuffer = false
+                        }
+                        textBuffer = ""
+                        print("📝 ConversationController: 新しい応答検出（エラー処理前） - textBufferをクリア")
+                    }
+                    
                     // ✅ エラー時もバッファに残っているテキストがあれば反映
                     if !textBuffer.isEmpty {
                         await MainActor.run {
