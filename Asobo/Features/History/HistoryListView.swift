@@ -3,6 +3,7 @@ import Domain
 
 // MARK: - History List View
 struct HistoryListView: View {
+    @EnvironmentObject var authVM: AuthViewModel
     @StateObject private var viewModel = HistoryViewModel()
     
     // 3回以上のターンのセッションのみをフィルタリング
@@ -72,7 +73,18 @@ struct HistoryListView: View {
             .navigationTitle("おもいで")
             .navigationBarTitleDisplayMode(.large)
             .task {
+                // ✅ AuthViewModelからユーザー情報を取得してHistoryViewModelに設定
+                if let userId = authVM.currentUser?.uid, let childId = authVM.selectedChild?.id {
+                    viewModel.setupUser(userId: userId, childId: childId)
+                }
                 await viewModel.loadSessions()
+            }
+            .onChange(of: authVM.selectedChild?.id) { newChildId in
+                // ✅ 子供が変更された場合も更新
+                if let userId = authVM.currentUser?.uid, let childId = newChildId {
+                    viewModel.setupUser(userId: userId, childId: childId)
+                    Task { await viewModel.loadSessions() }
+                }
             }
             .refreshable {
                 await viewModel.loadSessions()
@@ -97,7 +109,7 @@ struct SessionCardView: View {
     }
     
     var body: some View {
-        HStack(alignment: .top, spacing: 16) {
+        HStack(alignment: .center, spacing: 16) {
             // 左側: 日付バッジ
             VStack(spacing: 4) {
                 // 日付から「日」を取得する簡易ロジック
@@ -117,7 +129,6 @@ struct SessionCardView: View {
                     .foregroundColor(Color.gray.opacity(0.6))
             }
             .frame(width: 50)
-            .padding(.top, 4)
             
             // 右側: 内容
             VStack(alignment: .leading, spacing: 8) {
@@ -157,9 +168,15 @@ struct SessionCardView: View {
                         }
                     }
                     .padding(.top, 4)
+                    
+                    // タグがある場合もやり取りの回数を表示
+                    Text("\(session.turnCount)回のやり取り")
+                        .font(.system(size: 12, design: .rounded))
+                        .foregroundColor(.gray.opacity(0.7))
+                        .padding(.top, 2)
                 } else {
-                    // タグがない場合はターン数を表示
-                    Text("\(session.turnCount)回のやりとり")
+                    // タグがない場合はターン数のみ表示
+                    Text("\(session.turnCount)回のやり取り")
                         .font(.system(size: 12, design: .rounded))
                         .foregroundColor(.gray.opacity(0.7))
                         .padding(.top, 4)

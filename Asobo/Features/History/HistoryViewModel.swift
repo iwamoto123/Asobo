@@ -11,13 +11,24 @@ class HistoryViewModel: ObservableObject {
     @Published var errorMessage: String?
     
     private let repository = FirebaseConversationsRepository()
-    // TODO: 本来はFirebase Authから取得する必要がある
-    private let userId = "dummy_parent_uid"
-    // TODO: 選択中の子供IDを設定する必要がある
-    private let childId = "dummy_child_uid"
+    // ✅ 認証情報（AuthViewModelから設定される）
+    private var userId: String?
+    private var childId: String?
+    
+    // ✅ ユーザー情報を設定するメソッド
+    public func setupUser(userId: String, childId: String) {
+        self.userId = userId
+        self.childId = childId
+        print("✅ HistoryViewModel: ユーザー情報を設定 - Parent=\(userId), Child=\(childId)")
+    }
     
     /// セッション一覧を読み込む
     func loadSessions() async {
+        guard let userId = userId, let childId = childId else {
+            print("⚠️ HistoryViewModel: ユーザー情報が設定されていないため、セッションを読み込めません")
+            errorMessage = "ユーザー情報が設定されていません。ログインしてください。"
+            return
+        }
         print("📱 HistoryViewModel: loadSessions開始 - userId: \(userId), childId: \(childId)")
         isLoading = true
         errorMessage = nil

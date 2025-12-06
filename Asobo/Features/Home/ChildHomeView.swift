@@ -13,6 +13,7 @@ extension Color {
 }
 
 public struct ChildHomeView: View {
+    @EnvironmentObject var authVM: AuthViewModel
     @StateObject private var controller = ConversationController()
     @State private var isBreathing = false
     @State private var isPressed = false
@@ -108,6 +109,11 @@ public struct ChildHomeView: View {
             }
         }
         .onAppear {
+            // ✅ AuthViewModelからユーザー情報を取得してConversationControllerに設定
+            if let userId = authVM.currentUser?.uid, let childId = authVM.selectedChild?.id {
+                controller.setupUser(userId: userId, childId: childId)
+            }
+            
             withAnimation(.easeInOut(duration: 3.0).repeatForever(autoreverses: true)) {
                 isBreathing = true
             }

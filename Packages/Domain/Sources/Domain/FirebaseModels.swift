@@ -54,12 +54,16 @@ public enum FirebaseSharingLevel: String, Codable {
 public struct FirebaseParentProfile: Codable, Identifiable {
     public var id: String? // userId (Auth UID)
     public var displayName: String
+    public var parentName: String? // 親の呼び名（ママ、パパなど）- オンボーディングで設定
+    public var email: String? // メールアドレス（Apple Sign Inから取得）
     public var currentChildId: String? // 現在選択中の子どものID
     public var createdAt: Date
     
-    public init(id: String? = nil, displayName: String, currentChildId: String? = nil, createdAt: Date = Date()) {
+    public init(id: String? = nil, displayName: String = "", parentName: String? = nil, email: String? = nil, currentChildId: String? = nil, createdAt: Date = Date()) {
         self.id = id
         self.displayName = displayName
+        self.parentName = parentName
+        self.email = email
         self.currentChildId = currentChildId
         self.createdAt = createdAt
     }
@@ -68,9 +72,11 @@ public struct FirebaseParentProfile: Codable, Identifiable {
 /// 子どもプロフィール (/users/{userId}/children/{childId})
 public struct FirebaseChildProfile: Codable, Identifiable {
     public var id: String? // childId
-    public var displayName: String
-    public var nickName: String?
+    public var displayName: String // 名前
+    public var nickName: String? // 呼び名
     public var birthDate: Date         // 生年月日（年齢計算用）
+    public var photoURL: String? // 顔写真のURL（Firebase Storage）
+    public var teddyName: String? // ぬいぐるみの名前
     public var interests: [FirebaseInterestTag]
     public var createdAt: Date
     
@@ -82,16 +88,26 @@ public struct FirebaseChildProfile: Codable, Identifiable {
     }
     
     // イニシャライザ: 年齢(Int)から生年月日を逆算して生成する便利init
-    public init(id: String? = nil, displayName: String, nickName: String? = nil, age: Int, interests: [FirebaseInterestTag], createdAt: Date = Date()) {
+    public init(id: String? = nil, displayName: String, nickName: String? = nil, birthDate: Date? = nil, age: Int? = nil, photoURL: String? = nil, teddyName: String? = nil, interests: [FirebaseInterestTag] = [], createdAt: Date = Date()) {
         self.id = id
         self.displayName = displayName
         self.nickName = nickName
+        self.photoURL = photoURL
+        self.teddyName = teddyName
         self.interests = interests
         self.createdAt = createdAt
         
-        // 年齢から概算の生年月日を設定（今日の日付 - 年齢）
-        let calendar = Calendar.current
-        self.birthDate = calendar.date(byAdding: .year, value: -age, to: Date()) ?? Date()
+        // 生年月日が指定されていればそれを使用、なければ年齢から逆算
+        if let birthDate = birthDate {
+            self.birthDate = birthDate
+        } else if let age = age {
+            let calendar = Calendar.current
+            self.birthDate = calendar.date(byAdding: .year, value: -age, to: Date()) ?? Date()
+        } else {
+            // デフォルトは3歳
+            let calendar = Calendar.current
+            self.birthDate = calendar.date(byAdding: .year, value: -3, to: Date()) ?? Date()
+        }
     }
 }
 

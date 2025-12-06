@@ -88,11 +88,17 @@ public final class ConversationController: ObservableObject {
     // MARK: - Firebase保存
     private let firebaseRepository = FirebaseConversationsRepository()
     private var currentSessionId: String?
-    // TODO: 本来はFirebase Authから取得する必要がある
-    private var currentUserId: String = "dummy_parent_uid"
-    // TODO: 選択中の子供IDを設定する必要がある
-    private var currentChildId: String = "dummy_child_uid"
+    // ✅ 認証情報（AuthViewModelから設定される）
+    private var currentUserId: String?
+    private var currentChildId: String?
     private var turnCount: Int = 0
+    
+    // ✅ ユーザー情報を設定するメソッド
+    public func setupUser(userId: String, childId: String) {
+        self.currentUserId = userId
+        self.currentChildId = childId
+        print("✅ ConversationController: ユーザー情報を設定 - Parent=\(userId), Child=\(childId)")
+    }
     
     /// Firebaseエラーの詳細ログ出力（Permission deniedの場合にセキュリティルールの設定方法を案内）
     private func logFirebaseError(_ error: Error, operation: String) {
@@ -467,32 +473,34 @@ public final class ConversationController: ObservableObject {
                     self.turnState = .thinking
                     
                     // ✅ Firebaseにユーザーの発言を保存
-                    if let sessionId = self.currentSessionId {
-                        let turn = FirebaseTurn(
-                            role: .child,
-                            text: t,
-                            timestamp: Date()
-                        )
-                        Task {
-                            do {
-                                try await self.firebaseRepository.addTurn(
-                                    userId: self.currentUserId,
-                                    childId: self.currentChildId,
-                                    sessionId: sessionId,
-                                    turn: turn
-                                )
-                                // ターン数を更新
-                                self.turnCount += 1
-                                try? await self.firebaseRepository.updateTurnCount(
-                                    userId: self.currentUserId,
-                                    childId: self.currentChildId,
-                                    sessionId: sessionId,
-                                    turnCount: self.turnCount
-                                )
-                                print("✅ ConversationController: ユーザーの発言をFirebaseに保存 - 「\(t)」")
-                            } catch {
-                                self.logFirebaseError(error, operation: "ユーザーの発言保存")
-                            }
+                    guard let userId = self.currentUserId, let childId = self.currentChildId, let sessionId = self.currentSessionId else {
+                        print("⚠️ ConversationController: ユーザー情報が設定されていないため、発言を保存できません")
+                        return
+                    }
+                    let turn = FirebaseTurn(
+                        role: .child,
+                        text: t,
+                        timestamp: Date()
+                    )
+                    Task {
+                        do {
+                            try await self.firebaseRepository.addTurn(
+                                userId: userId,
+                                childId: childId,
+                                sessionId: sessionId,
+                                turn: turn
+                            )
+                            // ターン数を更新
+                            self.turnCount += 1
+                            try? await self.firebaseRepository.updateTurnCount(
+                                userId: userId,
+                                childId: childId,
+                                sessionId: sessionId,
+                                turnCount: self.turnCount
+                            )
+                            print("✅ ConversationController: ユーザーの発言をFirebaseに保存 - 「\(t)」")
+                        } catch {
+                            self.logFirebaseError(error, operation: "ユーザーの発言保存")
                         }
                     }
                 }
@@ -527,34 +535,36 @@ public final class ConversationController: ObservableObject {
                 print("✅ ConversationController: AIの応答完了 (onResponseDone)")
                 
                 // ✅ FirebaseにAIの応答を保存
-                if let sessionId = self.currentSessionId, !self.aiResponseText.isEmpty {
-                    let aiText = self.aiResponseText.trimmingCharacters(in: .whitespacesAndNewlines)
-                    if !aiText.isEmpty {
-                        let turn = FirebaseTurn(
-                            role: .ai,
-                            text: aiText,
-                            timestamp: Date()
-                        )
-                        Task {
-                            do {
-                                try await self.firebaseRepository.addTurn(
-                                    userId: self.currentUserId,
-                                    childId: self.currentChildId,
-                                    sessionId: sessionId,
-                                    turn: turn
-                                )
-                                // ターン数を更新
-                                self.turnCount += 1
-                                try? await self.firebaseRepository.updateTurnCount(
-                                    userId: self.currentUserId,
-                                    childId: self.currentChildId,
-                                    sessionId: sessionId,
-                                    turnCount: self.turnCount
-                                )
-                                print("✅ ConversationController: AIの応答をFirebaseに保存 - 「\(aiText)」")
-                            } catch {
-                                self.logFirebaseError(error, operation: "AIの応答保存")
-                            }
+                guard let userId = self.currentUserId, let childId = self.currentChildId, let sessionId = self.currentSessionId, !self.aiResponseText.isEmpty else {
+                    print("⚠️ ConversationController: ユーザー情報が設定されていない、または応答テキストが空のため、AIの応答を保存できません")
+                    return
+                }
+                let aiText = self.aiResponseText.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !aiText.isEmpty {
+                    let turn = FirebaseTurn(
+                        role: .ai,
+                        text: aiText,
+                        timestamp: Date()
+                    )
+                    Task {
+                        do {
+                            try await self.firebaseRepository.addTurn(
+                                userId: userId,
+                                childId: childId,
+                                sessionId: sessionId,
+                                turn: turn
+                            )
+                            // ターン数を更新
+                            self.turnCount += 1
+                            try? await self.firebaseRepository.updateTurnCount(
+                                userId: userId,
+                                childId: childId,
+                                sessionId: sessionId,
+                                turnCount: self.turnCount
+                            )
+                            print("✅ ConversationController: AIの応答をFirebaseに保存 - 「\(aiText)」")
+                        } catch {
+                            self.logFirebaseError(error, operation: "AIの応答保存")
                         }
                     }
                 }
@@ -653,6 +663,12 @@ public final class ConversationController: ObservableObject {
         turnState = .waitingUser  // セッション開始時はユーザーが話すのを待つ
 
         // ✅ Firebaseにセッションを作成
+        guard let userId = self.currentUserId, let childId = self.currentChildId else {
+            print("⚠️ ConversationController: ユーザー情報が設定されていないため、セッションを作成できません")
+            self.errorMessage = "ユーザー情報が設定されていません。ログインしてください。"
+            return
+        }
+        
         let newSessionId = UUID().uuidString
         self.currentSessionId = newSessionId
         self.turnCount = 0
@@ -671,8 +687,8 @@ public final class ConversationController: ObservableObject {
             guard let self = self else { return }
             do {
                 try await self.firebaseRepository.createSession(
-                    userId: self.currentUserId,
-                    childId: self.currentChildId,
+                    userId: userId,
+                    childId: childId,
                     session: session
                 )
                 print("✅ ConversationController: Firebaseセッション作成完了 - sessionId: \(newSessionId)")
@@ -805,28 +821,28 @@ public final class ConversationController: ObservableObject {
             print("✅ ConversationController: stopRealtimeSession - realtimeClient.finishSession()完了")
             
             // ✅ Firebaseにセッション終了を記録
-            if let sessionId = self.currentSessionId {
-                print("🔄 ConversationController: stopRealtimeSession - セッション終了処理開始 - sessionId: \(sessionId)")
-                let endedAt = Date()
-                do {
-                    try await self.firebaseRepository.finishSession(
-                        userId: self.currentUserId,
-                        childId: self.currentChildId,
-                        sessionId: sessionId,
-                        endedAt: endedAt
-                    )
-                    print("✅ ConversationController: Firebaseセッション終了更新完了 - sessionId: \(sessionId)")
-                    
-                    // ✅ 会話終了後の分析処理を実行
-                    print("🔄 ConversationController: stopRealtimeSession - 分析処理を開始します - sessionId: \(sessionId)")
-                    await self.analyzeSession(sessionId: sessionId)
-                    print("✅ ConversationController: stopRealtimeSession - 分析処理完了 - sessionId: \(sessionId)")
-                } catch {
-                    print("❌ ConversationController: stopRealtimeSession - エラー発生: \(error)")
-                    self.logFirebaseError(error, operation: "Firebaseセッション終了更新")
-                }
-            } else {
-                print("⚠️ ConversationController: stopRealtimeSession - currentSessionIdがnilのため、セッション終了処理をスキップ")
+            guard let userId = self.currentUserId, let childId = self.currentChildId, let sessionId = self.currentSessionId else {
+                print("⚠️ ConversationController: stopRealtimeSession - ユーザー情報またはセッションIDがnilのため、セッション終了処理をスキップ")
+                return
+            }
+            print("🔄 ConversationController: stopRealtimeSession - セッション終了処理開始 - sessionId: \(sessionId)")
+            let endedAt = Date()
+            do {
+                try await self.firebaseRepository.finishSession(
+                    userId: userId,
+                    childId: childId,
+                    sessionId: sessionId,
+                    endedAt: endedAt
+                )
+                print("✅ ConversationController: Firebaseセッション終了更新完了 - sessionId: \(sessionId)")
+                
+                // ✅ 会話終了後の分析処理を実行
+                print("🔄 ConversationController: stopRealtimeSession - 分析処理を開始します - sessionId: \(sessionId)")
+                await self.analyzeSession(sessionId: sessionId)
+                print("✅ ConversationController: stopRealtimeSession - 分析処理完了 - sessionId: \(sessionId)")
+            } catch {
+                print("❌ ConversationController: stopRealtimeSession - エラー発生: \(error)")
+                self.logFirebaseError(error, operation: "Firebaseセッション終了更新")
             }
             
             await MainActor.run {
@@ -1415,12 +1431,17 @@ public final class ConversationController: ObservableObject {
     private func analyzeSession(sessionId: String) async {
         print("📊 ConversationController: 会話分析開始 - sessionId: \(sessionId)")
         
+        guard let userId = currentUserId, let childId = currentChildId else {
+            print("⚠️ ConversationController: analyzeSession - ユーザー情報が設定されていないため、分析をスキップ")
+            return
+        }
+        
         do {
             print("📊 ConversationController: analyzeSession - エラーキャッチブロック開始")
             // 1. Firestoreからこのセッションの全ターンを取得
             let turns = try await firebaseRepository.fetchTurns(
-                userId: currentUserId,
-                childId: currentChildId,
+                userId: userId,
+                childId: childId,
                 sessionId: sessionId
             )
             
@@ -1452,7 +1473,7 @@ public final class ConversationController: ObservableObject {
             以下の親子の会話ログを分析し、JSON形式で出力してください。
             
             出力項目:
-            - summary: 30文字程度の要約（親向け）
+            - summary: 子どもの話をメインに、内容のおもしろかったところを2〜3行で要約してください（親向け）。内容が特になければ1行でも大丈夫です。端的すぎず、具体的な内容を含めてください。
             - interests: 子どもが興味を示したトピック（dinosaurs, space, cooking, animals, vehicles, music, sports, crafts, stories, insects, princess, heroes, robots, nature, others から選択。英語のenum値で配列で出力）
             - newWords: 子どもが使った特徴的な単語や成長を感じる言葉（3つまで、配列で出力）
             
@@ -1461,7 +1482,7 @@ public final class ConversationController: ObservableObject {
             
             JSON形式で出力してください。例:
             {
-              "summary": "恐竜について話しました",
+              "summary": "子どもが恐竜の種類について詳しく話していました。ティラノサウルスとトリケラトプスの違いを説明したり、草食と肉食の違いについて興味深そうに質問していました。",
               "interests": ["dinosaurs", "animals"],
               "newWords": ["ティラノサウルス", "草食", "肉食"]
             }
@@ -1550,8 +1571,8 @@ public final class ConversationController: ObservableObject {
             print("🔍 ConversationController: 保存前のデータ - summaries: \(summaries), interests: \(interests.map { $0.rawValue }), newVocabulary: \(newVocabulary)")
             
             try await firebaseRepository.updateAnalysis(
-                userId: currentUserId,
-                childId: currentChildId,
+                userId: userId,
+                childId: childId,
                 sessionId: sessionId,
                 summaries: summaries,
                 interests: interests,

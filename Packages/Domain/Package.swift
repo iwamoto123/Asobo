@@ -14,7 +14,9 @@ let package = Package(
         .target(
             name: "Domain",
             dependencies: [
-                .product(name: "FirebaseFirestore", package: "firebase-ios-sdk")
+                .product(name: "FirebaseFirestore", package: "firebase-ios-sdk"),
+                .product(name: "FirebaseAuth", package: "firebase-ios-sdk"),
+                .product(name: "FirebaseStorage", package: "firebase-ios-sdk")
             ],
             path: "Sources/Domain"
         ),

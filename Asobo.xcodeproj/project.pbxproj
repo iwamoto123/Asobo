@@ -15,6 +15,7 @@
 		144153902ED1983E006341CB /* FirebaseAuth in Frameworks */ = {isa = PBXBuildFile; productRef = 1441538F2ED1983E006341CB /* FirebaseAuth */; };
 		144153922ED1983E006341CB /* FirebaseFirestore in Frameworks */ = {isa = PBXBuildFile; productRef = 144153912ED1983E006341CB /* FirebaseFirestore */; };
 		144153952ED5E753006341CB /* DataStores in Frameworks */ = {isa = PBXBuildFile; productRef = 144153942ED5E753006341CB /* DataStores */; };
+		14415BCF2EE32354006341CB /* FirebaseStorage in Frameworks */ = {isa = PBXBuildFile; productRef = 14415BCE2EE32354006341CB /* FirebaseStorage */; };
 		146EA9CB2E87A63F00BBD955 /* Debug.xcconfig in Resources */ = {isa = PBXBuildFile; fileRef = 146EA9CA2E87A63F00BBD955 /* Debug.xcconfig */; };
 		146EA9CD2E87A65400BBD955 /* Release.xcconfig in Resources */ = {isa = PBXBuildFile; fileRef = 146EA9CC2E87A65400BBD955 /* Release.xcconfig */; };
 /* End PBXBuildFile section */
@@ -82,6 +83,7 @@
 			files = (
 				1405B2962E753081002102AE /* Domain in Frameworks */,
 				144153902ED1983E006341CB /* FirebaseAuth in Frameworks */,
+				14415BCF2EE32354006341CB /* FirebaseStorage in Frameworks */,
 				1405B2932E753077002102AE /* Support in Frameworks */,
 				1441538E2ED1983E006341CB /* FirebaseAnalyticsCore in Frameworks */,
 				144153952ED5E753006341CB /* DataStores in Frameworks */,
@@ -166,6 +168,7 @@
 				1441538F2ED1983E006341CB /* FirebaseAuth */,
 				144153912ED1983E006341CB /* FirebaseFirestore */,
 				144153942ED5E753006341CB /* DataStores */,
+				14415BCE2EE32354006341CB /* FirebaseStorage */,
 			);
 			productName = Asobo;
 			productReference = 1497CE682E72D88900051217 /* Asobo.app */;
@@ -456,11 +459,11 @@
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = NO;
 				CODE_SIGN_ENTITLEMENTS = Asobo/Asobo.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 9;
+				CURRENT_PROJECT_VERSION = 28;
 				DEVELOPMENT_TEAM = XT522XX64M;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
-				INFOPLIST_FILE = "$(SRCROOT)/Asobo/App/Resources/Info.plist";
+				INFOPLIST_FILE = Asobo/App/Resources/Info.plist;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
@@ -497,11 +500,11 @@
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = NO;
 				CODE_SIGN_ENTITLEMENTS = Asobo/Asobo.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 9;
+				CURRENT_PROJECT_VERSION = 28;
 				DEVELOPMENT_TEAM = XT522XX64M;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
-				INFOPLIST_FILE = "$(SRCROOT)/Asobo/App/Resources/Info.plist";
+				INFOPLIST_FILE = Asobo/App/Resources/Info.plist;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
@@ -535,7 +538,7 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 9;
+				CURRENT_PROJECT_VERSION = 28;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Asobo/App/Resources/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.5;
@@ -558,7 +561,7 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 9;
+				CURRENT_PROJECT_VERSION = 28;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Asobo/App/Resources/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.5;
@@ -580,7 +583,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 9;
+				CURRENT_PROJECT_VERSION = 28;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Asobo/App/Resources/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.5;
@@ -602,7 +605,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 9;
+				CURRENT_PROJECT_VERSION = 28;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Asobo/App/Resources/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.5;
@@ -727,6 +730,11 @@
 		144153942ED5E753006341CB /* DataStores */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = DataStores;
+		};
+		14415BCE2EE32354006341CB /* FirebaseStorage */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 1441538A2ED1983E006341CB /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
+			productName = FirebaseStorage;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

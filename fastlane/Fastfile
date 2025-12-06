@@ -1,21 +1,43 @@
 # fastlane/Fastfile
 # .p8鍵ファイルを直接読み込んで、ビルド→TestFlightへアップロードする最小レーン
 
+require 'fileutils'
+
 default_platform(:ios)
 
 platform :ios do
  before_all do
   issuer = "70fd2f6e-2a07-4623-b675-aa38c12d75f9"   
-
+ 
   key_path = File.expand_path(File.join(__dir__, "AuthKey_B54L5B26YC.p8"))
   UI.user_error!("API key file not found: #{key_path}") unless File.exist?(key_path)
-
+ 
   @api_key = app_store_connect_api_key(
     key_id:     "B54L5B26YC",
     issuer_id:  issuer,
     key_content: File.read(key_path),
     in_house:   false
   )
+  
+  # ✅ altoolが.p8ファイルを探す場所にシンボリックリンクを作成（フォールバック用）
+  # altoolは以下の場所を探します：
+  # - ~/workspace/Asobo/private_keys
+  # - ~/private_keys
+  # - ~/.private_keys
+  # - ~/.appstoreconnect/private_keys
+  # altool_key_dir = File.expand_path("~/.appstoreconnect/private_keys")
+  # unless File.directory?(altool_key_dir)
+  #   FileUtils.mkdir_p(altool_key_dir)
+  # end
+  # altool_key_path = File.join(altool_key_dir, "AuthKey_B54L5B26YC.p8")
+  # unless File.exist?(altool_key_path)
+  #   FileUtils.cp(key_path, altool_key_path)
+  #   UI.message("✅ .p8ファイルをaltool用の場所にコピーしました: #{altool_key_path}")
+  # end
+  # 
+  # ✅ App Store Connect APIを強制的に使用（altoolを無効化）
+  # ENV["FASTLANE_APPLE_APPLICATION_SPECIFIC_PASSWORD"] = ""
+  # ENV["FASTLANE_USER"] = ""
 end
 
 
@@ -27,7 +49,7 @@ end
     clean_build_artifacts
 
     # CocoaPods を使っていない（.xcodeproj直）の場合
-    build_app(
+    ipa_path = build_app(
       scheme: "Asobo",                # ← XcodeのScheme名に合わせる
       export_method: "app-store",
       output_directory: "build",
@@ -43,11 +65,54 @@ end
       xcargs: "-allowProvisioningUpdates"  # 書き出し時にプロファイル/証明書を自動取得
     )
 
-    upload_to_testflight(
-      api_key: @api_key,
-      skip_waiting_for_build_processing: true,  # App Store側の処理待ちをスキップ
-      notify_external_testers: false            # 外部テスターへの通知はオフ（必要ならtrue）
-    )
+    # ✅ IPAファイルの存在確認
+    if ipa_path && File.exist?(ipa_path)
+      UI.message("✅ IPAファイルを確認: #{ipa_path}")
+      UI.message("   サイズ: #{File.size(ipa_path)} bytes")
+    else
+      # フォールバック: デフォルトのパスを確認
+      default_ipa_path = File.expand_path("build/Asobo.ipa")
+      if File.exist?(default_ipa_path)
+        ipa_path = default_ipa_path
+        UI.message("✅ IPAファイルを確認（デフォルトパス）: #{ipa_path}")
+      else
+        UI.user_error!("❌ IPAファイルが見つかりません。ビルドが失敗した可能性があります。")
+      end
+    end
+
+    begin
+      # ✅ App Store Connect APIを強制的に使用（altoolの代わり）
+      upload_to_testflight(
+        api_key: @api_key,
+        skip_waiting_for_build_processing: true,  # App Store側の処理待ちをスキップ
+        notify_external_testers: false,            # 外部テスターへの通知はオフ（必要ならtrue）
+        verbose: true,                             # 詳細ログを有効化
+        skip_submission: false,                    # 提出をスキップしない
+        distribute_external: false,                # 外部配布はしない
+        ipa: ipa_path                              # build_appが生成したIPAファイルのパスを使用
+      )
+    rescue => ex
+      UI.error("TestFlightアップロードエラー: #{ex.message}")
+      UI.error("エラークラス: #{ex.class}")
+      
+      # ✅ より詳細なエラー情報を取得
+      if ex.respond_to?(:cause) && ex.cause
+        UI.error("原因: #{ex.cause.message}")
+        UI.error("原因クラス: #{ex.cause.class}")
+      end
+      
+      # ✅ IPAファイルの存在確認（エラー時）
+      if ipa_path && File.exist?(ipa_path)
+        UI.message("✅ IPAファイルは存在します: #{ipa_path}")
+        UI.message("   サイズ: #{File.size(ipa_path)} bytes")
+      else
+        UI.error("❌ IPAファイルが見つかりません: #{ipa_path || 'nil'}")
+      end
+      
+      UI.error("バックトレース:")
+      UI.error(ex.backtrace.join("\n"))
+      raise
+    end
   end
 
   # 任意：ビルドだけ試すとき用（アップロードしない）
