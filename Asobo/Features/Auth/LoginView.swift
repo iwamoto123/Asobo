@@ -1,6 +1,7 @@
 import SwiftUI
 import AuthenticationServices
 import CryptoKit
+import GoogleSignIn
 
 struct LoginView: View {
     @ObservedObject var authVM: AuthViewModel
@@ -39,7 +40,7 @@ struct LoginView: View {
                 Spacer()
                 
                 // Sign in with Apple Button
-                SignInWithAppleButton(
+                SignInWithAppleButton(.signIn,
                     onRequest: { request in
                         let nonce = randomNonceString()
                         currentNonce = nonce
@@ -63,6 +64,7 @@ struct LoginView: View {
                 .frame(height: 50)
                 .padding(.horizontal, 40)
                 .cornerRadius(25)
+                .environment(\.locale, Locale(identifier: "ja_JP")) // ラベルを日本語表示
                 
                 if let errorMessage = authVM.errorMessage {
                     Text(errorMessage)
@@ -70,6 +72,22 @@ struct LoginView: View {
                         .foregroundColor(.red)
                         .padding(.top, 8)
                 }
+                
+                // Google ログインボタン
+                Button(action: startGoogleSignIn) {
+                    HStack {
+                        Image(systemName: "g.circle.fill")
+                        Text("Googleでログイン")
+                            .fontWeight(.semibold)
+                    }
+                    .foregroundColor(.white)
+                    .frame(maxWidth: .infinity)
+                    .padding()
+                    .background(Color(red: 66/255, green: 133/255, blue: 244/255))
+                    .cornerRadius(12)
+                }
+                .padding(.horizontal, 40)
+                .padding(.top, 8)
                 
                 Text("利用規約 と プライバシーポリシー")
                     .font(.caption)
@@ -96,6 +114,34 @@ struct LoginView: View {
         let hashedData = SHA256.hash(data: inputData)
         let hashString = hashedData.compactMap { String(format: "%02x", $0) }.joined()
         return hashString
+    }
+    
+    /// Google Sign In開始
+    private func startGoogleSignIn() {
+        guard let rootViewController = UIApplication.shared.connectedScenes
+            .compactMap({ $0 as? UIWindowScene })
+            .flatMap({ $0.windows })
+            .first(where: { $0.isKeyWindow })?.rootViewController else {
+            authVM.errorMessage = "画面を取得できませんでした"
+            return
+        }
+        
+        GIDSignIn.sharedInstance.signIn(withPresenting: rootViewController) { result, error in
+            if let error = error {
+                print("❌ LoginView: Google Sign In 失敗 - \(error.localizedDescription)")
+                authVM.errorMessage = "Googleログインに失敗しました: \(error.localizedDescription)"
+                return
+            }
+            guard
+                let user = result?.user,
+                let idToken = user.idToken?.tokenString
+            else {
+                authVM.errorMessage = "Googleの認証情報が取得できませんでした"
+                return
+            }
+            let accessToken = user.accessToken.tokenString
+            authVM.handleGoogleSignIn(idToken: idToken, accessToken: accessToken)
+        }
     }
 }
 

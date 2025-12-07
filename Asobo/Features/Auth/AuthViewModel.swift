@@ -4,6 +4,7 @@ import FirebaseFirestore
 import FirebaseStorage
 import AuthenticationServices
 import Domain
+import GoogleSignIn
 
 @MainActor
 class AuthViewModel: ObservableObject {
@@ -39,6 +40,21 @@ class AuthViewModel: ObservableObject {
                     self.isLoading = false
                 }
             }
+        }
+    }
+    
+    // Google Sign In 処理 (IDトークンとアクセストークンを受け取ってFirebase認証)
+    func handleGoogleSignIn(idToken: String, accessToken: String) {
+        let credential = GoogleAuthProvider.credential(withIDToken: idToken, accessToken: accessToken)
+        Auth.auth().signIn(with: credential) { [weak self] result, error in
+            guard let self else { return }
+            if let error = error {
+                self.errorMessage = "Googleログインに失敗しました: \(error.localizedDescription)"
+                print("❌ AuthViewModel: Google Sign In エラー - \(error)")
+                return
+            }
+            print("✅ AuthViewModel: Google Sign In 成功")
+            // ログイン成功時は addStateDidChangeListener が fetchUserProfile を呼ぶ
         }
     }
     

@@ -6,15 +6,17 @@ import DataStores
 
 struct ChatDetailView: View {
     let session: FirebaseConversationSession
+    @EnvironmentObject var authVM: AuthViewModel
     @State private var turns: [FirebaseTurn] = []
     @State private var isLoading = false
     @State private var errorMessage: String?
     
     private let repository = FirebaseConversationsRepository()
-    // TODO: 本来はFirebase Authから取得する必要がある
-    private let userId = "dummy_parent_uid"
-    // TODO: 選択中の子供IDを設定する必要がある
-    private let childId = "dummy_child_uid"
+    
+    private var childPhotoURL: URL? {
+        guard let urlString = authVM.selectedChild?.photoURL else { return nil }
+        return URL(string: urlString)
+    }
     
     var body: some View {
         ZStack {
@@ -64,7 +66,7 @@ struct ChatDetailView: View {
                         } else {
                             LazyVStack(spacing: 8) {
                                 ForEach(turns) { turn in
-                                    ChatBubbleView(turn: turn)
+                                    ChatBubbleView(turn: turn, childPhotoURL: childPhotoURL)
                                         .id(turn.id ?? UUID().uuidString)
                                 }
                             }
@@ -90,10 +92,17 @@ struct ChatDetailView: View {
         .task {
             await loadTurns()
         }
+        .onChange(of: authVM.selectedChild?.id) { _ in
+            Task { await loadTurns() }
+        }
     }
     
     private func loadTurns() async {
         guard let sessionId = session.id else { return }
+        guard let userId = authVM.currentUser?.uid, let childId = authVM.selectedChild?.id else {
+            errorMessage = "ユーザー情報が見つかりません。再ログインしてください。"
+            return
+        }
         
         isLoading = true
         errorMessage = nil
@@ -214,6 +223,7 @@ struct SessionHeaderView: View {
 // 会話の吹き出し（LINE風デザイン）
 struct ChatBubbleView: View {
     let turn: FirebaseTurn
+    let childPhotoURL: URL?
     
     private var isChild: Bool {
         turn.role == .child
@@ -230,10 +240,10 @@ struct ChatBubbleView: View {
         HStack(alignment: .top, spacing: 8) {
             if isChild {
                 // 子どもの発言（右側・緑色）
-                Spacer(minLength: 60)
+                Spacer(minLength: 16)
                 
                 // ✅ alignment: .bottom にして時刻を下に揃える
-                HStack(alignment: .bottom, spacing: 4) {
+                HStack(alignment: .bottom, spacing: 6) {
                     // タイムスタンプ
                     Text(timeFormatter.string(from: turn.timestamp))
                         .font(.system(size: 11))
@@ -249,21 +259,51 @@ struct ChatBubbleView: View {
                             RoundedRectangle(cornerRadius: 18)
                                 .fill(Color(red: 0.18, green: 0.80, blue: 0.44)) // LINEの緑色
                         )
-                        .frame(maxWidth: 280, alignment: .trailing)
+                        .frame(maxWidth: 240, alignment: .trailing)
+                    
+                    // 右側アイコン（子の写真があれば表示）
+                    childAvatar
                 }
             } else {
                 // AIの発言（左側・グレー）
                 // アイコンと吹き出し群はTop揃え
                 HStack(alignment: .top, spacing: 8) {
-                    // AIアイコン
-                    Circle()
-                        .fill(Color.gray.opacity(0.3))
-                        .frame(width: 36, height: 36)
-                        .overlay(
-                            Image(systemName: "sparkles")
-                                .font(.system(size: 16))
-                                .foregroundColor(.gray)
-                        )
+                    // 左側アイコン（子の写真があれば表示）
+                    if let url = childPhotoURL {
+                        AsyncImage(url: url) { phase in
+                            switch phase {
+                            case .empty:
+                                ProgressView()
+                                    .frame(width: 36, height: 36)
+                            case .success(let image):
+                                image
+                                    .resizable()
+                                    .scaledToFill()
+                                    .frame(width: 36, height: 36)
+                                    .clipShape(Circle())
+                            case .failure:
+                                Circle()
+                                    .fill(Color.gray.opacity(0.3))
+                                    .frame(width: 36, height: 36)
+                                    .overlay(
+                                        Image(systemName: "sparkles")
+                                            .font(.system(size: 16))
+                                            .foregroundColor(.gray)
+                                    )
+                            @unknown default:
+                                EmptyView()
+                            }
+                        }
+                    } else {
+                        Circle()
+                            .fill(Color.gray.opacity(0.3))
+                            .frame(width: 36, height: 36)
+                            .overlay(
+                                Image(systemName: "sparkles")
+                                    .font(.system(size: 16))
+                                    .foregroundColor(.gray)
+                            )
+                    }
                     
                     // ✅ 吹き出しと時刻はBottom揃え
                     HStack(alignment: .bottom, spacing: 4) {
@@ -288,6 +328,45 @@ struct ChatBubbleView: View {
                 
                 Spacer(minLength: 60)
             }
+        }
+    }
+    
+    @ViewBuilder
+    private var childAvatar: some View {
+        if let url = childPhotoURL {
+            AsyncImage(url: url) { phase in
+                switch phase {
+                case .empty:
+                    ProgressView()
+                        .frame(width: 36, height: 36)
+                case .success(let image):
+                    image
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: 36, height: 36)
+                        .clipShape(Circle())
+                case .failure:
+                    Circle()
+                        .fill(Color.gray.opacity(0.3))
+                        .frame(width: 36, height: 36)
+                        .overlay(
+                            Image(systemName: "person.fill")
+                                .font(.system(size: 16))
+                                .foregroundColor(.gray)
+                        )
+                @unknown default:
+                    EmptyView()
+                }
+            }
+        } else {
+            Circle()
+                .fill(Color.gray.opacity(0.3))
+                .frame(width: 36, height: 36)
+                .overlay(
+                    Image(systemName: "person.fill")
+                        .font(.system(size: 16))
+                        .foregroundColor(.gray)
+                )
         }
     }
 }
@@ -346,4 +425,3 @@ struct FlowLayout: Layout {
         }
     }
 }
-

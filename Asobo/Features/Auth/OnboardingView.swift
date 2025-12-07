@@ -252,13 +252,20 @@ struct OnboardingView: View {
                 // 1. 画像アップロード (あれば)
                 var photoURL: String? = nil
                 if let data = selectedPhotoData {
-                    let ref = Storage.storage().reference().child("users/\(uid)/child_icon.jpg")
-                    let metadata = StorageMetadata()
-                    metadata.contentType = "image/jpeg"
-                    _ = try await ref.putData(data, metadata: metadata)
-                    let url = try await ref.downloadURL()
-                    photoURL = url.absoluteString
-                    print("✅ OnboardingView: 写真アップロード成功 - \(photoURL ?? "nil")")
+                    do {
+                        let ref = Storage.storage().reference().child("users/\(uid)/child_icon.jpg")
+                        let metadata = StorageMetadata()
+                        metadata.contentType = "image/jpeg"
+                        _ = try await ref.putData(data, metadata: metadata) // ここで失敗したら catch へ
+                        let url = try await ref.downloadURL()
+                        photoURL = url.absoluteString
+                        print("✅ OnboardingView: 写真アップロード成功 - \(photoURL ?? "nil")")
+                    } catch {
+                        print("❌ OnboardingView: 写真アップロード失敗 - \(error)")
+                        errorMessage = "写真のアップロードに失敗しました: \(error.localizedDescription)"
+                        isSaving = false
+                        return
+                    }
                 }
                 
                 let db = Firestore.firestore()

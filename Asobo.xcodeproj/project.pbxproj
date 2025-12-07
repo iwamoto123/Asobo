@@ -18,6 +18,8 @@
 		14415BCF2EE32354006341CB /* FirebaseStorage in Frameworks */ = {isa = PBXBuildFile; productRef = 14415BCE2EE32354006341CB /* FirebaseStorage */; };
 		146EA9CB2E87A63F00BBD955 /* Debug.xcconfig in Resources */ = {isa = PBXBuildFile; fileRef = 146EA9CA2E87A63F00BBD955 /* Debug.xcconfig */; };
 		146EA9CD2E87A65400BBD955 /* Release.xcconfig in Resources */ = {isa = PBXBuildFile; fileRef = 146EA9CC2E87A65400BBD955 /* Release.xcconfig */; };
+		1491CFAA2EE535C700CE3323 /* GoogleSignIn in Frameworks */ = {isa = PBXBuildFile; productRef = 1491CFA92EE535C700CE3323 /* GoogleSignIn */; };
+		1491CFAC2EE535C700CE3323 /* GoogleSignInSwift in Frameworks */ = {isa = PBXBuildFile; productRef = 1491CFAB2EE535C700CE3323 /* GoogleSignInSwift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -86,10 +88,12 @@
 				14415BCF2EE32354006341CB /* FirebaseStorage in Frameworks */,
 				1405B2932E753077002102AE /* Support in Frameworks */,
 				1441538E2ED1983E006341CB /* FirebaseAnalyticsCore in Frameworks */,
+				1491CFAA2EE535C700CE3323 /* GoogleSignIn in Frameworks */,
 				144153952ED5E753006341CB /* DataStores in Frameworks */,
 				1441538C2ED1983E006341CB /* FirebaseAnalytics in Frameworks */,
 				1405B2902E75306B002102AE /* Services in Frameworks */,
 				144153922ED1983E006341CB /* FirebaseFirestore in Frameworks */,
+				1491CFAC2EE535C700CE3323 /* GoogleSignInSwift in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -169,6 +173,8 @@
 				144153912ED1983E006341CB /* FirebaseFirestore */,
 				144153942ED5E753006341CB /* DataStores */,
 				14415BCE2EE32354006341CB /* FirebaseStorage */,
+				1491CFA92EE535C700CE3323 /* GoogleSignIn */,
+				1491CFAB2EE535C700CE3323 /* GoogleSignInSwift */,
 			);
 			productName = Asobo;
 			productReference = 1497CE682E72D88900051217 /* Asobo.app */;
@@ -258,6 +264,7 @@
 				1405B2942E753081002102AE /* XCLocalSwiftPackageReference "Packages/Domain" */,
 				1441538A2ED1983E006341CB /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */,
 				144153932ED5E753006341CB /* XCLocalSwiftPackageReference "Packages/DataStores" */,
+				1491CFA82EE535C700CE3323 /* XCRemoteSwiftPackageReference "GoogleSignIn-iOS" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 1497CE692E72D88900051217 /* Products */;
@@ -459,7 +466,7 @@
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = NO;
 				CODE_SIGN_ENTITLEMENTS = Asobo/Asobo.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 28;
+				CURRENT_PROJECT_VERSION = 29;
 				DEVELOPMENT_TEAM = XT522XX64M;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -500,7 +507,7 @@
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = NO;
 				CODE_SIGN_ENTITLEMENTS = Asobo/Asobo.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 28;
+				CURRENT_PROJECT_VERSION = 29;
 				DEVELOPMENT_TEAM = XT522XX64M;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -538,7 +545,7 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 28;
+				CURRENT_PROJECT_VERSION = 29;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Asobo/App/Resources/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.5;
@@ -561,7 +568,7 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 28;
+				CURRENT_PROJECT_VERSION = 29;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Asobo/App/Resources/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.5;
@@ -583,7 +590,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 28;
+				CURRENT_PROJECT_VERSION = 29;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Asobo/App/Resources/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.5;
@@ -605,7 +612,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 28;
+				CURRENT_PROJECT_VERSION = 29;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Asobo/App/Resources/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.5;
@@ -692,6 +699,14 @@
 				minimumVersion = 12.6.0;
 			};
 		};
+		1491CFA82EE535C700CE3323 /* XCRemoteSwiftPackageReference "GoogleSignIn-iOS" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/google/GoogleSignIn-iOS";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 9.0.0;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -735,6 +750,16 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 1441538A2ED1983E006341CB /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
 			productName = FirebaseStorage;
+		};
+		1491CFA92EE535C700CE3323 /* GoogleSignIn */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 1491CFA82EE535C700CE3323 /* XCRemoteSwiftPackageReference "GoogleSignIn-iOS" */;
+			productName = GoogleSignIn;
+		};
+		1491CFAB2EE535C700CE3323 /* GoogleSignInSwift */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 1491CFA82EE535C700CE3323 /* XCRemoteSwiftPackageReference "GoogleSignIn-iOS" */;
+			productName = GoogleSignInSwift;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
