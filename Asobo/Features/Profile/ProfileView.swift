@@ -13,6 +13,8 @@ struct ProfileView: View {
     @State private var teddyName = ""
     @State private var parentName = ""
     @State private var loginMethod = ""
+    @State private var birthDate: Date?
+    @State private var birthDatePickerDate = Date()
     
     @State private var selectedPhotoItem: PhotosPickerItem?
     @State private var selectedPhotoData: Data?
@@ -88,11 +90,27 @@ struct ProfileView: View {
                                 .textFieldStyle(.roundedBorder)
                         }
                         VStack(alignment: .leading, spacing: 6) {
-                            Text("ニックネーム")
+                            Text("呼び方")
                                 .font(.caption)
                                 .foregroundColor(.gray)
                             TextField("呼び名", text: $childNickName)
                                 .textFieldStyle(.roundedBorder)
+                        }
+                        if let bd = birthDate {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text("年齢")
+                                    .font(.caption)
+                                    .foregroundColor(.gray)
+                                Text(ageString(from: bd))
+                                    .font(.body)
+                                    .foregroundColor(Color(hex: "5A4A42"))
+                                DatePicker("誕生日", selection: $birthDatePickerDate, displayedComponents: .date)
+                                    .datePickerStyle(.compact)
+                                    .labelsHidden()
+                                    .onChange(of: birthDatePickerDate) { newValue in
+                                        self.birthDate = newValue
+                                    }
+                            }
                         }
                     }
                 }
@@ -173,6 +191,10 @@ struct ProfileView: View {
         childNickName = authVM.selectedChild?.nickName ?? ""
         teddyName = authVM.selectedChild?.teddyName ?? ""
         parentName = authVM.userProfile?.parentName ?? authVM.userProfile?.displayName ?? ""
+        birthDate = authVM.selectedChild?.birthDate
+        if let birth = authVM.selectedChild?.birthDate {
+            birthDatePickerDate = birth
+        }
         if let urlString = authVM.selectedChild?.photoURL {
             currentPhotoURL = URL(string: urlString)
         }
@@ -203,7 +225,8 @@ struct ProfileView: View {
             do {
                 var photoURL: String? = authVM.selectedChild?.photoURL
                 if let data = selectedPhotoData {
-                    let ref = Storage.storage().reference().child("users/\(uid)/child_icon.jpg")
+                    // デフォルトバケット（GoogleService-Info.plistのSTORAGE_BUCKET）を利用
+                    let ref = Storage.storage().reference().child("users/\(uid)/children/\(childId)/photo.jpg")
                     let metadata = StorageMetadata()
                     metadata.contentType = "image/jpeg"
                     _ = try await ref.putData(data, metadata: metadata)
@@ -224,6 +247,9 @@ struct ProfileView: View {
                 childData["displayName"] = childName
                 childData["nickName"] = childNickName
                 childData["teddyName"] = teddyName
+                if let birthDate = birthDate {
+                    childData["birthDate"] = Timestamp(date: birthDate)
+                }
                 if let photoURL = photoURL {
                     childData["photoURL"] = photoURL
                 }
@@ -238,5 +264,14 @@ struct ProfileView: View {
             }
             isSaving = false
         }
+    }
+    
+    private func ageString(from birthDate: Date) -> String {
+        let calendar = Calendar.current
+        let now = Date()
+        let years = calendar.dateComponents([.year], from: birthDate, to: now).year ?? 0
+        let anchor = calendar.date(byAdding: .year, value: years, to: birthDate) ?? birthDate
+        let months = calendar.dateComponents([.month], from: anchor, to: now).month ?? 0
+        return "\(years)歳 \(months)ヶ月"
     }
 }

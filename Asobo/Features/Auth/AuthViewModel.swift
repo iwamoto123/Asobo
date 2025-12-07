@@ -122,6 +122,9 @@ class AuthViewModel: ObservableObject {
                         if let birthDate = childData["birthDate"] as? Timestamp {
                             childData["birthDate"] = isoFormatter.string(from: birthDate.dateValue())
                         }
+                        if let photoURL = childData["photoURL"] as? String {
+                            childData["photoURL"] = photoURL
+                        }
                         if let interests = childData["interestContext"] as? [String] {
                             childData["interests"] = interests
                         }
@@ -154,6 +157,9 @@ class AuthViewModel: ObservableObject {
                     }
                     if let birthDate = childData["birthDate"] as? Timestamp {
                         childData["birthDate"] = isoFormatter.string(from: birthDate.dateValue())
+                    }
+                    if let photoURL = childData["photoURL"] as? String {
+                        childData["photoURL"] = photoURL
                     }
                     if let interests = childData["interestContext"] as? [String] {
                         childData["interests"] = interests

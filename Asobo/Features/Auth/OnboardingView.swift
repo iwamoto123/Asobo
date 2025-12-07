@@ -244,6 +244,8 @@ struct OnboardingView: View {
             errorMessage = "ログイン情報が見つかりません"
             return
         }
+        let db = Firestore.firestore()
+        let childRef = db.collection("users").document(uid).collection("children").document()
         isSaving = true
         errorMessage = nil
         
@@ -253,7 +255,8 @@ struct OnboardingView: View {
                 var photoURL: String? = nil
                 if let data = selectedPhotoData {
                     do {
-                        let ref = Storage.storage().reference().child("users/\(uid)/child_icon.jpg")
+                        // デフォルトバケットを使用し、子ごとのパスに保存
+                        let ref = Storage.storage().reference().child("users/\(uid)/children/\(childRef.documentID)/photo.jpg")
                         let metadata = StorageMetadata()
                         metadata.contentType = "image/jpeg"
                         _ = try await ref.putData(data, metadata: metadata) // ここで失敗したら catch へ
@@ -267,9 +270,7 @@ struct OnboardingView: View {
                         return
                     }
                 }
-                
-                let db = Firestore.firestore()
-                
+
                 // 2. 親プロフィールの保存
                 let userProfile = FirebaseParentProfile(
                     id: uid,
@@ -293,7 +294,6 @@ struct OnboardingView: View {
                 print("✅ OnboardingView: 親プロフィール保存成功")
                 
                 // 3. 子供プロフィールの保存
-                let childRef = db.collection("users").document(uid).collection("children").document()
                 let childProfile = FirebaseChildProfile(
                     id: childRef.documentID,
                     displayName: childName,

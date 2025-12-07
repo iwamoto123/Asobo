@@ -16,6 +16,7 @@ struct ChatDetailView: View {
     
     @State private var childPhotoURLString: String?
     @State private var childAvatarImage: Image?
+    @State private var loadedAvatarURLString: String?
     private var childPhotoURL: URL? {
         guard let urlString = childPhotoURLString ?? authVM.selectedChild?.photoURL else { return nil }
         return URL(string: urlString)
@@ -69,7 +70,7 @@ struct ChatDetailView: View {
                         } else {
                             LazyVStack(spacing: 8) {
                                 ForEach(turns) { turn in
-                                    ChatBubbleView(turn: turn, childAvatarImage: childAvatarImage)
+                                    ChatBubbleView(turn: turn, childAvatarImage: childAvatarImage, childPhotoURL: childPhotoURL)
                                         .id(turn.id ?? UUID().uuidString)
                                 }
                             }
@@ -97,14 +98,17 @@ struct ChatDetailView: View {
         }
         .onAppear {
             childPhotoURLString = authVM.selectedChild?.photoURL
-            Task { await loadChildImageIfNeeded() }
+            Task { await loadChildImageIfNeeded(forceReload: true) }
         }
         .onChange(of: authVM.selectedChild?.id) { _ in
             childPhotoURLString = authVM.selectedChild?.photoURL
             Task {
-                await loadChildImageIfNeeded()
+                await loadChildImageIfNeeded(forceReload: true)
                 await loadTurns()
             }
+        }
+        .onChange(of: childPhotoURLString) { _ in
+            Task { await loadChildImageIfNeeded(forceReload: true) }
         }
     }
     
@@ -139,7 +143,7 @@ struct ChatDetailView: View {
                     childPhotoURLString = urlString
                 }
             }
-            await loadChildImageIfNeeded()
+            await loadChildImageIfNeeded(forceReload: false)
             print("✅ ChatDetailView: ターン取得完了 - count: \(turns.count)")
         } catch {
             let errorString = String(describing: error)
@@ -148,17 +152,36 @@ struct ChatDetailView: View {
         }
     }
     
-    private func loadChildImageIfNeeded() async {
-        guard childAvatarImage == nil, let url = childPhotoURL else { return }
+    private func loadChildImageIfNeeded(forceReload: Bool) async {
+        guard let url = childPhotoURL else { return }
+        let shouldReload = forceReload || loadedAvatarURLString != url.absoluteString || childAvatarImage == nil
+        if !shouldReload { return }
+        
         do {
             let (data, _) = try await URLSession.shared.data(from: url)
             if let uiImage = UIImage(data: data) {
                 await MainActor.run {
                     childAvatarImage = Image(uiImage: uiImage)
+                    loadedAvatarURLString = url.absoluteString
                 }
+                return
             }
         } catch {
             print("⚠️ ChatDetailView: 子画像の取得に失敗 - \(error)")
+        }
+        
+        // 失敗時に一度だけ短いリトライ
+        do {
+            try await Task.sleep(nanoseconds: 400_000_000) // 0.4s
+            let (data, _) = try await URLSession.shared.data(from: url)
+            if let uiImage = UIImage(data: data) {
+                await MainActor.run {
+                    childAvatarImage = Image(uiImage: uiImage)
+                    loadedAvatarURLString = url.absoluteString
+                }
+            }
+        } catch {
+            print("⚠️ ChatDetailView: 子画像リトライも失敗 - \(error)")
         }
     }
 }
@@ -264,6 +287,7 @@ struct SessionHeaderView: View {
 struct ChatBubbleView: View {
     let turn: FirebaseTurn
     let childAvatarImage: Image?
+    let childPhotoURL: URL?
     
     // 子（あるいは親ユーザー）の発言は右側にまとめる。AIのみ左。
     private var isChild: Bool {
@@ -353,6 +377,31 @@ struct ChatBubbleView: View {
                 .scaledToFill()
                 .frame(width: 36, height: 36)
                 .clipShape(Circle())
+        } else if let url = childPhotoURL {
+            AsyncImage(url: url) { phase in
+                switch phase {
+                case .empty:
+                    ProgressView()
+                        .frame(width: 36, height: 36)
+                case .success(let image):
+                    image
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: 36, height: 36)
+                        .clipShape(Circle())
+                case .failure:
+                    Circle()
+                        .fill(Color.gray.opacity(0.3))
+                        .frame(width: 36, height: 36)
+                        .overlay(
+                            Image(systemName: "person.fill")
+                                .font(.system(size: 16))
+                                .foregroundColor(.gray)
+                        )
+                @unknown default:
+                    EmptyView()
+                }
+            }
         } else {
             Circle()
                 .fill(Color.gray.opacity(0.3))
