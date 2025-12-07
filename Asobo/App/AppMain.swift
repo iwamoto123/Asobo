@@ -17,14 +17,6 @@ class AppDelegate: NSObject, UIApplicationDelegate {
     } else {
       print("⚠️ Google Sign-In clientID が取得できませんでした。GoogleService-Info.plist を確認してください。")
     }
-#if DEBUG
-    do {
-      try Auth.auth().signOut()
-      print("DEBUG: signed out on launch")
-    } catch {
-      print("DEBUG: signOut failed - \(error)")
-    }
-#endif
 
     return true
   }

@@ -20,7 +20,15 @@ struct MainTabView: View {
                     Label("履歴", systemImage: "clock.fill")
                 }
                 .tag(1)
+            
+            // プロフィールタブ
+            NavigationStack {
+                ProfileView()
+            }
+            .tabItem {
+                Label("プロフィール", systemImage: "person.crop.circle")
+            }
+            .tag(2)
         }
     }
 }
-

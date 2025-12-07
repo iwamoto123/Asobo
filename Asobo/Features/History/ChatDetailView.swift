@@ -3,6 +3,7 @@
 import SwiftUI
 import Domain
 import DataStores
+import FirebaseFirestore
 
 struct ChatDetailView: View {
     let session: FirebaseConversationSession
@@ -13,8 +14,10 @@ struct ChatDetailView: View {
     
     private let repository = FirebaseConversationsRepository()
     
+    @State private var childPhotoURLString: String?
+    @State private var childAvatarImage: Image?
     private var childPhotoURL: URL? {
-        guard let urlString = authVM.selectedChild?.photoURL else { return nil }
+        guard let urlString = childPhotoURLString ?? authVM.selectedChild?.photoURL else { return nil }
         return URL(string: urlString)
     }
     
@@ -66,7 +69,7 @@ struct ChatDetailView: View {
                         } else {
                             LazyVStack(spacing: 8) {
                                 ForEach(turns) { turn in
-                                    ChatBubbleView(turn: turn, childPhotoURL: childPhotoURL)
+                                    ChatBubbleView(turn: turn, childAvatarImage: childAvatarImage)
                                         .id(turn.id ?? UUID().uuidString)
                                 }
                             }
@@ -92,8 +95,16 @@ struct ChatDetailView: View {
         .task {
             await loadTurns()
         }
+        .onAppear {
+            childPhotoURLString = authVM.selectedChild?.photoURL
+            Task { await loadChildImageIfNeeded() }
+        }
         .onChange(of: authVM.selectedChild?.id) { _ in
-            Task { await loadTurns() }
+            childPhotoURLString = authVM.selectedChild?.photoURL
+            Task {
+                await loadChildImageIfNeeded()
+                await loadTurns()
+            }
         }
     }
     
@@ -109,16 +120,45 @@ struct ChatDetailView: View {
         defer { isLoading = false }
         
         do {
-            self.turns = try await repository.fetchTurns(
+            async let turnsTask: [FirebaseTurn] = repository.fetchTurns(
                 userId: userId,
                 childId: childId,
                 sessionId: sessionId
             )
+            async let childDocTask: DocumentSnapshot = Firestore.firestore()
+                .collection("users").document(userId)
+                .collection("children").document(childId)
+                .getDocument()
+            
+            self.turns = try await turnsTask
+            
+            // 子プロフィールのphotoURLを更新（選択中の子に反映されていない場合に備える）
+            if let doc = try? await childDocTask, doc.exists,
+               let urlString = doc.data()?["photoURL"] as? String {
+                await MainActor.run {
+                    childPhotoURLString = urlString
+                }
+            }
+            await loadChildImageIfNeeded()
             print("✅ ChatDetailView: ターン取得完了 - count: \(turns.count)")
         } catch {
             let errorString = String(describing: error)
             errorMessage = "会話内容の取得に失敗しました: \(errorString)"
             print("❌ ChatDetailView: ターン取得失敗 - \(error)")
+        }
+    }
+    
+    private func loadChildImageIfNeeded() async {
+        guard childAvatarImage == nil, let url = childPhotoURL else { return }
+        do {
+            let (data, _) = try await URLSession.shared.data(from: url)
+            if let uiImage = UIImage(data: data) {
+                await MainActor.run {
+                    childAvatarImage = Image(uiImage: uiImage)
+                }
+            }
+        } catch {
+            print("⚠️ ChatDetailView: 子画像の取得に失敗 - \(error)")
         }
     }
 }
@@ -223,10 +263,11 @@ struct SessionHeaderView: View {
 // 会話の吹き出し（LINE風デザイン）
 struct ChatBubbleView: View {
     let turn: FirebaseTurn
-    let childPhotoURL: URL?
+    let childAvatarImage: Image?
     
+    // 子（あるいは親ユーザー）の発言は右側にまとめる。AIのみ左。
     private var isChild: Bool {
-        turn.role == .child
+        turn.role != .ai
     }
     
     private var timeFormatter: DateFormatter {
@@ -268,42 +309,15 @@ struct ChatBubbleView: View {
                 // AIの発言（左側・グレー）
                 // アイコンと吹き出し群はTop揃え
                 HStack(alignment: .top, spacing: 8) {
-                    // 左側アイコン（子の写真があれば表示）
-                    if let url = childPhotoURL {
-                        AsyncImage(url: url) { phase in
-                            switch phase {
-                            case .empty:
-                                ProgressView()
-                                    .frame(width: 36, height: 36)
-                            case .success(let image):
-                                image
-                                    .resizable()
-                                    .scaledToFill()
-                                    .frame(width: 36, height: 36)
-                                    .clipShape(Circle())
-                            case .failure:
-                                Circle()
-                                    .fill(Color.gray.opacity(0.3))
-                                    .frame(width: 36, height: 36)
-                                    .overlay(
-                                        Image(systemName: "sparkles")
-                                            .font(.system(size: 16))
-                                            .foregroundColor(.gray)
-                                    )
-                            @unknown default:
-                                EmptyView()
-                            }
-                        }
-                    } else {
-                        Circle()
-                            .fill(Color.gray.opacity(0.3))
-                            .frame(width: 36, height: 36)
-                            .overlay(
-                                Image(systemName: "sparkles")
-                                    .font(.system(size: 16))
-                                    .foregroundColor(.gray)
-                            )
-                    }
+                    // 左側アイコンは常にAIアイコン
+                    Circle()
+                        .fill(Color.gray.opacity(0.3))
+                        .frame(width: 36, height: 36)
+                        .overlay(
+                            Image(systemName: "sparkles")
+                                .font(.system(size: 16))
+                                .foregroundColor(.gray)
+                        )
                     
                     // ✅ 吹き出しと時刻はBottom揃え
                     HStack(alignment: .bottom, spacing: 4) {
@@ -333,31 +347,12 @@ struct ChatBubbleView: View {
     
     @ViewBuilder
     private var childAvatar: some View {
-        if let url = childPhotoURL {
-            AsyncImage(url: url) { phase in
-                switch phase {
-                case .empty:
-                    ProgressView()
-                        .frame(width: 36, height: 36)
-                case .success(let image):
-                    image
-                        .resizable()
-                        .scaledToFill()
-                        .frame(width: 36, height: 36)
-                        .clipShape(Circle())
-                case .failure:
-                    Circle()
-                        .fill(Color.gray.opacity(0.3))
-                        .frame(width: 36, height: 36)
-                        .overlay(
-                            Image(systemName: "person.fill")
-                                .font(.system(size: 16))
-                                .foregroundColor(.gray)
-                        )
-                @unknown default:
-                    EmptyView()
-                }
-            }
+        if let image = childAvatarImage {
+            image
+                .resizable()
+                .scaledToFill()
+                .frame(width: 36, height: 36)
+                .clipShape(Circle())
         } else {
             Circle()
                 .fill(Color.gray.opacity(0.3))

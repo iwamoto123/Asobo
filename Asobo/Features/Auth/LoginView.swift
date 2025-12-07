@@ -59,6 +59,7 @@ struct LoginView: View {
                             case .failure(let error):
                                 print("❌ LoginView: Apple Sign In 失敗 - \(error.localizedDescription)")
                                 authVM.errorMessage = "ログインに失敗しました: \(error.localizedDescription)"
+                                authVM.isSigningIn = false
                             }
                         }
                     )
@@ -111,6 +112,28 @@ struct LoginView: View {
                     .foregroundColor(.gray)
                     .padding(.bottom, 40)
             }
+            
+            if authVM.isSigningIn {
+                Color.black.opacity(0.25)
+                    .ignoresSafeArea()
+                VStack(spacing: 16) {
+                    ProgressView()
+                        .tint(.white)
+                        .scaleEffect(1.3)
+                    Text("ログイン中です")
+                        .font(.headline)
+                        .foregroundColor(.white)
+                    Text("少しお待ちください…")
+                        .font(.subheadline)
+                        .foregroundColor(.white.opacity(0.9))
+                }
+                .padding(32)
+                .frame(maxWidth: 300)
+                .background(Color.black.opacity(0.45))
+                .cornerRadius(24)
+                .shadow(radius: 20)
+                .transition(.opacity)
+            }
         }
     }
     
@@ -135,11 +158,13 @@ struct LoginView: View {
     
     /// Google Sign In開始
     private func startGoogleSignIn() {
+        authVM.isSigningIn = true
         guard let rootViewController = UIApplication.shared.connectedScenes
             .compactMap({ $0 as? UIWindowScene })
             .flatMap({ $0.windows })
             .first(where: { $0.isKeyWindow })?.rootViewController else {
             authVM.errorMessage = "画面を取得できませんでした"
+            authVM.isSigningIn = false
             return
         }
         

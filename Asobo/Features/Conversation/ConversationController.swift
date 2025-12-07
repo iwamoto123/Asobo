@@ -1490,7 +1490,7 @@ public final class ConversationController: ObservableObject {
             以下の親子の会話ログを分析し、JSON形式で出力してください。
             
             出力項目:
-            - summary: 子どもの話をメインに、内容のおもしろかったところを2〜3行で要約してください（親向け）。内容が特になければ1行でも大丈夫です。端的すぎず、具体的な内容を含めてください。
+            - summary: 子どもの発話を中心に、親向けに1〜2行で簡潔にまとめる。返答が短い/雑談が少ない場合は状況だけ短く触れる（長い飾り付けはしない）。
             - interests: 子どもが興味を示したトピック（dinosaurs, space, cooking, animals, vehicles, music, sports, crafts, stories, insects, princess, heroes, robots, nature, others から選択。英語のenum値で配列で出力）
             - newWords: 子どもが使った特徴的な単語や成長を感じる言葉（3つまで、配列で出力）
             

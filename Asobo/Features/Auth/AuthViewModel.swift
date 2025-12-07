@@ -12,6 +12,7 @@ class AuthViewModel: ObservableObject {
     @Published var userProfile: FirebaseParentProfile?
     @Published var selectedChild: FirebaseChildProfile?
     @Published var isLoading = true
+    @Published var isSigningIn = false
     @Published var errorMessage: String?
     
     // 画面遷移の制御用
@@ -38,6 +39,7 @@ class AuthViewModel: ObservableObject {
                 } else {
                     self.authState = .login
                     self.isLoading = false
+                    self.isSigningIn = false
                 }
             }
         }
@@ -45,12 +47,14 @@ class AuthViewModel: ObservableObject {
     
     // Google Sign In 処理 (IDトークンとアクセストークンを受け取ってFirebase認証)
     func handleGoogleSignIn(idToken: String, accessToken: String) {
+        isSigningIn = true
         let credential = GoogleAuthProvider.credential(withIDToken: idToken, accessToken: accessToken)
         Auth.auth().signIn(with: credential) { [weak self] result, error in
             guard let self else { return }
             if let error = error {
                 self.errorMessage = "Googleログインに失敗しました: \(error.localizedDescription)"
                 print("❌ AuthViewModel: Google Sign In エラー - \(error)")
+                self.isSigningIn = false
                 return
             }
             print("✅ AuthViewModel: Google Sign In 成功")
@@ -61,6 +65,10 @@ class AuthViewModel: ObservableObject {
     // プロフィール情報の取得
     func fetchUserProfile(userId: String) async {
         self.isLoading = true
+        defer {
+            self.isLoading = false
+            self.isSigningIn = false
+        }
         do {
             let doc = try await db.collection("users").document(userId).getDocument()
             if doc.exists {
@@ -175,17 +183,19 @@ class AuthViewModel: ObservableObject {
             print("❌ AuthViewModel: プロフィール取得エラー - \(error)")
             self.authState = .onboarding
         }
-        self.isLoading = false
     }
     
     // Apple Sign In 処理 (UI側からCredentialを受け取る)
     func handleSignInWithApple(credential: ASAuthorizationAppleIDCredential, nonce: String) {
+        isSigningIn = true
         guard let appleIDToken = credential.identityToken else {
             self.errorMessage = "認証トークンの取得に失敗しました"
+            self.isSigningIn = false
             return
         }
         guard let idTokenString = String(data: appleIDToken, encoding: .utf8) else {
             self.errorMessage = "トークンの変換に失敗しました"
+            self.isSigningIn = false
             return
         }
         
@@ -201,6 +211,7 @@ class AuthViewModel: ObservableObject {
             if let error = error {
                 self.errorMessage = error.localizedDescription
                 print("❌ AuthViewModel: Apple Sign In エラー - \(error)")
+                self.isSigningIn = false
                 return
             }
             // ログイン成功 -> initのリスナーが検知して fetchUserProfile が走る
@@ -215,6 +226,7 @@ class AuthViewModel: ObservableObject {
             self.userProfile = nil
             self.selectedChild = nil
             self.authState = .login
+            self.isSigningIn = false
             print("✅ AuthViewModel: ログアウト成功")
         } catch {
             self.errorMessage = "ログアウトに失敗しました: \(error.localizedDescription)"
