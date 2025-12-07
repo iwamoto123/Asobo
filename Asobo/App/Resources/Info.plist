@@ -40,6 +40,8 @@
 	<string>音声を文字起こしするために使用します。</string>
 	<key>OPENAI_API_KEY</key>
 	<string>$(OPENAI_API_KEY)</string>
+	<key>NUDGE_MAX_COUNT</key>
+	<integer>2</integer>
 	<key>REALTIME_MODEL</key>
 	<string>$(REALTIME_MODEL)</string>
 	<key>REALTIME_WSS_URL</key>

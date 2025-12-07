@@ -22,4 +22,8 @@ public struct AppConfig {
         // そうでなければAPI_BASEとREALTIME_MODELから構築
         return "\(apiBase)/v1/realtime?model=\(realtimeModel)"
     }
+    
+    public static var nudgeMaxCount: Int {
+        Bundle.main.object(forInfoDictionaryKey: "NUDGE_MAX_COUNT") as? Int ?? 2
+    }
 }

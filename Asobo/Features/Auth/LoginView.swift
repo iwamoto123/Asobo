@@ -40,31 +40,48 @@ struct LoginView: View {
                 Spacer()
                 
                 // Sign in with Apple Button
-                SignInWithAppleButton(.signIn,
-                    onRequest: { request in
-                        let nonce = randomNonceString()
-                        currentNonce = nonce
-                        request.requestedScopes = [.fullName, .email]
-                        request.nonce = sha256(nonce)
-                    },
-                    onCompletion: { result in
-                        switch result {
-                        case .success(let authResults):
-                            if let credential = authResults.credential as? ASAuthorizationAppleIDCredential {
-                                guard let nonce = currentNonce else { return }
-                                authVM.handleSignInWithApple(credential: credential, nonce: nonce)
+                ZStack {
+                    // タップ処理を担う純正ボタン（ラベルは非表示）
+                    SignInWithAppleButton(.signIn,
+                        onRequest: { request in
+                            let nonce = randomNonceString()
+                            currentNonce = nonce
+                            request.requestedScopes = [.fullName, .email]
+                            request.nonce = sha256(nonce)
+                        },
+                        onCompletion: { result in
+                            switch result {
+                            case .success(let authResults):
+                                if let credential = authResults.credential as? ASAuthorizationAppleIDCredential {
+                                    guard let nonce = currentNonce else { return }
+                                    authVM.handleSignInWithApple(credential: credential, nonce: nonce)
+                                }
+                            case .failure(let error):
+                                print("❌ LoginView: Apple Sign In 失敗 - \(error.localizedDescription)")
+                                authVM.errorMessage = "ログインに失敗しました: \(error.localizedDescription)"
                             }
-                        case .failure(let error):
-                            print("❌ LoginView: Apple Sign In 失敗 - \(error.localizedDescription)")
-                            authVM.errorMessage = "ログインに失敗しました: \(error.localizedDescription)"
                         }
+                    )
+                    .signInWithAppleButtonStyle(.white)
+                    .labelsHidden()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .cornerRadius(25)
+                    
+                    // カスタム表示（タップは純正ボタンに通す）
+                    HStack(spacing: 8) {
+                        Image(systemName: "applelogo")
+                            .font(.system(size: 18, weight: .semibold))
+                        Text("AppleIDでログイン")
+                            .font(.system(size: 16, weight: .semibold))
                     }
-                )
-                .signInWithAppleButtonStyle(.white) // 背景に合わせて白
+                    .foregroundColor(.black)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Color.white)
+                    .cornerRadius(25)
+                    .allowsHitTesting(false)
+                }
                 .frame(height: 50)
                 .padding(.horizontal, 40)
-                .cornerRadius(25)
-                .environment(\.locale, Locale(identifier: "ja_JP")) // ラベルを日本語表示
                 
                 if let errorMessage = authVM.errorMessage {
                     Text(errorMessage)
@@ -84,7 +101,7 @@ struct LoginView: View {
                     .frame(maxWidth: .infinity)
                     .padding()
                     .background(Color(red: 66/255, green: 133/255, blue: 244/255))
-                    .cornerRadius(12)
+                    .cornerRadius(25)
                 }
                 .padding(.horizontal, 40)
                 .padding(.top, 8)
@@ -144,4 +161,3 @@ struct LoginView: View {
         }
     }
 }
-

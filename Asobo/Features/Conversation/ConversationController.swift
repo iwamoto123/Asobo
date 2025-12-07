@@ -43,6 +43,9 @@ public final class ConversationController: ObservableObject {
     
     // ✅ 「待つ→促す」タイマー
     private var nudgeTimer: Timer?
+    // ✅ 促し回数の上限とカウンター
+    private let maxNudgeCount = AppConfig.nudgeMaxCount
+    private var nudgeCount = 0
     
     // ✅ 追加: 最後に「ユーザーの声（環境音含む）」が閾値を超えた時刻
     private var lastUserVoiceActivityTime: Date = Date()
@@ -307,6 +310,7 @@ public final class ConversationController: ObservableObject {
     private func startRealtimeSessionInternal() {
         // 接続中フラグを設定
         isRealtimeConnecting = true
+        nudgeCount = 0  // セッション開始時に促し回数をリセット
         
         // オーディオセッションを構成
         do {
@@ -800,6 +804,7 @@ public final class ConversationController: ObservableObject {
         isRealtimeActive = false
         isRealtimeConnecting = false
         turnState = .idle
+        nudgeCount = 0
         
         // テキストをクリア
         transcript = ""
@@ -1345,6 +1350,12 @@ public final class ConversationController: ObservableObject {
         // 既存のタイマーがあればキャンセル
         cancelNudge()
         
+        // 促し上限に達している場合はタイマーを張らない
+        guard nudgeCount < maxNudgeCount else {
+            print("⏹ ConversationController: 促し上限(\(maxNudgeCount)回)に達したためタイマーを開始しません")
+            return
+        }
+        
         // メインスレッドで安全にタイマーを作成
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
@@ -1402,8 +1413,14 @@ public final class ConversationController: ObservableObject {
         }
         
         // ここまで来たら送信
+        guard nudgeCount < maxNudgeCount else {
+            print("⏹ ConversationController: 促し送信を\(maxNudgeCount)回で停止します")
+            cancelNudge()
+            return
+        }
         print("🚀 ConversationController: 条件クリア -> 促しメッセージ送信実行")
         await realtimeClient?.nudge(kind: 0)
+        nudgeCount += 1
     }
     
     private func cancelNudge() {
