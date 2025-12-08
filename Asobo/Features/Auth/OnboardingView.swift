@@ -256,7 +256,11 @@ struct OnboardingView: View {
                 if let data = selectedPhotoData {
                     do {
                         // デフォルトバケットを使用し、子ごとのパスに保存
-                        let ref = Storage.storage().reference().child("users/\(uid)/children/\(childRef.documentID)/photo.jpg")
+        // 明示的に default bucket（firebasestorage.app）を指定してアップロードする
+        let ref = Storage
+            .storage(url: "gs://asobo-539e5.firebasestorage.app")
+            .reference()
+            .child("users/\(uid)/children/\(childRef.documentID)/photo.jpg")
                         let metadata = StorageMetadata()
                         metadata.contentType = "image/jpeg"
                         _ = try await ref.putData(data, metadata: metadata) // ここで失敗したら catch へ

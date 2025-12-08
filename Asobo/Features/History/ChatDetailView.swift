@@ -4,6 +4,7 @@ import SwiftUI
 import Domain
 import DataStores
 import FirebaseFirestore
+import FirebaseStorage
 
 struct ChatDetailView: View {
     let session: FirebaseConversationSession
@@ -19,7 +20,9 @@ struct ChatDetailView: View {
     @State private var loadedAvatarURLString: String?
     private var childPhotoURL: URL? {
         guard let urlString = childPhotoURLString ?? authVM.selectedChild?.photoURL else { return nil }
-        return URL(string: urlString)
+        // URLから:443を削除（Firebase StorageのURLに含まれることがある）
+        let normalizedURLString = urlString.replacingOccurrences(of: ":443", with: "")
+        return URL(string: normalizedURLString)
     }
     
     var body: some View {
@@ -107,8 +110,19 @@ struct ChatDetailView: View {
                 await loadTurns()
             }
         }
+        .onChange(of: authVM.selectedChild?.photoURL) { newURL in
+            childPhotoURLString = newURL
+            Task { await loadChildImageIfNeeded(forceReload: true) }
+        }
         .onChange(of: childPhotoURLString) { _ in
             Task { await loadChildImageIfNeeded(forceReload: true) }
+        }
+        // isLoadingがfalseになった時（データ取得完了時）にも画像を読み込む
+        .onChange(of: authVM.isLoading) { isLoading in
+            if !isLoading {
+                childPhotoURLString = authVM.selectedChild?.photoURL
+                Task { await loadChildImageIfNeeded(forceReload: true) }
+            }
         }
     }
     
@@ -153,35 +167,77 @@ struct ChatDetailView: View {
     }
     
     private func loadChildImageIfNeeded(forceReload: Bool) async {
-        guard let url = childPhotoURL else { return }
+        guard let url = childPhotoURL else {
+            print("⚠️ ChatDetailView: loadChildImageIfNeeded - photoURLがnil")
+            return
+        }
         let shouldReload = forceReload || loadedAvatarURLString != url.absoluteString || childAvatarImage == nil
-        if !shouldReload { return }
+        if !shouldReload {
+            print("ℹ️ ChatDetailView: loadChildImageIfNeeded - スキップ（既に読み込み済み）")
+            return
+        }
+        
+        print("📸 ChatDetailView: 子画像の読み込み開始 - URL: \(url.absoluteString)")
+        
+        // Firebase Storage SDKを使用して画像を取得
+        guard let userId = authVM.currentUser?.uid,
+              let childId = authVM.selectedChild?.id else {
+            print("⚠️ ChatDetailView: ユーザー情報が取得できません")
+            return
+        }
         
         do {
-            let (data, _) = try await URLSession.shared.data(from: url)
+            // Storage参照を取得
+            let storage = Storage.storage(url: "gs://asobo-539e5.firebasestorage.app")
+            let ref = storage.reference().child("users/\(userId)/children/\(childId)/photo.jpg")
+            
+            // 最大サイズを10MBに設定してダウンロード
+            let data = try await ref.data(maxSize: 10 * 1024 * 1024)
+            print("📊 ChatDetailView: データ取得完了 - サイズ: \(data.count) bytes")
+            
             if let uiImage = UIImage(data: data) {
                 await MainActor.run {
                     childAvatarImage = Image(uiImage: uiImage)
                     loadedAvatarURLString = url.absoluteString
+                    print("✅ ChatDetailView: 子画像の読み込み成功 - サイズ: \(uiImage.size)")
                 }
                 return
+            } else {
+                print("⚠️ ChatDetailView: 子画像のデータ変換失敗 - データサイズ: \(data.count) bytes")
             }
         } catch {
             print("⚠️ ChatDetailView: 子画像の取得に失敗 - \(error)")
-        }
-        
-        // 失敗時に一度だけ短いリトライ
-        do {
-            try await Task.sleep(nanoseconds: 400_000_000) // 0.4s
-            let (data, _) = try await URLSession.shared.data(from: url)
-            if let uiImage = UIImage(data: data) {
-                await MainActor.run {
-                    childAvatarImage = Image(uiImage: uiImage)
-                    loadedAvatarURLString = url.absoluteString
+            // Firebase Storage SDKでの取得に失敗した場合、URLSessionでリトライ
+            do {
+                let (data, response) = try await URLSession.shared.data(from: url)
+                print("📊 ChatDetailView: URLSessionリトライ - データ取得完了 - サイズ: \(data.count) bytes, Content-Type: \((response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Content-Type") ?? "unknown")")
+                
+                // エラーレスポンス（JSON）かどうかを確認
+                if let jsonString = String(data: data, encoding: .utf8),
+                   jsonString.contains("\"error\"") {
+                    print("❌ ChatDetailView: Firebase Storage エラーレスポンス受信")
+                    print("📊 ChatDetailView: エラー内容: \(jsonString)")
+                    if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                       let error = json["error"] as? [String: Any] {
+                        let code = error["code"] as? Int ?? 0
+                        let message = error["message"] as? String ?? "unknown"
+                        print("❌ ChatDetailView: エラーコード: \(code), メッセージ: \(message)")
+                    }
+                    return
                 }
+                
+                if let uiImage = UIImage(data: data) {
+                    await MainActor.run {
+                        childAvatarImage = Image(uiImage: uiImage)
+                        loadedAvatarURLString = url.absoluteString
+                        print("✅ ChatDetailView: URLSessionリトライ成功 - サイズ: \(uiImage.size)")
+                    }
+                } else {
+                    print("⚠️ ChatDetailView: URLSessionリトライでもデータ変換失敗 - データサイズ: \(data.count) bytes")
+                }
+            } catch {
+                print("⚠️ ChatDetailView: URLSessionリトライも失敗 - \(error)")
             }
-        } catch {
-            print("⚠️ ChatDetailView: 子画像リトライも失敗 - \(error)")
         }
     }
 }
