@@ -5,6 +5,36 @@ import FirebaseFirestore
 import FirebaseStorage
 import Domain
 
+// 画像キャッシュ用のシングルトン
+class ImageCache {
+    static let shared = ImageCache()
+    private let cache = NSCache<NSString, UIImage>()
+    
+    private init() {
+        // メモリ制限を設定（最大50MB）
+        cache.totalCostLimit = 50 * 1024 * 1024
+        cache.countLimit = 100
+    }
+    
+    func get(for key: String) -> UIImage? {
+        return cache.object(forKey: key as NSString)
+    }
+    
+    func set(_ image: UIImage, for key: String) {
+        // 画像のサイズをコストとして使用（バイト単位）
+        let cost = Int(image.size.width * image.size.height * 4) // RGBA = 4 bytes per pixel
+        cache.setObject(image, forKey: key as NSString, cost: cost)
+    }
+    
+    func remove(for key: String) {
+        cache.removeObject(forKey: key as NSString)
+    }
+    
+    func clear() {
+        cache.removeAllObjects()
+    }
+}
+
 struct ProfileView: View {
     @EnvironmentObject var authVM: AuthViewModel
     
@@ -21,6 +51,7 @@ struct ProfileView: View {
     @State private var currentPhotoURLString: String?
     @State private var profileImage: Image?
     @State private var loadedImageURLString: String?
+    @State private var imageForCropping: UIImage?
     
     @State private var isSaving = false
     @State private var message: String?
@@ -193,9 +224,31 @@ struct ProfileView: View {
         // 写真選択時の処理
         .onChange(of: selectedPhotoItem) { newItem in
             Task {
-                if let data = try? await newItem?.loadTransferable(type: Data.self) {
-                    selectedPhotoData = data
+                if let data = try? await newItem?.loadTransferable(type: Data.self),
+                   let uiImage = UIImage(data: data) {
+                    await MainActor.run {
+                        imageForCropping = uiImage
+                    }
                 }
+            }
+        }
+        .sheet(isPresented: Binding(
+            get: { imageForCropping != nil },
+            set: { isPresented in
+                if !isPresented { imageForCropping = nil }
+            }
+        )) {
+            if let imageForCropping {
+                AvatarCropperView(
+                    image: imageForCropping,
+                    onCancel: {
+                        self.imageForCropping = nil
+                    },
+                    onCrop: { cropped in
+                        self.selectedPhotoData = cropped.jpegData(compressionQuality: 0.9)
+                        self.imageForCropping = nil
+                    }
+                )
             }
         }
     }
@@ -357,6 +410,28 @@ struct ProfileView: View {
         }
     }
     
+    /// 画像を表示サイズに合わせてダウンサンプリング（メモリ使用量と処理速度を最適化）
+    private func downsampleImage(data: Data, to pointSize: CGSize, scale: CGFloat = UIScreen.main.scale) -> UIImage? {
+        let imageSourceOptions = [kCGImageSourceShouldCache: false] as CFDictionary
+        guard let imageSource = CGImageSourceCreateWithData(data as CFData, imageSourceOptions) else {
+            return nil
+        }
+        
+        let maxDimensionInPixels = max(pointSize.width, pointSize.height) * scale
+        let downsampleOptions = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxDimensionInPixels
+        ] as CFDictionary
+        
+        guard let downsampledImage = CGImageSourceCreateThumbnailAtIndex(imageSource, 0, downsampleOptions) else {
+            return nil
+        }
+        
+        return UIImage(cgImage: downsampledImage)
+    }
+    
     private func loadProfileImageIfNeeded(forceReload: Bool) async {
         // selectedPhotoDataがある場合は、URLから画像を読み込まない（ユーザーが選択中の画像を優先）
         guard selectedPhotoData == nil else {
@@ -377,6 +452,18 @@ struct ProfileView: View {
         let normalizedURLString = urlString.replacingOccurrences(of: ":443", with: "")
         guard let url = URL(string: normalizedURLString) else {
             print("⚠️ ProfileView: loadProfileImageIfNeeded - URL変換失敗: \(normalizedURLString)")
+            return
+        }
+        
+        let cacheKey = url.absoluteString
+        
+        // キャッシュから取得を試みる（forceReloadがfalseの場合のみ）
+        if !forceReload, let cachedImage = ImageCache.shared.get(for: cacheKey) {
+            print("✅ ProfileView: キャッシュから画像を取得 - URL: \(cacheKey)")
+            await MainActor.run {
+                profileImage = Image(uiImage: cachedImage)
+                loadedImageURLString = url.absoluteString
+            }
             return
         }
         
@@ -404,15 +491,33 @@ struct ProfileView: View {
             let data = try await ref.data(maxSize: 10 * 1024 * 1024)
             print("📊 ProfileView: データ取得完了 - サイズ: \(data.count) bytes")
             
-            if let uiImage = UIImage(data: data) {
+            // 表示サイズ（90x90）に合わせてダウンサンプリング（メモリ使用量と処理速度を最適化）
+            let displaySize = CGSize(width: 90, height: 90)
+            if let downsampledImage = downsampleImage(data: data, to: displaySize) {
+                // キャッシュに保存
+                ImageCache.shared.set(downsampledImage, for: cacheKey)
+                
                 await MainActor.run {
-                    profileImage = Image(uiImage: uiImage)
+                    profileImage = Image(uiImage: downsampledImage)
                     loadedImageURLString = url.absoluteString
-                    print("✅ ProfileView: プロフィール画像の読み込み成功 - サイズ: \(uiImage.size)")
+                    print("✅ ProfileView: プロフィール画像の読み込み成功（ダウンサンプリング済み） - 元サイズ: \(data.count) bytes, 画像サイズ: \(downsampledImage.size)")
                 }
                 return
             } else {
-                print("⚠️ ProfileView: プロフィール画像のデータ変換失敗 - データサイズ: \(data.count) bytes")
+                // ダウンサンプリングに失敗した場合は通常の方法で読み込む
+                if let uiImage = UIImage(data: data) {
+                    // キャッシュに保存
+                    ImageCache.shared.set(uiImage, for: cacheKey)
+                    
+                    await MainActor.run {
+                        profileImage = Image(uiImage: uiImage)
+                        loadedImageURLString = url.absoluteString
+                        print("✅ ProfileView: プロフィール画像の読み込み成功（通常方法） - サイズ: \(uiImage.size)")
+                    }
+                    return
+                } else {
+                    print("⚠️ ProfileView: プロフィール画像のデータ変換失敗 - データサイズ: \(data.count) bytes")
+                }
             }
         } catch {
             // Firebase Storage SDKでの取得に失敗した場合、URLSessionでリトライ
@@ -435,11 +540,25 @@ struct ProfileView: View {
                     return
                 }
                 
-                if let uiImage = UIImage(data: data) {
+                // 表示サイズに合わせてダウンサンプリング
+                let displaySize = CGSize(width: 90, height: 90)
+                if let downsampledImage = downsampleImage(data: data, to: displaySize) {
+                    // キャッシュに保存
+                    ImageCache.shared.set(downsampledImage, for: cacheKey)
+                    
+                    await MainActor.run {
+                        profileImage = Image(uiImage: downsampledImage)
+                        loadedImageURLString = url.absoluteString
+                        print("✅ ProfileView: URLSessionリトライ成功（ダウンサンプリング済み） - 画像サイズ: \(downsampledImage.size)")
+                    }
+                } else if let uiImage = UIImage(data: data) {
+                    // ダウンサンプリングに失敗した場合は通常の方法で読み込む
+                    ImageCache.shared.set(uiImage, for: cacheKey)
+                    
                     await MainActor.run {
                         profileImage = Image(uiImage: uiImage)
                         loadedImageURLString = url.absoluteString
-                        print("✅ ProfileView: URLSessionリトライ成功 - サイズ: \(uiImage.size)")
+                        print("✅ ProfileView: URLSessionリトライ成功（通常方法） - サイズ: \(uiImage.size)")
                     }
                 } else {
                     print("⚠️ ProfileView: URLSessionリトライでもデータ変換失敗 - データサイズ: \(data.count) bytes")

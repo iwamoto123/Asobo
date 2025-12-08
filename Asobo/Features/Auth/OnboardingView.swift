@@ -17,6 +17,7 @@ struct OnboardingView: View {
     @State private var birthDate = Date()
     @State private var selectedPhotoItem: PhotosPickerItem?
     @State private var selectedPhotoData: Data?
+    @State private var imageForCropping: UIImage?
     
     @State private var isSaving = false
     @State private var errorMessage: String?
@@ -167,9 +168,29 @@ struct OnboardingView: View {
                     }
                     .onChange(of: selectedPhotoItem) { newItem in
                         Task {
-                            if let data = try? await newItem?.loadTransferable(type: Data.self) {
-                                selectedPhotoData = data
+                            if let data = try? await newItem?.loadTransferable(type: Data.self),
+                               let uiImage = UIImage(data: data) {
+                                await MainActor.run {
+                                    imageForCropping = uiImage
+                                }
                             }
+                        }
+                    }
+                    .sheet(isPresented: Binding(
+                        get: { imageForCropping != nil },
+                        set: { isPresented in
+                            if !isPresented { imageForCropping = nil }
+                        }
+                    )) {
+                        if let imageForCropping {
+                            AvatarCropperView(
+                                image: imageForCropping,
+                                onCancel: { self.imageForCropping = nil },
+                                onCrop: { cropped in
+                                    self.selectedPhotoData = cropped.jpegData(compressionQuality: 0.9)
+                                    self.imageForCropping = nil
+                                }
+                            )
                         }
                     }
                     
