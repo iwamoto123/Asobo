@@ -19,6 +19,7 @@ public struct ChildHomeView: View {
     @State private var isPressed = false
     @State private var hasStartedSession = false
     @State private var initialGreetingText: String = ""
+    @State private var lastAIDisplayText: String = ""
     @State private var isBlinking = false
     @State private var isSquinting = false
     @State private var isNodding = false
@@ -144,6 +145,15 @@ public struct ChildHomeView: View {
         .onChange(of: controller.isRecording) { isRecording in
             // 録音中の頻度調整は、startEyeAnimation内で管理
         }
+        .onChange(of: controller.aiResponseText) { newValue in
+            // AIテキストが更新されたら常に保持（録音中の表示は固定で最後の値を使う）
+            if !newValue.isEmpty {
+                lastAIDisplayText = newValue
+            }
+        }
+        .onAppear {
+            lastAIDisplayText = controller.aiResponseText
+        }
     }
     
     private var currentDisplayText: String {
@@ -151,8 +161,19 @@ public struct ChildHomeView: View {
             return "つながっています..."
         } else if controller.isThinking {
             return "かんがえちゅう..."
+        } else if controller.isRecording {
+            // ユーザー発話中は前ターンのAIテキストをそのまま表示
+            if !lastAIDisplayText.isEmpty {
+                return lastAIDisplayText
+            } else if !initialGreetingText.isEmpty {
+                return initialGreetingText
+            } else {
+                return controller.aiResponseText
+            }
         } else if !controller.aiResponseText.isEmpty {
             return controller.aiResponseText
+        } else if !lastAIDisplayText.isEmpty {
+            return lastAIDisplayText
         } else {
             return initialGreetingText
         }
