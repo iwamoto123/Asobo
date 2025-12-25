@@ -22,6 +22,8 @@ public final class ConversationController: ObservableObject {
     @Published public var errorMessage: String?
     @Published public var isRealtimeActive: Bool = false
     @Published public var isRealtimeConnecting: Bool = false
+    // ✅ 音声プレビュー用のローカル文字起こしを行うか（端末環境で kAFAssistantErrorDomain 1101 が多発するためデフォルトOFF）
+    private let enableLocalUserTranscription: Bool = true
     
     // 追加: ユーザーが停止したかを覚えるフラグ
     private var userStoppedRecording = false
@@ -61,6 +63,9 @@ public final class ConversationController: ObservableObject {
     @Published public var aiResponseText: String = ""
     @Published public var isPlayingAudio: Bool = false
     @Published public var hasMicrophonePermission: Bool = false
+    @Published public var liveSummary: String = ""                 // 会話の簡易要約（毎ターン更新）
+    @Published public var liveInterests: [FirebaseInterestTag] = [] // セッション終了時に更新
+    @Published public var liveNewVocabulary: [String] = []          // セッション終了時に更新
     
     // AI呼び出し用フィールド
     @Published public var isThinking: Bool = false   // ぐるぐる表示用
@@ -79,11 +84,24 @@ public final class ConversationController: ObservableObject {
     private let sharedAudioEngine = AVAudioEngine()
     private var mic: MicrophoneCapture?
     private var player: PlayerNodeStreamer            // 音声先出し（必要に応じて）
+    // ✅ Realtime API はコメントアウトして、gpt-4o-audio-preview ストリーミングに切り替え
     private var realtimeClient: RealtimeClientOpenAI?
+    private var audioPreviewClient: AudioPreviewStreamingClient?
+    private var recordedPCMData = Data()
+    private var recordedSampleRate: Double = 24_000
     private var receiveTextTask: Task<Void, Never>?
     private var receiveAudioTask: Task<Void, Never>?
     private var receiveInputTextTask: Task<Void, Never>?
     private var sessionStartTask: Task<Void, Never>?     // セッション開始タスクの管理
+    private var liveSummaryTask: Task<Void, Never>?      // ライブ要約生成タスク
+    private var inMemoryTurns: [FirebaseTurn] = []       // 会話ログ（要約用）
+    
+    // ✅ 会話文脈（過去のテキスト履歴）をステートレスAPIに渡すために保持
+    struct HistoryItem: Codable {
+        let role: String    // "user" or "assistant"
+        let text: String
+    }
+    private var conversationHistory: [HistoryItem] = []
     
     // MARK: - Firebase保存
     private let firebaseRepository = FirebaseConversationsRepository()
@@ -100,6 +118,23 @@ public final class ConversationController: ObservableObject {
         print("✅ ConversationController: ユーザー情報を設定 - Parent=\(userId), Child=\(childId)")
     }
     
+    private static func pcmFromWavIfPossible(_ data: Data) -> Data? {
+        // 最低限のWAVヘッダー検証とPCM16LE抽出（リトルエンディアン）
+        if data.count < 44 { return nil }
+        let riff = data[0..<4]
+        let wave = data[8..<12]
+        guard String(data: riff, encoding: .ascii) == "RIFF",
+              String(data: wave, encoding: .ascii) == "WAVE" else { return nil }
+        // fmtチャンクは16bit PCM想定（オフセット固定簡易版）
+        let audioFormat = UInt16(littleEndian: data.subdata(in: 20..<22).withUnsafeBytes { $0.load(as: UInt16.self) })
+        let bitsPerSample = UInt16(littleEndian: data.subdata(in: 34..<36).withUnsafeBytes { $0.load(as: UInt16.self) })
+        guard audioFormat == 1, bitsPerSample == 16 else { return nil }
+        // dataチャンク位置（簡易：通常44バイト固定）
+        let dataOffset = 44
+        guard data.count >= dataOffset else { return nil }
+        return data.advanced(by: dataOffset)
+    }
+
     /// Firebaseエラーの詳細ログ出力（Permission deniedの場合にセキュリティルールの設定方法を案内）
     private func logFirebaseError(_ error: Error, operation: String) {
         let errorString = String(describing: error)
@@ -143,6 +178,8 @@ public final class ConversationController: ObservableObject {
         // セッション開始タスクをキャンセル
         sessionStartTask?.cancel()
         sessionStartTask = nil
+        liveSummaryTask?.cancel()
+        liveSummaryTask = nil
         
         // 受信タスクをキャンセル
         receiveTextTask?.cancel()
@@ -280,27 +317,11 @@ public final class ConversationController: ObservableObject {
     public func startRealtimeSession() {
         // 既に接続中または接続済みの場合は何もしない
         guard !isRealtimeActive && !isRealtimeConnecting else {
-            print("⚠️ ConversationController: 既にRealtimeセッションがアクティブまたは接続中です")
+            print("⚠️ ConversationController: 既に音声プレビューセッションがアクティブまたは接続中です")
             return
         }
-        
         // 既存のセッション開始タスクをキャンセル
         sessionStartTask?.cancel()
-        
-        // 既存のクライアントがあれば完全にクリーンアップ
-        if realtimeClient != nil {
-            print("🧹 ConversationController: 既存のクライアントをクリーンアップ中...")
-            Task { [weak self] in
-                guard let self else { return }
-                try? await self.realtimeClient?.finishSession()
-                await MainActor.run {
-                    self.realtimeClient = nil
-                    self.startRealtimeSessionInternal()
-                }
-            }
-            return
-        }
-        
         startRealtimeSessionInternal()
     }
     
@@ -346,29 +367,6 @@ public final class ConversationController: ObservableObject {
             }
         }
 
-        // エンドポイントURL（REALTIME_WSS_URL があれば優先）
-        let url: URL = {
-            if let s = Bundle.main.object(forInfoDictionaryKey: "REALTIME_WSS_URL") as? String,
-               let u = URL(string: s) { 
-                print("🔗 ConversationController: 直接URL使用 - \(s)")
-                return u 
-            }
-
-            if let https = URL(string: AppConfig.realtimeEndpoint),
-               var comps = URLComponents(url: https, resolvingAgainstBaseURL: false) {
-                let isHTTP = comps.scheme?.lowercased() == "http"
-                comps.scheme = isHTTP ? "ws" : "wss"   // 読みと書きを分離
-                let finalUrl = comps.url ?? https
-                print("🔗 ConversationController: 構築URL使用 - \(finalUrl)")
-                return finalUrl
-            }
-
-            // ✅ gpt-realtime に固定（フォールバックを完全排除）
-            let fallbackUrl = URL(string: "wss://api.openai.com/v1/realtime?model=gpt-realtime")!
-            print("🔗 ConversationController: フォールバックURL使用 - \(fallbackUrl)")
-            return fallbackUrl
-        }()
-
         let key = AppConfig.openAIKey
         print("🔑 ConversationController: APIキー確認 - \(key.prefix(10))...")
         guard !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -376,13 +374,10 @@ public final class ConversationController: ObservableObject {
             return
         }
         
-        // APIキーの形式をチェック
-        guard key.hasPrefix("sk-") else {
-            self.errorMessage = "APIキーの形式が正しくありません（sk-で始まる必要があります）"
-            return
-        }
-
-        realtimeClient = RealtimeClientOpenAI(url: url, apiKey: key)
+        audioPreviewClient = AudioPreviewStreamingClient(
+            apiKey: key,
+            apiBase: URL(string: AppConfig.apiBase) ?? URL(string: "https://api.openai.com")!
+        )
         
         // ✅ 重要: Playerの状態変化を監視して、正確なタイミングでマイクのゲートを開閉する
         player.onPlaybackStateChange = { [weak self] isPlaying in
@@ -396,7 +391,7 @@ public final class ConversationController: ObservableObject {
                 } else {
                     print("🔇 ConversationController: 再生完全終了 - マイクゲート開")
                     // ✅ AIが完全に話し終わったら、ユーザーの入力を待つ状態にしてタイマーを開始
-                    // 注意: 実際の音声再生が終了した時点でタイマーをセットする（onResponseDoneではなく）
+                    // 注意: 実際の音声再生が終了した時点でタイマーをセットする
                     if self.turnState == .speaking {
                         self.turnState = .waitingUser
                         print("⏰ ConversationController: AIの音声再生完全終了 -> 促しタイマーを開始")
@@ -406,264 +401,13 @@ public final class ConversationController: ObservableObject {
             }
         }
         
-        // Realtimeのイベントにフック
-        realtimeClient?.onSpeechStarted = { [weak self] in
-            Task { @MainActor in
-                guard let self else { return }
-                // ユーザー発話を検知 → 促しタイマーは止める & AI音声を即停止
-                print("🎤 ConversationController: ユーザー発話検知 -> タイマーキャンセル")
-                self.cancelNudge()  // ✅ ユーザーが話し始めたので促しをキャンセル
-                self.speechStartedMissingCount = 0  // ✅ カウンターをリセット
-                let wasSpeaking = (self.turnState == .speaking)
-                self.turnState = .listening
-                // ✅ AIがまだ話している場合はテキストを消さない（誤検知による途切れ防止）
-                if wasSpeaking {
-                    print("⚠️ ConversationController: speech_startedを受信したがturnStateが.speakingのためテキストリセットをスキップ")
-                } else {
-                    self.aiResponseText = ""
-                }
-                // ✅ ユーザーが話し始めたら即AI音声を止める
-                self.player.stopImmediately()
-            }
-        }
-        
-        // ✅ 追加: speech_startedが来ていない警告のコールバック
-        realtimeClient?.onSpeechStartedMissing = { [weak self] in
-            Task { @MainActor in
-                guard let self else { return }
-                self.speechStartedMissingCount += 1
-                print("⚠️ ConversationController: speech_started未検出警告 #\(self.speechStartedMissingCount)")
-                
-                // 2回警告が出たら促しメッセージを送信
-                if self.speechStartedMissingCount >= 2 {
-                    print("🚀 ConversationController: speech_started未検出が2回に達したため、促しメッセージを送信します")
-                    self.speechStartedMissingCount = 0  // リセット
-                    await self.sendNudgeIfNoResponse()
-                }
-            }
-        }
-        
-        realtimeClient?.onSpeechStopped = { [weak self] in
-            Task { @MainActor in
-                guard let self else { return }
-                self.turnState = .thinking
-                // ✅ 応答生成中なので促しをキャンセル
-                self.cancelNudge()
-                self.speechStartedMissingCount = 0  // ✅ カウンターをリセット
-                // 以降は Realtime 側が commit → response.create を送信してくれる設計にしている
-            }
-        }
-        
-        realtimeClient?.onInputCommitted = { [weak self] transcript in
-            Task { @MainActor in
-                guard let self else { return }
-                // ✅ 入力がコミットされたので促しをキャンセル
-                self.cancelNudge()
-                self.speechStartedMissingCount = 0  // ✅ カウンターをリセット
-                let t = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
-                if t.isEmpty || t.count < 2 {
-                    // ✅ 聞き取り失敗時は必ず聞き返し
-                    print("⚠️ ConversationController: 聞き取り失敗 - テキスト: 「\(t)」（空または2文字未満）")
-                    self.turnState = .clarifying
-                    
-                    // ✅ 既存の応答をキャンセルして、聞き返しメッセージを送信
-                    Task { [weak self] in
-                        guard let self else { return }
-                        do {
-                            try await self.realtimeClient?.requestClarification()
-                            print("✅ ConversationController: 聞き返しメッセージ送信完了")
-                        } catch {
-                            print("❌ ConversationController: 聞き返しメッセージ送信失敗 - \(error)")
-                        }
-                    }
-                } else {
-                    // ✅ 聞き取り成功 → 応答生成中
-                    self.turnState = .thinking
-                    
-                    // ✅ Firebaseにユーザーの発言を保存
-                    guard let userId = self.currentUserId, let childId = self.currentChildId, let sessionId = self.currentSessionId else {
-                        print("⚠️ ConversationController: ユーザー情報が設定されていないため、発言を保存できません")
-                        return
-                    }
-                    let turn = FirebaseTurn(
-                        role: .child,
-                        text: t,
-                        timestamp: Date()
-                    )
-                    Task {
-                        do {
-                            try await self.firebaseRepository.addTurn(
-                                userId: userId,
-                                childId: childId,
-                                sessionId: sessionId,
-                                turn: turn
-                            )
-                            // ターン数を更新
-                            self.turnCount += 1
-                            try? await self.firebaseRepository.updateTurnCount(
-                                userId: userId,
-                                childId: childId,
-                                sessionId: sessionId,
-                                turnCount: self.turnCount
-                            )
-                            print("✅ ConversationController: ユーザーの発言をFirebaseに保存 - 「\(t)」")
-                        } catch {
-                            self.logFirebaseError(error, operation: "ユーザーの発言保存")
-                        }
-                    }
-                }
-            }
-        }
-        
-        realtimeClient?.onResponseCreated = { [weak self] in
-            Task { @MainActor in
-                guard let self else { return }
-                // ✅ 既にAIが話している場合は新しい応答をブロック（ターン制御のため）
-                if case .speaking = self.turnState {
-                    print("⚠️ ConversationController: 既にAIが話しているため、新しい応答をブロック（turnState: .speaking）")
-                    return
-                }
-                // ✅ 追記モードで運用（応答アイテムが分割されてもテキストを保持）
-                print("📝 ConversationController: AI応答アイテム追加 - テキストは追記されます")
-                // ✅ 応答が来たので促しをキャンセル
-                self.cancelNudge()
-                self.turnState = .speaking
-                // ✅ 音声再生を再開（stopImmediately()でvolume=0になった場合の復帰）
-                self.player.resumeIfNeeded()
-            }
-        }
-        
-        realtimeClient?.onResponseDone = { [weak self] in
-            Task { @MainActor in
-                guard let self else { return }
-                
-                print("✅ ConversationController: AIの応答完了 (onResponseDone)")
-                
-                // ✅ FirebaseにAIの応答を保存
-                guard let userId = self.currentUserId, let childId = self.currentChildId, let sessionId = self.currentSessionId, !self.aiResponseText.isEmpty else {
-                    print("⚠️ ConversationController: ユーザー情報が設定されていない、または応答テキストが空のため、AIの応答を保存できません")
-                    return
-                }
-                let aiText = self.aiResponseText.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !aiText.isEmpty {
-                    let turn = FirebaseTurn(
-                        role: .ai,
-                        text: aiText,
-                        timestamp: Date()
-                    )
-                    Task {
-                        do {
-                            try await self.firebaseRepository.addTurn(
-                                userId: userId,
-                                childId: childId,
-                                sessionId: sessionId,
-                                turn: turn
-                            )
-                            // ターン数を更新
-                            self.turnCount += 1
-                            try? await self.firebaseRepository.updateTurnCount(
-                                userId: userId,
-                                childId: childId,
-                                sessionId: sessionId,
-                                turnCount: self.turnCount
-                            )
-                            print("✅ ConversationController: AIの応答をFirebaseに保存 - 「\(aiText)」")
-                        } catch {
-                            self.logFirebaseError(error, operation: "AIの応答保存")
-                        }
-                    }
-                }
-                
-                // ✅ 応答が終わったら次ターンへ
-                // ✅ ここでの isAIPlayingAudio = false は【削除】する
-                // 理由: サーバ送信完了 != 再生終了。ここでfalseにすると、まだ喋ってるのにマイクが開いてしまう。
-                // 実際の再生終了は player.onPlaybackStateChange で検知する
-                
-                // self.isAIPlayingAudio = false  // <-- 削除
-                // self.mic?.setAIPlayingAudio(false) // <-- 削除
-                
-                // ✅ 状態更新: サーバー送信完了時点では turnState を変更しない
-                // 理由: 実際の音声再生が終了するまで .speaking のままにしておくことで、
-                // AIが話している途中で新しい応答が生成されるのを防ぐ
-                // 実際の音声再生が終了した時点（player.onPlaybackStateChange）で .waitingUser に変更する
-                // これにより、AIが話している途中でタイマーが発火するのを防ぐ
-                print("📊 ConversationController: onResponseDone - turnStateは.speakingのまま（実際の音声再生終了まで待機）")
-                
-                // 注意: タイマーは player.onPlaybackStateChange で再生完全終了時にセットする
-            }
-        }
-        
-        // ✅ 参考プロジェクトパターン：AI音声受信時の処理
-        // 注意: isAIPlayingAudio フラグの制御は player.onPlaybackStateChange に移行
-        // ここではログ出力のみ（デバッグ用）
-        realtimeClient?.onAudioDeltaReceived = { [weak self] in
-            Task { @MainActor in
-                guard let self else { return }
-                // ✅ ここでの isAIPlayingAudio = true は【削除】する（Playerに任せる）
-                // 理由: サーバ受信 != 再生開始。実際の再生開始は player.onPlaybackStateChange で検知する
-                
-                // self.isAIPlayingAudio = true  // <-- 削除
-                // self.mic?.setAIPlayingAudio(true) // <-- 削除
-                
-                print("📥 ConversationController: AI音声受信（再生状態はPlayerが管理）")
-            }
-        }
-        
-        // ✅ session.updated受信時の処理（マイクはstartPTTRealtime()で開始するため、ここでは開始しない）
-        realtimeClient?.onSessionUpdated = { [weak self] in
-            Task { @MainActor in
-                guard let self else { return }
-                // ✅ セッション確立完了をログに記録
-                print("✅ ConversationController: session.updated受信完了 - 音声入力ボタンを押してマイクを開始してください")
-            }
-        }
-        
-        // 状態変更を監視
-        realtimeClient?.onStateChange = { [weak self] state in
-            Task { @MainActor in
-                switch state {
-                case .connecting:
-                    self?.isRealtimeConnecting = true
-                    self?.isRealtimeActive = false
-                case .ready:
-                    self?.isRealtimeConnecting = false
-                    self?.isRealtimeActive = true
-                case .closed(let error):
-                    self?.isRealtimeConnecting = false
-                    self?.isRealtimeActive = false
-                    if let error = error {
-                        self?.errorMessage = "接続エラー: \(error.localizedDescription)"
-                    }
-                    // ✅ 接続が閉じられた場合、セッション終了処理を実行
-                    // これにより、エラー時でも確実にanalyzeSessionが呼ばれる
-                    print("🔄 ConversationController: onStateChange(.closed) - stopRealtimeSessionを呼び出します")
-                    self?.stopRealtimeSession()
-                case .idle:
-                    self?.isRealtimeConnecting = false
-                    self?.isRealtimeActive = false
-                default:
-                    self?.isRealtimeConnecting = false
-                    self?.isRealtimeActive = false
-                }
-            }
-        }
-        
-        // ✅ エラーコールバックを設定（onStateChangeの補完として）
-        realtimeClient?.onError = { [weak self] error in
-            Task { @MainActor in
-                print("❌ ConversationController: RealtimeClientエラー検出 - \(error.localizedDescription)")
-                self?.errorMessage = "エラー: \(error.localizedDescription)"
-                // 注意: onStateChangeで既にstopRealtimeSessionが呼ばれるため、ここでは呼ばない
-                // ただし、onStateChangeが呼ばれない場合の保険として、ここでも呼ぶ
-                if self?.isRealtimeActive == true {
-                    print("🔄 ConversationController: onError - stopRealtimeSessionを呼び出します（保険）")
-                    self?.stopRealtimeSession()
-                }
-            }
-        }
-        
         transcript = ""
+        print("🟥 aiResponseText cleared at:", #function)
         aiResponseText = ""
+        liveSummary = ""
+        liveInterests = []
+        liveNewVocabulary = []
+        inMemoryTurns.removeAll()
         errorMessage = nil
         turnState = .waitingUser  // セッション開始時はユーザーが話すのを待つ
 
@@ -677,6 +421,7 @@ public final class ConversationController: ObservableObject {
         let newSessionId = UUID().uuidString
         self.currentSessionId = newSessionId
         self.turnCount = 0
+        conversationHistory.removeAll()
         
         let session = FirebaseConversationSession(
             id: newSessionId,
@@ -705,64 +450,19 @@ public final class ConversationController: ObservableObject {
         sessionStartTask = Task { [weak self] in
             guard let self else { return }
             do {
-                print("🚀 ConversationController: Realtimeセッション開始")
-                
-                // ネットワーク接続テスト
-                print("🌐 ConversationController: ネットワーク接続テスト中...")
-                let testUrl = URL(string: "https://api.openai.com/v1/models")!
-                var testRequest = URLRequest(url: testUrl)
-                testRequest.addValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
-                testRequest.timeoutInterval = 10
-                
-                let (_, response) = try await URLSession.shared.data(for: testRequest)
-                if let httpResponse = response as? HTTPURLResponse {
-                    print("🌐 ConversationController: ネットワークテスト結果 - Status: \(httpResponse.statusCode)")
-                    if httpResponse.statusCode == 401 {
-                        await MainActor.run {
-                            self.errorMessage = "APIキーが無効です（401 Unauthorized）"
-                            self.isRealtimeConnecting = false
-                        }
-                        return
-                    }
-                }
-                
-                try await self.realtimeClient?.startSession(child: ChildProfile.sample(), context: [])
-                print("✅ ConversationController: セッション開始成功")
+                print("🚀 ConversationController: gpt-4o-audio-previewセッション開始")
                 
                 // 状態を更新
                 await MainActor.run {
                     self.isRealtimeConnecting = false
                     self.isRealtimeActive = true
                     self.mode = .realtime
-                    self.startReceiveLoops()
-                    
-                    // ✅ マイクの開始は onSessionUpdated コールバックで行う（初期ノイズ対策のため）
-                    // session.updated受信後、500ms待ってからマイクを開始することで、
-                    // マイク開始直後の初期ノイズが誤って音声として認識されるのを防ぐ
-                    
-                    // ---------------------------------------------------
-                    // ✅ 追加: セッション開始時も、ユーザーの声を待つためにタイマー始動
-                    // 無音が続いた場合、5秒後に促しメッセージが送信される
-                    // ---------------------------------------------------
                     self.startWaitingForResponse()
                 }
             } catch {
                 print("❌ ConversationController: セッション開始失敗 - \(error.localizedDescription)")
                 await MainActor.run {
-                    if let urlError = error as? URLError {
-                        switch urlError.code {
-                        case .notConnectedToInternet:
-                            self.errorMessage = "インターネット接続がありません"
-                        case .timedOut:
-                            self.errorMessage = "接続がタイムアウトしました"
-                        case .cannotConnectToHost:
-                            self.errorMessage = "サーバーに接続できません"
-                        default:
-                            self.errorMessage = "ネットワークエラー: \(urlError.localizedDescription)"
-                        }
-                    } else {
-                        self.errorMessage = "Realtime接続失敗: \(error.localizedDescription)"
-                    }
+                    self.errorMessage = "音声プレビュー接続失敗: \(error.localizedDescription)"
                     self.isRealtimeConnecting = false
                     self.isRealtimeActive = false
                 }
@@ -806,25 +506,24 @@ public final class ConversationController: ObservableObject {
         isRealtimeConnecting = false
         turnState = .idle
         nudgeCount = 0
+        liveSummaryTask?.cancel()
+        liveSummaryTask = nil
+        inMemoryTurns.removeAll()
+        conversationHistory.removeAll()
         
         // テキストをクリア
         transcript = ""
+        print("🟥 aiResponseText cleared at:", #function)
         aiResponseText = ""
         
         // エラーメッセージをクリア
         errorMessage = nil
         
-        // ✅ realtimeClientのクリーンアップ（非同期処理）
-        // finishSession()は非同期処理のため、Task内で実行
         Task { [weak self] in
             guard let self else { 
                 print("⚠️ ConversationController: stopRealtimeSession - selfがnilのため処理をスキップ")
                 return 
             }
-            
-            print("🔄 ConversationController: stopRealtimeSession - realtimeClient.finishSession()を呼び出し中...")
-            try? await self.realtimeClient?.finishSession()
-            print("✅ ConversationController: stopRealtimeSession - realtimeClient.finishSession()完了")
             
             // ✅ Firebaseにセッション終了を記録
             guard let userId = self.currentUserId, let childId = self.currentChildId, let sessionId = self.currentSessionId else {
@@ -843,7 +542,7 @@ public final class ConversationController: ObservableObject {
                 print("✅ ConversationController: Firebaseセッション終了更新完了 - sessionId: \(sessionId)")
                 
                 // ✅ 会話終了後の分析処理を実行
-                print("🔄 ConversationController: stopRealtimeSession - 分析処理を開始します - sessionId: \(sessionId)")
+                print("🔄 ConversationController: stopRealtimeSession - 分析処理を開始します - sessionId: \(sessionId), turnCount=\(self.inMemoryTurns.count)")
                 await self.analyzeSession(sessionId: sessionId)
                 print("✅ ConversationController: stopRealtimeSession - 分析処理完了 - sessionId: \(sessionId)")
             } catch {
@@ -852,7 +551,6 @@ public final class ConversationController: ObservableObject {
             }
             
             await MainActor.run {
-                self.realtimeClient = nil
                 self.currentSessionId = nil
                 self.turnCount = 0
                 print("✅ ConversationController: リソースクリーンアップ完了")
@@ -861,58 +559,31 @@ public final class ConversationController: ObservableObject {
     }
 
     public func startPTTRealtime() {
-        guard let client = realtimeClient else {
-            self.errorMessage = "Realtimeクライアントが初期化されていません"; return
+        guard audioPreviewClient != nil else {
+            self.errorMessage = "音声プレビュークライアントが初期化されていません"; return
         }
+        // 促しと既存の録音をリセット
+        cancelNudge()
+        recordedPCMData.removeAll()
+        recordedSampleRate = 24_000
         
-        // ✅ 初回接続時の音声認識問題対策：session.updated受信まで待機
-        // sessionIsUpdatedがfalseの場合は、session.updated受信まで待機してからマイクを開始
-        if !client.isSessionUpdated {
-            print("⚠️ ConversationController: session.updated未受信のため、受信まで待機してからマイクを開始します")
-            Task { [weak self, weak client] in
-                guard let self, let client else { return }
-                // session.updated受信を待機（最大5秒）
-                var waited = 0.0
-                let maxWait = 5.0  // 最大5秒待機
-                let checkInterval = 0.1  // 100msごとにチェック
-                
-                while !client.isSessionUpdated && waited < maxWait {
-                    try? await Task.sleep(nanoseconds: UInt64(checkInterval * 1_000_000_000))
-                    waited += checkInterval
-                }
-                
-                if client.isSessionUpdated {
-                    print("✅ ConversationController: session.updated受信確認 - マイクを開始します")
-                    await MainActor.run {
-                        self.startPTTRealtimeInternal()
-                    }
-                } else {
-                    print("⚠️ ConversationController: session.updated受信タイムアウト - マイクを開始しますが、音声認識が正常に動作しない可能性があります")
-                    await MainActor.run {
-                        self.startPTTRealtimeInternal()
-                    }
-                }
+        // バージイン前提でAI音声を止める
+        player.stop()
+        
+        // 共有エンジンが止まっていたら再開
+        if !sharedAudioEngine.isRunning {
+            do { try sharedAudioEngine.start() } catch {
+                print("⚠️ ConversationController: エンジン再開失敗 - \(error.localizedDescription)")
             }
-            return
         }
         
-        // ✅ session.updated受信済みの場合は即座にマイクを開始
         startPTTRealtimeInternal()
     }
     
     private func startPTTRealtimeInternal() {
-        guard let client = realtimeClient else {
-            self.errorMessage = "Realtimeクライアントが初期化されていません"; return
-        }
         cancelNudge()             // ✅ ユーザーが話し始めるので促しを止める
         // 🔇 いま流れているAI音声を止める（barge-in 前提）
         player.stop()
-        Task { [weak client] in
-            try? await client?.interruptAndYield()   // ← サーバ側の発話も中断
-        }
-
-        // ✅ 公式パターン: PTT開始時に input_audio_buffer.clear を送信（interruptAndYield内で送信されるため追加不要）
-        // ✅ interruptAndYield() が既に input_audio_buffer.clear を送信しているため、ここでは追加不要
 
         mic?.stop()
         
@@ -929,10 +600,7 @@ public final class ConversationController: ObservableObject {
             // 2. マイクを初期化 & Start (ここで Tap をインストール)
             // エンジンは停止状態だが、Tapインストールは可能
             self.mic = MicrophoneCapture(sharedEngine: self.sharedAudioEngine, onPCM: { [weak self] buf in
-                guard let self = self else { return }
-                Task { [weak client = self.realtimeClient] in
-                    try? await client?.sendMicrophonePCM(buf)
-                }
+                self?.appendPCMBuffer(buf)
             }, outputMonitor: self.player.outputMonitor)
             
             // -------------------------------------------------------
@@ -989,129 +657,209 @@ public final class ConversationController: ObservableObject {
     public func stopPTTRealtime() {
         isRecording = false
         mic?.stop()
-        // ✅ 公式パターン: PTT終了時に commit → response.create を送信
+        turnState = .thinking
         Task { [weak self] in
-            guard let self = self, let client = self.realtimeClient else { return }
-            do {
-                try await client.commitInputAndRequestResponse()
-                print("✅ ConversationController: PTT終了 - commit → response.create送信完了")
-            } catch {
-                print("⚠️ ConversationController: PTT終了処理失敗 - \(error)")
-            }
+            await self?.sendAudioPreviewRequest()
         }
     }
 
     private func startReceiveLoops() {
-        print("🔄 ConversationController: startReceiveLoops開始")
+        print("🔄 ConversationController: startReceiveLoopsはgpt-4o-audio-previewモードでは使用されません（Realtime APIコードを無効化）")
+    }
+    
+    // MARK: - Private Helpers
+    private func appendPCMBuffer(_ buffer: AVAudioPCMBuffer) {
+        guard let channelData = buffer.int16ChannelData else { return }
+        let frameLength = Int(buffer.frameLength)
+        let channels = Int(buffer.format.channelCount)
+        let bytesPerFrame = channels * MemoryLayout<Int16>.size
+        let byteCount = frameLength * bytesPerFrame
+        let data = Data(bytes: channelData[0], count: byteCount)
+        recordedPCMData.append(data)
+        recordedSampleRate = buffer.format.sampleRate
+    }
+    
+    private func pcm16ToWav(pcmData: Data, sampleRate: Double) -> Data {
+        // シンプルなPCM16(LE)/モノラル -> WAVヘッダー付与
+        var wav = Data()
+        let numChannels: UInt16 = 1
+        let bitsPerSample: UInt16 = 16
+        let byteRate = UInt32(sampleRate) * UInt32(numChannels) * UInt32(bitsPerSample / 8)
+        let blockAlign = UInt16(numChannels * bitsPerSample / 8)
+        let dataSize = UInt32(pcmData.count)
         
-        // 返答テキスト（partial）ループ
-        receiveTextTask?.cancel()
-        receiveTextTask = Task { [weak self] in
-            guard let self else { return }
-            print("🔄 ConversationController: AI応答テキストループ開始")
+        func appendLE<T: FixedWidthInteger>(_ value: T) {
+            var le = value.littleEndian
+            withUnsafeBytes(of: &le) { wav.append(contentsOf: $0) }
+        }
+        
+        wav.append("RIFF".data(using: .ascii)!)
+        appendLE(UInt32(36 + dataSize))
+        wav.append("WAVE".data(using: .ascii)!)
+        wav.append("fmt ".data(using: .ascii)!)
+        appendLE(UInt32(16))           // PCM fmt chunk size
+        appendLE(UInt16(1))            // PCM format
+        appendLE(numChannels)
+        appendLE(UInt32(sampleRate))
+        appendLE(byteRate)
+        appendLE(blockAlign)
+        appendLE(bitsPerSample)
+        wav.append("data".data(using: .ascii)!)
+        appendLE(dataSize)
+        wav.append(pcmData)
+        return wav
+    }
+    
+    /// ユーザー音声をローカルで文字起こし（会話履歴用）。失敗時は nil を返す。
+    nonisolated private static func transcribeUserAudio(wavData: Data) async -> String? {
+        // ✅ オフラインSTTが不安定な環境では早期に諦めてエラーを抑制
+        let authStatus = SFSpeechRecognizer.authorizationStatus()
+        guard authStatus == .authorized,
+              let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "ja-JP")),
+              recognizer.isAvailable else { return nil }
+        
+        let tmpURL = FileManager.default.temporaryDirectory.appendingPathComponent("user_audio_\(UUID().uuidString).wav")
+        do {
+            try wavData.write(to: tmpURL)
+        } catch {
+            print("⚠️ UserAudioTranscribe: write failed - \(error)")
+            return nil
+        }
+        
+        return await withCheckedContinuation { continuation in
+            var didFinish = false
+            func finish(_ text: String?) {
+                if didFinish { return }
+                didFinish = true
+                continuation.resume(returning: text)
+                try? FileManager.default.removeItem(at: tmpURL)
+            }
             
-            while !Task.isCancelled {
-                do {
-                    if let part = try await self.realtimeClient?.nextPartialText() {
-                        print("📝 ConversationController: AI応答テキスト受信 - \(part)")
-                        await MainActor.run {
-                            self.aiResponseText += part
-                        }
-                    } else {
-                        try await Task.sleep(nanoseconds: 50_000_000) // idle 50ms
+            let request = SFSpeechURLRecognitionRequest(url: tmpURL)
+            var task: SFSpeechRecognitionTask?
+            task = recognizer.recognitionTask(with: request) { result, error in
+                if let result = result, result.isFinal {
+                    finish(result.bestTranscription.formattedString)
+                    task?.cancel()
+                } else if let error = error {
+                    // kAFAssistantErrorDomain 1101 は「ローカル認識不可」で頻発するため静かに無視
+                    let nsError = error as NSError
+                    if !(nsError.domain == "kAFAssistantErrorDomain" && nsError.code == 1101) {
+                        print("⚠️ UserAudioTranscribe: recognition error - \(error)")
                     }
-                } catch { 
-                    // CancellationErrorは正常な終了なのでログに出力しない
-                    if !(error is CancellationError) {
-                        print("❌ ConversationController: AI応答テキストループエラー - \(error)")
-                    }
-                    break 
-                }
-            }
-        }
-
-        // 音声入力のテキスト処理
-        receiveInputTextTask?.cancel()
-        receiveInputTextTask = Task { [weak self] in
-            guard let self else { return }
-            print("🔄 ConversationController: 音声入力テキストループ開始")
-            var lastLogTime = Date()
-            while !Task.isCancelled {
-                do {
-                    if let inputText = try await self.realtimeClient?.nextInputText() {
-                        let trimmed = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
-                        print("🎤 ConversationController: ユーザーの発言テキスト受信 - 「\(trimmed)」")
-                        await MainActor.run { 
-                            // テキストを追記（部分テキストの場合は置換）
-                            if inputText.count < self.transcript.count {
-                                // 部分テキストが来た場合は置換
-                                self.transcript = inputText
-                                print("📝 ConversationController: 部分テキスト更新 - 「\(self.transcript)」")
-                            } else {
-                                // 確定テキストが来た場合は置換
-                                self.transcript = inputText
-                                print("✅ ConversationController: 確定テキスト更新 - 「\(self.transcript)」")
-                            }
-                        }
-                    } else {
-                        // 1秒に1回程度、STTイベントが来ていないことをログに出力
-                        let now = Date()
-                        if now.timeIntervalSince(lastLogTime) >= 1.0 {
-                            print("⚠️ ConversationController: STTイベント待機中...（conversation.item.input_audio_transcription.* または input_audio_buffer.committed が来ていません）")
-                            lastLogTime = now
-                        }
-                        try await Task.sleep(nanoseconds: 50_000_000)
-                    }
-                } catch { 
-                    // CancellationErrorは正常な終了なのでログに出力しない
-                    if !(error is CancellationError) {
-                        print("❌ ConversationController: 音声入力テキストループエラー - \(error)")
-                    }
-                    break 
-                }
-            }
-        }
-
-        // 返答音声の先出し再生（任意）
-        receiveAudioTask?.cancel()
-        receiveAudioTask = Task { [weak self] in
-            guard let self else { return }
-            while !Task.isCancelled {
-                do {
-                    if let chunk = try await self.realtimeClient?.nextAudioChunk() {
-                        await MainActor.run { self.isPlayingAudio = true }
-                        
-                        // ✅ エンジンが停止している場合は再開を試みる（初回接続時やBluetooth接続時の問題対策）
-                        if !self.sharedAudioEngine.isRunning {
-                            do {
-                                try self.sharedAudioEngine.start()
-                                print("✅ ConversationController: 共通エンジンを再開（音声再生ループ内）")
-                            } catch {
-                                print("⚠️ ConversationController: 共通エンジン再開失敗 - \(error.localizedDescription)")
-                                // エンジン再開に失敗しても、playChunk内で再試行される可能性があるため、続行
-                            }
-                        }
-                        
-                        // ✅ 音声再生を再開（stopImmediately()でvolume=0になった場合の復帰）
-                        // 注: onResponseCreatedでも呼び出しているが、念のためここでも呼び出す
-                        self.player.resumeIfNeeded()
-                        self.player.playChunk(chunk)
-                        await MainActor.run { self.isPlayingAudio = false }
-                    } else {
-                        try await Task.sleep(nanoseconds: 50_000_000)
-                    }
-                } catch { 
-                    // CancellationErrorは正常な終了なのでログに出力しない
-                    if !(error is CancellationError) {
-                        print("❌ ConversationController: 音声再生ループエラー - \(error)")
-                    }
-                    break 
+                    finish(nil)
                 }
             }
         }
     }
     
-    // MARK: - Private Helpers
+    private func sendAudioPreviewRequest() async {
+        guard let client = audioPreviewClient else {
+            await MainActor.run { self.errorMessage = "音声プレビュークライアントが初期化されていません" }
+            return
+        }
+        
+        let captured = recordedPCMData
+        recordedPCMData.removeAll()
+        guard !captured.isEmpty else {
+            await MainActor.run {
+                self.errorMessage = "音声が録音されていません"
+                self.turnState = .waitingUser
+            }
+            return
+        }
+        
+        let wav = pcm16ToWav(pcmData: captured, sampleRate: recordedSampleRate)
+        
+        // ユーザー音声も会話履歴にテキストで残すため、ローカルで並行して文字起こしを試みる
+        let userTranscriptionTask: Task<String?, Never>? = enableLocalUserTranscription
+            ? Task.detached { [wavData = wav] in
+                await ConversationController.transcribeUserAudio(wavData: wavData)
+            }
+            : nil
+        
+        await MainActor.run { self.isThinking = true }
+        let tStart = Date()
+        print("⏱️ ConversationController: sendAudioPreviewRequest start - pcmBytes=\(captured.count), sampleRate=\(recordedSampleRate)")
+        
+        do {
+            let finalText = try await client.streamResponse(
+                audioData: wav,
+                systemPrompt: currentSystemPrompt,
+                history: conversationHistory,
+                onText: { [weak self] delta in
+                    guard let self else { return }
+                    Task { @MainActor in
+                        print("🟦 onText delta:", delta)
+                        self.aiResponseText += delta
+                    }
+                },
+                onAudioChunk: { [weak self] chunk in
+                    guard let self else { return }
+                    Task { @MainActor in
+                        self.turnState = .speaking
+                        self.player.resumeIfNeeded()
+                        // 出力はpcm16指定なのでそのまま再生
+                        self.player.playChunk(chunk)
+                    }
+                }
+            )
+            let tEnd = Date()
+            print("⏱️ ConversationController: streamResponse completed in \(String(format: "%.2f", tEnd.timeIntervalSince(tStart)))s, finalText.count=\(finalText.count), finalText=\"\(finalText)\"")
+            
+            await MainActor.run {
+                // 吹き出し用に最終テキストをUIへ反映（音声のみの場合でもテキストを入れる）
+                self.aiResponseText = finalText
+                print("🟩 set aiResponseText final:", finalText)
+                if self.turnState != .speaking {
+                    self.turnState = .waitingUser
+                    self.startWaitingForResponse()
+                }
+            }
+            
+            // Firebase保存（ユーザー音声もローカル文字起こししたテキストを保存）
+            if let userId = currentUserId, let childId = currentChildId, let sessionId = currentSessionId {
+                let userText = await userTranscriptionTask?.value?.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+                let userTurn = FirebaseTurn(role: .child, text: userText?.isEmpty == false ? userText! : "(voice)", timestamp: Date())
+                let aiTurn = FirebaseTurn(role: .ai, text: finalText, timestamp: Date())
+                print("🗂️ ConversationController: append inMemoryTurns (user:'\(userTurn.text ?? "nil")', ai:'\(aiTurn.text ?? "nil")')")
+                inMemoryTurns.append(contentsOf: [userTurn, aiTurn])
+                // ✅ 履歴にテキストを積む（直近の文脈としてステートレスAPIへ渡す）
+                let historyUserText = userText?.isEmpty == false ? userText! : "(不明瞭な音声)"
+                conversationHistory.append(HistoryItem(role: "user", text: historyUserText))
+                conversationHistory.append(HistoryItem(role: "assistant", text: finalText))
+                // 履歴が長くなりすぎないように6ターン分（12エントリ）に抑える
+                if conversationHistory.count > 12 {
+                    conversationHistory.removeFirst(conversationHistory.count - 12)
+                }
+                do {
+                    try await firebaseRepository.addTurn(userId: userId, childId: childId, sessionId: sessionId, turn: userTurn)
+                    try await firebaseRepository.addTurn(userId: userId, childId: childId, sessionId: sessionId, turn: aiTurn)
+                    turnCount += 2
+                    try? await firebaseRepository.updateTurnCount(userId: userId, childId: childId, sessionId: sessionId, turnCount: turnCount)
+                } catch {
+                    logFirebaseError(error, operation: "音声会話の保存")
+                }
+                
+                // 各ターンの終了時にライブ要約/タグ/新語を生成して即時保存
+                liveSummaryTask?.cancel()
+                liveSummaryTask = Task { [weak self] in
+                    print("📝 ConversationController: live analysis task start (turnCount=\(self?.inMemoryTurns.count ?? 0))")
+                    await self?.generateLiveAnalysisAndPersist()
+                    print("📝 ConversationController: live analysis task end (summary='\(self?.liveSummary ?? "")', interests=\(self?.liveInterests.map { $0.rawValue } ?? []), newWords=\(self?.liveNewVocabulary ?? []))")
+                }
+            }
+        } catch {
+            print("❌ ConversationController: streamResponse failed - \(error)")
+            await MainActor.run {
+                self.errorMessage = error.localizedDescription
+                self.turnState = .waitingUser
+            }
+        }
+        
+        await MainActor.run { self.isThinking = false }
+    }
+    
     private func finishSTTCleanup() {
         sttRequest = nil
         sttTask = nil
@@ -1141,6 +889,7 @@ public final class ConversationController: ObservableObject {
         guard userText != lastAskedText else { return }
         lastAskedText = userText
 
+        print("🟥 aiResponseText cleared at:", #function)
         aiResponseText = ""              // 新しいターンの開始
         isThinking = true
         errorMessage = nil
@@ -1260,7 +1009,7 @@ public final class ConversationController: ObservableObject {
         }
         return "429: しばらく待ってからもう一度ためしてね。"
     }
-
+    
     private static func humanReadable(_ error: Error) -> String {
         if let u = error as? URLError {
             switch u.code {
@@ -1271,6 +1020,141 @@ public final class ConversationController: ObservableObject {
             }
         }
         return error.localizedDescription
+    }
+    
+    /// 子ども向けのシステムプロンプト（文脈維持と聞き返しを強制）
+    private var currentSystemPrompt: String {
+        """
+        あなたは3〜5歳の子どもと話す、優しくて楽しい「AIのおともだち」です。日本語のみで答えます。
+        ルール:
+        1) 返答は1〜2文・40文字以内。長話は禁止。
+        2) 聞き取れない/わからない時は勝手に話を作らず「ん？もういっかい言って？」「え？」などと聞き返す。
+        3) 子どもが話しやすいように、最後に簡単な質問を添える（例:「くるまはすき？」「きょうはなにしたの？」）。
+        4) むずかしい言葉を避け、ひらがな中心でやさしく。擬音語もOK。
+        5) 直前の会話文脈を維持し、話題を飛ばさない。
+        """
+    }
+    
+    // MARK: - ライブ要約生成
+    
+    /// 現在までの会話ログから要約/興味タグ/新語を生成し、即時Firestoreに反映する
+    private func generateLiveAnalysisAndPersist() async {
+        guard !inMemoryTurns.isEmpty else { return }
+        print("📝 generateLiveAnalysis: start, inMemoryTurns=\(inMemoryTurns.count)")
+        
+        // プロンプトが大きくなりすぎないように直近12ターンを使用
+        let recentTurns = Array(inMemoryTurns.suffix(12))
+        let conversationLog = recentTurns.compactMap { turn -> String? in
+            guard let text = turn.text, !text.isEmpty else { return nil }
+            let roleLabel = turn.role == .child ? "子ども" : "AI"
+            return "\(roleLabel): \(text)"
+        }.joined(separator: "\n")
+        let childOnlyLog = recentTurns.compactMap { turn -> String? in
+            guard turn.role == .child, let text = turn.text, !text.isEmpty else { return nil }
+            return text
+        }.joined(separator: "\n")
+        
+        guard !conversationLog.isEmpty else { return }
+        
+        struct Payload: Encodable {
+            let model: String
+            let messages: [[String: String]]
+            let response_format: [String: String]
+            let max_tokens: Int
+            let temperature: Double
+        }
+        
+        let prompt = """
+        以下の親子の会話を分析し、JSON形式で出力してください。
+        - summary: 親向けに1行で要約（50文字以内）。AIの返答も加味して状況をまとめてください。
+        - interests: 子どもが興味を示したトピック（dinosaurs, space, cooking, animals, vehicles, music, sports, crafts, stories, insects, princess, heroes, robots, nature, others の英語enum値配列）。子どもの発話を主に見てください。
+        - newWords: 子どもが使った特徴的な言葉（3つまで）。必ず子どもの発話からのみ選んでください。
+        
+        会話ログ（子ども/AI両方）:
+        \(conversationLog)
+        
+        子ども発話のみ:
+        \(childOnlyLog.isEmpty ? "(なし)" : childOnlyLog)
+        """
+        
+        let payload = Payload(
+            model: "gpt-4o-mini",
+            messages: [
+                ["role": "system", "content": "あなたは会話を短く要約し、興味タグと新出語を抽出するアシスタントです。JSONのみで返してください。"],
+                ["role": "user", "content": prompt]
+            ],
+            response_format: ["type": "json_object"],
+            max_tokens: 200,
+            temperature: 0.3
+        )
+        
+        let apiKey = AppConfig.openAIKey
+        guard !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            print("⚠️ generateLiveAnalysis: APIキー未設定のためスキップ")
+            return
+        }
+        
+        let endpoint = (Bundle.main.object(forInfoDictionaryKey: "API_BASE") as? String)
+            .flatMap(URL.init(string:)) ?? URL(string: "https://api.openai.com/v1")!
+        
+        var req = URLRequest(url: endpoint.appendingPathComponent("chat/completions"))
+        req.httpMethod = "POST"
+        req.addValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.addValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        req.httpBody = try? JSONEncoder().encode(payload)
+        
+        do {
+            let (data, response) = try await URLSession.shared.data(for: req)
+            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+                print("⚠️ generateLiveAnalysis: HTTPエラー - \(String(describing: (response as? HTTPURLResponse)?.statusCode))")
+                return
+            }
+            
+            struct Choice: Decodable {
+                struct Message: Decodable { let content: String }
+                let message: Message
+            }
+            struct Resp: Decodable { let choices: [Choice] }
+            let decoded = try JSONDecoder().decode(Resp.self, from: data)
+            guard let content = decoded.choices.first?.message.content.data(using: .utf8) else {
+                print("⚠️ generateLiveAnalysis: contentなし")
+                return
+            }
+            struct Result: Decodable {
+                let summary: String?
+                let interests: [String]?
+                let newWords: [String]?
+            }
+            let result = try JSONDecoder().decode(Result.self, from: content)
+            
+            if Task.isCancelled { return }
+            
+            let summaryText = result.summary?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let interests = (result.interests ?? []).compactMap { FirebaseInterestTag(rawValue: $0) }
+            let newWords = result.newWords ?? []
+            
+            await MainActor.run {
+                if !summaryText.isEmpty { self.liveSummary = summaryText }
+                self.liveInterests = interests
+                self.liveNewVocabulary = newWords
+            }
+            
+            // Firestoreにも即時反映
+            if let userId = currentUserId, let childId = currentChildId, let sessionId = currentSessionId {
+                try await firebaseRepository.updateAnalysis(
+                    userId: userId,
+                    childId: childId,
+                    sessionId: sessionId,
+                    summaries: summaryText.isEmpty ? [] : [summaryText],
+                    interests: interests,
+                    newVocabulary: newWords
+                )
+                print("🟢 generateLiveAnalysis: Firestore更新 success - summary:'\(summaryText)', interests:\(interests.map { $0.rawValue }), newWords:\(newWords)")
+            }
+        } catch {
+            if Task.isCancelled { return }
+            print("⚠️ generateLiveAnalysis: 生成失敗 - \(error)")
+        }
     }
     
     // MARK: - 促しタイマー機能
@@ -1351,7 +1235,7 @@ public final class ConversationController: ObservableObject {
             return
         }
         print("🚀 ConversationController: 条件クリア -> 促しメッセージ送信実行")
-        await realtimeClient?.nudge(kind: 0)
+        print("ℹ️ ConversationController: Realtime API無効化中のため nudge はスキップ（gpt-4o-audio-previewに合わせて後続で実装検討）")
         nudgeCount += 1
     }
     
@@ -1369,7 +1253,7 @@ public final class ConversationController: ObservableObject {
         
         Task {
             print("🚀 ConversationController: 最初の質問を生成中...")
-            await realtimeClient?.nudge(kind: 0)
+            print("ℹ️ ConversationController: Realtime API無効化中のため nudge はスキップ（gpt-4o-audio-previewに合わせて後続で実装検討）")
         }
     }
     
@@ -1409,6 +1293,7 @@ public final class ConversationController: ObservableObject {
             }.joined(separator: "\n")
             
             print("📊 ConversationController: 会話テキストの長さ - \(conversationLog.count)文字, テキストありのターン数: \(turns.filter { $0.text != nil && !$0.text!.isEmpty }.count)")
+            print("📒 ConversationController: 会話ログサンプル（先頭150文字）: \(conversationLog.prefix(150))")
             
             guard !conversationLog.isEmpty else {
                 print("⚠️ ConversationController: 会話テキストが存在しないため分析をスキップ - sessionId: \(sessionId), ターン数: \(turns.count)")
@@ -1528,7 +1413,14 @@ public final class ConversationController: ObservableObject {
                 newVocabulary: newVocabulary
             )
             print("✅ ConversationController: 分析結果をFirebaseに保存完了")
-            
+            await MainActor.run {
+                if let firstSummary = summaries.first, !firstSummary.isEmpty {
+                    self.liveSummary = firstSummary
+                }
+                self.liveInterests = interests
+                self.liveNewVocabulary = newVocabulary
+                print("🟢 ConversationController: live fields updated - summary:'\(self.liveSummary)', interests:\(self.liveInterests.map { $0.rawValue }), newVocabulary:\(self.liveNewVocabulary)")
+            }
             print("✅ ConversationController: 会話分析完了 - summary: \(summaries.first ?? "なし"), interests: \(interests.map { $0.rawValue }), vocabulary: \(newVocabulary)")
             
         } catch {
@@ -1540,4 +1432,243 @@ public final class ConversationController: ObservableObject {
             logFirebaseError(error, operation: "会話分析")
         }
     }
+}
+
+// MARK: - gpt-4o-audio-preview クライアント
+fileprivate final class AudioPreviewStreamingClient {
+    private let apiKey: String
+    private let apiBase: URL
+    private let decoder = JSONDecoder()
+    
+    init(apiKey: String, apiBase: URL) {
+        self.apiKey = apiKey
+        self.apiBase = apiBase
+    }
+    
+    func streamResponse(
+        audioData: Data,
+        systemPrompt: String,
+        history: [ConversationController.HistoryItem],
+        onText: @escaping (String) -> Void,
+        onAudioChunk: @escaping (Data) -> Void
+    ) async throws -> String {
+        var request = URLRequest(url: completionsURL())
+        request.httpMethod = "POST"
+        request.addValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.addValue("text/event-stream", forHTTPHeaderField: "Accept")
+        request.addValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        // audio-preview専用ヘッダ（環境によって不要な場合はコメントアウト可）
+        request.addValue("audio-preview", forHTTPHeaderField: "OpenAI-Beta")
+        
+        let t0 = Date()
+        
+        // ✅ システム + 履歴 + 今回の音声をまとめて渡す
+        var messages: [AudioPreviewPayload.Message] = []
+        messages.append(.init(role: "system", content: [.text(systemPrompt)]))
+        for item in history {
+            let role = (item.role == "assistant") ? "assistant" : "user"
+            messages.append(.init(role: role, content: [.text(item.text)]))
+        }
+        messages.append(.init(role: "user", content: [.inputAudio(.init(data: audioData.base64EncodedString(), format: "wav"))]))
+        
+        let payload = AudioPreviewPayload(
+            model: "gpt-4o-audio-preview",
+            stream: true,
+            modalities: ["text", "audio"],
+            // 出力はヘッダなしPCM16で受信する（ストリーミング再生が安定）
+            audio: .init(voice: "alloy", format: "pcm16"),
+            messages: messages
+        )
+        request.httpBody = try JSONEncoder().encode(payload)
+        
+        var finalText = ""
+        let (bytes, response) = try await URLSession.shared.bytes(for: request)
+        let tReqDone = Date()
+        print("⏱️ AudioPreviewStreamingClient: request sent -> awaiting first byte (\(String(format: "%.2f", tReqDone.timeIntervalSince(t0)))s)")
+        guard let http = response as? HTTPURLResponse else {
+            throw NSError(domain: "AudioPreviewStreamingClient", code: -1, userInfo: [NSLocalizedDescriptionKey: "不正なレスポンスです"])
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            // レスポンスボディを文字列化
+            let bodyString: String
+            if let data = try? await bytes.reduce(into: Data(), { $0.append($1) }),
+               let str = String(data: data, encoding: .utf8) {
+                bodyString = str
+            } else {
+                bodyString = "(bodyなし)"
+            }
+            print("❌ AudioPreviewStreamingClient: HTTP \(http.statusCode) - body: \(bodyString)")
+            throw NSError(domain: "AudioPreviewStreamingClient", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey: "HTTP \(http.statusCode)"])
+        }
+        
+        for try await line in bytes.lines {
+            guard line.hasPrefix("data:") else { continue }
+            let payloadString = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
+            if payloadString == "[DONE]" { break }
+            guard let data = payloadString.data(using: .utf8) else { continue }
+            
+            do {
+                let chunk = try decoder.decode(AudioPreviewStreamChunk.self, from: data)
+                if let delta = chunk.choices.first?.delta {
+                    var textFragments: [String] = []
+                    
+                    if let parts = delta.content {
+                        textFragments.append(contentsOf: parts.compactMap { $0.text })
+                    }
+                    if let contentString = delta.contentString, !contentString.isEmpty {
+                        textFragments.append(contentString)
+                    }
+                    if let outputs = delta.outputText {
+                        for block in outputs {
+                            if let blockText = block.text, !blockText.isEmpty {
+                                textFragments.append(blockText)
+                            }
+                            if let parts = block.content {
+                                textFragments.append(contentsOf: parts.compactMap { $0.text })
+                            }
+                        }
+                    }
+                    if let transcript = delta.audio?.transcript, !transcript.isEmpty {
+                        textFragments.append(transcript)
+                    }
+                    
+                    let merged = textFragments.joined()
+                    if !merged.isEmpty {
+                        print("📝 AudioPreviewStreamingClient: text delta = \(merged)")
+                        finalText += merged
+                        onText(merged)
+                    }
+                    
+                    if merged.isEmpty {
+                        print("⚠️ AudioPreviewStreamingClient: no text in chunk. contentParts=\(delta.content?.count ?? 0), contentString=\(delta.contentString ?? "nil"), outputText=\(delta.outputText?.count ?? 0)")
+                        print("   raw payload omitted (base64 audio may be large)")
+                    }
+                    
+                    if let audioString = delta.audio?.data,
+                       let audioData = Data(base64Encoded: audioString) {
+                        onAudioChunk(audioData)
+                    }
+                }
+            } catch {
+                print("⚠️ AudioPreviewStreamingClient: チャンクパース失敗 - \(error)")
+            }
+        }
+        
+        return finalText.isEmpty ? "(おへんじができなかったよ)" : finalText
+    }
+    
+    private func completionsURL() -> URL {
+        if apiBase.path.contains("/v1") {
+            return apiBase.appendingPathComponent("chat/completions")
+        } else {
+            return apiBase
+                .appendingPathComponent("v1")
+                .appendingPathComponent("chat/completions")
+        }
+    }
+}
+
+// MARK: - Payload/Stream Models
+private struct AudioPreviewPayload: Encodable {
+    struct AudioConfig: Encodable {
+        let voice: String
+        let format: String
+    }
+    
+    struct Message: Encodable {
+        let role: String
+        let content: [MessageContent]
+    }
+    
+    enum MessageContent: Encodable {
+        case text(String)
+        case inputAudio(AudioData)
+        
+        struct AudioData: Encodable {
+            let data: String
+            let format: String
+        }
+        
+        func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            switch self {
+            case .text(let text):
+                try container.encode("text", forKey: .type)
+                try container.encode(text, forKey: .text)
+            case .inputAudio(let audio):
+                try container.encode("input_audio", forKey: .type)
+                // OpenAI audio-preview expects input_audio payload under key "input_audio"
+                try container.encode(audio, forKey: .inputAudio)
+            }
+        }
+        
+        enum CodingKeys: String, CodingKey { case type, text, audio, inputAudio = "input_audio" }
+    }
+    
+    let model: String
+    let stream: Bool
+    let modalities: [String]
+    let audio: AudioConfig
+    let messages: [Message]
+}
+
+private struct AudioPreviewStreamChunk: Decodable {
+    struct Choice: Decodable {
+        struct Delta: Decodable {
+            let content: [ContentPart]?
+            let contentString: String?
+            let outputText: [OutputText]?
+            let audio: AudioDelta?
+            
+            enum CodingKeys: String, CodingKey {
+                case content
+                case outputText = "output_text"
+                case audio
+            }
+            
+            init(from decoder: Decoder) throws {
+                let container = try decoder.container(keyedBy: CodingKeys.self)
+                if let parts = try? container.decode([ContentPart].self, forKey: .content) {
+                    self.content = parts
+                    self.contentString = nil
+                } else {
+                    self.content = nil
+                    self.contentString = try? container.decode(String.self, forKey: .content)
+                }
+                self.outputText = try? container.decode([OutputText].self, forKey: .outputText)
+                self.audio = try? container.decode(AudioDelta.self, forKey: .audio)
+            }
+        }
+        let delta: Delta?
+    }
+    
+    struct ContentPart: Decodable {
+        let type: String?
+        let text: String?
+    }
+    
+    struct AudioDelta: Decodable {
+        let id: String?
+        let data: String?
+        let transcript: String?
+        
+        enum CodingKeys: String, CodingKey {
+            case id
+            case data
+            case transcript
+        }
+    }
+    
+    struct OutputText: Decodable {
+        let id: String?
+        let content: [OutputTextPart]?
+        let text: String?
+    }
+    
+    struct OutputTextPart: Decodable {
+        let type: String?
+        let text: String?
+    }
+    
+    let choices: [Choice]
 }

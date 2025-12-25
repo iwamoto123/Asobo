@@ -1,4 +1,5 @@
 import SwiftUI
+import Domain
 
 public struct ConversationView: View {
     @StateObject private var vm = ConversationController()
@@ -131,6 +132,71 @@ public struct ConversationView: View {
                         }
                     }
                 }
+                
+                // ライブ要約と興味/新語のハイライト
+                if !vm.liveSummary.isEmpty || !vm.liveInterests.isEmpty || !vm.liveNewVocabulary.isEmpty {
+                    VStack(alignment: .leading, spacing: 8) {
+                        if !vm.liveSummary.isEmpty {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("📝 いまのまとめ")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                Text(vm.liveSummary)
+                                    .font(.caption)
+                                    .foregroundColor(.primary)
+                                    .padding(8)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .background(Color.blue.opacity(0.08))
+                                    .cornerRadius(8)
+                            }
+                        }
+                        
+                        if !vm.liveInterests.isEmpty || !vm.liveNewVocabulary.isEmpty {
+                            VStack(alignment: .leading, spacing: 6) {
+                                if !vm.liveInterests.isEmpty {
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text("興味タグ")
+                                            .font(.caption2)
+                                            .foregroundColor(.secondary)
+                                        FlowLayout(spacing: 6) {
+                                            ForEach(vm.liveInterests, id: \.self) { tag in
+                                                HStack(spacing: 4) {
+                                                    Image(systemName: iconName(for: tag))
+                                                        .font(.system(size: 10))
+                                                    Text(tagDisplayName(tag))
+                                                        .font(.caption2)
+                                                        .bold()
+                                                }
+                                                .padding(.horizontal, 8)
+                                                .padding(.vertical, 4)
+                                                .background(Color.blue.opacity(0.12))
+                                                .cornerRadius(10)
+                                            }
+                                        }
+                                    }
+                                }
+                                
+                                if !vm.liveNewVocabulary.isEmpty {
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text("新しく覚えたことば")
+                                            .font(.caption2)
+                                            .foregroundColor(.secondary)
+                                        FlowLayout(spacing: 6) {
+                                            ForEach(vm.liveNewVocabulary, id: \.self) { word in
+                                                Text(word)
+                                                    .font(.caption2)
+                                                    .padding(.horizontal, 8)
+                                                    .padding(.vertical, 4)
+                                                    .background(Color.green.opacity(0.12))
+                                                    .cornerRadius(10)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
 
                 // コントロール
                 Group {
@@ -201,5 +267,42 @@ public struct ConversationView: View {
         .navigationTitle("会話")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear { vm.requestPermissions() }
+    }
+}
+
+// MARK: - Helpers
+private func tagDisplayName(_ tag: FirebaseInterestTag) -> String {
+    switch tag {
+    case .dinosaurs: return "恐竜"
+    case .space: return "宇宙"
+    case .cooking: return "料理"
+    case .animals: return "動物"
+    case .vehicles: return "乗り物"
+    case .music: return "音楽"
+    case .sports: return "スポーツ"
+    case .crafts: return "工作"
+    case .stories: return "お話"
+    case .insects: return "昆虫"
+    case .princess: return "プリンセス"
+    case .heroes: return "ヒーロー"
+    case .robots: return "ロボット"
+    case .nature: return "自然"
+    case .others: return "その他"
+    }
+}
+
+private func iconName(for tag: FirebaseInterestTag) -> String {
+    switch tag {
+    case .dinosaurs: return "lizard.fill"
+    case .space: return "star.fill"
+    case .cooking: return "fork.knife"
+    case .animals: return "pawprint.fill"
+    case .vehicles: return "car.fill"
+    case .music: return "music.note"
+    case .sports: return "sportscourt.fill"
+    case .stories: return "book.fill"
+    case .insects: return "ant.fill"
+    case .princess: return "crown.fill"
+    default: return "tag.fill"
     }
 }
