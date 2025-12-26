@@ -11,7 +11,7 @@ import Support
 import DataStores
 
 @MainActor
-public final class ConversationController: ObservableObject {
+public final class ConversationController: NSObject, ObservableObject {
 
     // MARK: - UI State
     public enum Mode: String, CaseIterable { case localSTT, realtime }
@@ -63,10 +63,10 @@ public final class ConversationController: ObservableObject {
     
     // MARK: - VAD (Hands-free Conversation)
     // 音声入力の音量がこの閾値を超えたら「発話中」とみなす
-    private let vadSpeechThresholdDb: Double = -35.0
+    private let vadSpeechThresholdDb: Double = -32.0   // 環境音での誤検知を防ぐために少し高め
     // この閾値未満の状態が一定時間続いたら「発話終了（静寂）」とみなす
-    private let vadSilenceThresholdDb: Double = -50.0
-    private let vadSilenceDuration: TimeInterval = 1.2
+    private let vadSilenceThresholdDb: Double = -46.0  // 環境音を静寂とみなしやすくする
+    private let vadSilenceDuration: TimeInterval = 1.0 // 送信までの待ち時間も短縮
     private var isUserSpeaking: Bool = false
     private var silenceTimer: Timer?
     
@@ -180,6 +180,7 @@ public final class ConversationController: ObservableObject {
         self.speech = speech
         // ✅ 共通エンジンを使用してPlayerNodeStreamerを初期化（AEC有効化のため）
         self.player = PlayerNodeStreamer(sharedEngine: sharedAudioEngine)
+        super.init()
     }
 
     deinit {
@@ -624,6 +625,9 @@ public final class ConversationController: ObservableObject {
             self.mic = MicrophoneCapture(sharedEngine: self.sharedAudioEngine, onPCM: { [weak self] buf in
                 self?.appendPCMBuffer(buf)
             }, outputMonitor: self.player.outputMonitor)
+            self.mic?.onBargeIn = { [weak self] in
+                self?.interruptAI()
+            }
             
             // -------------------------------------------------------
             // ✅ 追加: マイクの音量を監視して、音がしていれば時刻を更新
@@ -752,6 +756,9 @@ public final class ConversationController: ObservableObject {
                     self?.handleVAD(rms: rms)
                 }
             }
+            self.mic?.onBargeIn = { [weak self] in
+                self?.interruptAI()
+            }
             
             recordedPCMData.removeAll()
             recordedSampleRate = 24_000
@@ -784,10 +791,12 @@ public final class ConversationController: ObservableObject {
     }
     
     private func handleVAD(rms: Double) {
-        // AIの発話中/思考中は無視（強い入力ならバージイン判定の候補）
-        if turnState == .speaking || turnState == .thinking {
+        // AI発話中の割り込み判定（MicrophoneCaptureのonBargeInからも呼ばれるが二重保険）
+        if turnState == .speaking && rms > vadSpeechThresholdDb {
+            interruptAI()
             return
         }
+        if turnState == .thinking { return }
         
         // 発話検知
         if rms > vadSpeechThresholdDb {
@@ -812,6 +821,35 @@ public final class ConversationController: ObservableObject {
         } else if rms > vadSpeechThresholdDb {
             silenceTimer?.invalidate()
             silenceTimer = nil
+        }
+    }
+    
+    private func interruptAI() {
+        guard turnState == .speaking else { return }
+        print("⚡️ 割り込み検知: AI停止 -> 聞き取りへ")
+        
+        // 再生を即時停止し、マイクゲートを開く
+        player.stopImmediately()
+        isAIPlayingAudio = false
+        mic?.setAIPlayingAudio(false)
+        
+        // ステートをListeningへ戻し、バッファを新規発話用にする
+        turnState = .listening
+        recordedPCMData.removeAll()
+        isUserSpeaking = true
+        silenceTimer?.invalidate()
+        silenceTimer = nil
+        
+        // マイクが止まっていれば再開
+        if !sharedAudioEngine.isRunning {
+            try? sharedAudioEngine.start()
+        }
+        do {
+            try mic?.start()
+        } catch {
+            errorMessage = "マイク再開に失敗しました: \(error.localizedDescription)"
+            isRecording = false
+            isHandsFreeMode = false
         }
     }
     
@@ -984,13 +1022,16 @@ public final class ConversationController: ObservableObject {
                 onText: { [weak self] delta in
                     guard let self else { return }
                     Task { @MainActor in
-                        print("🟦 onText delta:", delta)
-                        self.aiResponseText += delta
+                        let clean = self.sanitizeAIText(delta)
+                        if clean.isEmpty { return }
+                        print("🟦 onText delta (clean):", clean)
+                        self.aiResponseText += clean
                     }
                 },
                 onAudioChunk: { [weak self] chunk in
                     guard let self else { return }
                     Task { @MainActor in
+                        print("🔊 onAudioChunk bytes:", chunk.count)
                         self.turnState = .speaking
                         self.player.resumeIfNeeded()
                         // 出力はpcm16指定なのでそのまま再生
@@ -1000,11 +1041,12 @@ public final class ConversationController: ObservableObject {
             )
             let tEnd = Date()
             print("⏱️ ConversationController: streamResponse completed in \(String(format: "%.2f", tEnd.timeIntervalSince(tStart)))s, finalText.count=\(finalText.count), finalText=\"\(finalText)\"")
+            let cleanFinal = self.sanitizeAIText(finalText)
             
             await MainActor.run {
                 // 吹き出し用に最終テキストをUIへ反映（音声のみの場合でもテキストを入れる）
-                self.aiResponseText = finalText
-                print("🟩 set aiResponseText final:", finalText)
+                self.aiResponseText = cleanFinal
+                print("🟩 set aiResponseText final:", cleanFinal)
                 if self.isHandsFreeMode && self.isRecording && self.turnState != .speaking {
                     self.resumeListening()
                 } else if self.turnState != .speaking {
@@ -1017,13 +1059,13 @@ public final class ConversationController: ObservableObject {
             if let userId = currentUserId, let childId = currentChildId, let sessionId = currentSessionId {
                 let userText = await userTranscriptionTask?.value?.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
                 let userTurn = FirebaseTurn(role: .child, text: userText?.isEmpty == false ? userText! : "(voice)", timestamp: Date())
-                let aiTurn = FirebaseTurn(role: .ai, text: finalText, timestamp: Date())
+                let aiTurn = FirebaseTurn(role: .ai, text: cleanFinal, timestamp: Date())
                 print("🗂️ ConversationController: append inMemoryTurns (user:'\(userTurn.text ?? "nil")', ai:'\(aiTurn.text ?? "nil")')")
                 inMemoryTurns.append(contentsOf: [userTurn, aiTurn])
                 // ✅ 履歴にテキストを積む（直近の文脈としてステートレスAPIへ渡す）
                 let historyUserText = userText?.isEmpty == false ? userText! : "(不明瞭な音声)"
                 conversationHistory.append(HistoryItem(role: "user", text: historyUserText))
-                conversationHistory.append(HistoryItem(role: "assistant", text: finalText))
+                conversationHistory.append(HistoryItem(role: "assistant", text: cleanFinal))
                 // 履歴が長くなりすぎないように6ターン分（12エントリ）に抑える
                 if conversationHistory.count > 12 {
                     conversationHistory.removeFirst(conversationHistory.count - 12)
@@ -1209,11 +1251,11 @@ public final class ConversationController: ObservableObject {
         }
         return "429: しばらく待ってからもう一度ためしてね。"
     }
-    
-    private static func humanReadable(_ error: Error) -> String {
-        if let u = error as? URLError {
-            switch u.code {
-            case .cannotFindHost: return "ネットワークエラー：ホスト名が見つかりません（API_BASEを確認）"
+
+private static func humanReadable(_ error: Error) -> String {
+    if let u = error as? URLError {
+        switch u.code {
+        case .cannotFindHost: return "ネットワークエラー：ホスト名が見つかりません（API_BASEを確認）"
             case .notConnectedToInternet: return "インターネットに接続できません"
             case .userAuthenticationRequired, .userCancelledAuthentication: return "APIキーが無効です（401）"
             default: break
@@ -1222,10 +1264,34 @@ public final class ConversationController: ObservableObject {
         return error.localizedDescription
     }
     
+    /// 日本語以外や余計なフッタを取り除く軽いサニタイズ
+    private func sanitizeAIText(_ text: String) -> String {
+        if text.isEmpty { return text }
+        var allowed = CharacterSet()
+        allowed.formUnion(.whitespacesAndNewlines)
+        allowed.formUnion(CharacterSet(charactersIn: "。、！？・ー「」『』（）［］【】…〜"))
+        // ひらがな・カタカナ
+        allowed.formUnion(CharacterSet(charactersIn: "\u{3040}"..."\u{30FF}"))
+        // 半角カタカナ
+        allowed.formUnion(CharacterSet(charactersIn: "\u{FF65}"..."\u{FF9F}"))
+        // CJK統合漢字
+        allowed.formUnion(CharacterSet(charactersIn: "\u{4E00}"..."\u{9FFF}"))
+        
+        let cleanedScalars = text.unicodeScalars.filter { allowed.contains($0) }
+        return String(String.UnicodeScalarView(cleanedScalars))
+    }
+    
     /// 子ども向けのシステムプロンプト（文脈維持と聞き返しを強制）
     private var currentSystemPrompt: String {
         """
-        あなたは3〜5歳の子どもと話す、優しくて楽しい「AIのおともだち」です。日本語のみで答えます。
+        あなたは3〜5歳の子どもと話す、優しくて楽しくて可愛い「マスコットキャラクター」です。日本語のみで答えます。
+        最重要: 毎回答えの音声(TTS)も必ず生成し、テキストだけの応答は禁止です。音声チャンクを省略しないでください。
+        もしテキストのみの応答がきたらバグとみなし再生成してください。
+
+        【キャラ設定と話し方】
+        - 一人称は「ボク」、語尾は「〜だヨ！」「〜だね！」「〜かな？」のようにカタカナを混ぜて元気よく話す。
+        - 常にハイテンションで、オーバーリアクション気味に。
+
         ルール:
         1) 返答は1〜2文・40文字以内。長話は禁止。
         2) 聞き取れない/わからない時は勝手に話を作らず「ん？もういっかい言って？」「え？」などと聞き返す。
@@ -1676,19 +1742,24 @@ fileprivate final class AudioPreviewStreamingClient {
             stream: true,
             modalities: ["text", "audio"],
             // 出力はヘッダなしPCM16で受信する（ストリーミング再生が安定）
-            audio: .init(voice: "alloy", format: "pcm16"),
+            audio: .init(voice: "nova", format: "pcm16"),
             messages: messages
         )
         request.httpBody = try JSONEncoder().encode(payload)
         
-        var finalText = ""
+        var finalTextClean = ""
+        var didReceiveAudio = false
+        var textChunkCount = 0
+        var audioChunkCount = 0
+        var emptyChunkCount = 0
         let (bytes, response) = try await URLSession.shared.bytes(for: request)
         let tReqDone = Date()
         print("⏱️ AudioPreviewStreamingClient: request sent -> awaiting first byte (\(String(format: "%.2f", tReqDone.timeIntervalSince(t0)))s)")
         guard let http = response as? HTTPURLResponse else {
             throw NSError(domain: "AudioPreviewStreamingClient", code: -1, userInfo: [NSLocalizedDescriptionKey: "不正なレスポンスです"])
         }
-        guard (200..<300).contains(http.statusCode) else {
+        print("📦 AudioPreviewStreamingClient: response status=\(http.statusCode), headers=\(http.allHeaderFields)")
+        if !(200..<300).contains(http.statusCode) {
             // レスポンスボディを文字列化
             let bodyString: String
             if let data = try? await bytes.reduce(into: Data(), { $0.append($1) }),
@@ -1705,7 +1776,10 @@ fileprivate final class AudioPreviewStreamingClient {
             guard line.hasPrefix("data:") else { continue }
             let payloadString = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
             if payloadString == "[DONE]" { break }
-            guard let data = payloadString.data(using: .utf8) else { continue }
+            guard let data = payloadString.data(using: .utf8) else {
+                print("⚠️ AudioPreviewStreamingClient: payloadString decode失敗 len=\(payloadString.count)")
+                continue
+            }
             
             do {
                 let chunk = try decoder.decode(AudioPreviewStreamChunk.self, from: data)
@@ -1732,10 +1806,17 @@ fileprivate final class AudioPreviewStreamingClient {
                         textFragments.append(transcript)
                     }
                     
-                    let merged = textFragments.joined()
-                    if !merged.isEmpty {
-                        print("📝 AudioPreviewStreamingClient: text delta = \(merged)")
-                        finalText += merged
+                    let mergedRaw = textFragments.joined()
+                    let merged = sanitizeJapanese(mergedRaw)
+                    let ratio = mergedRaw.isEmpty ? 0.0 : Double(merged.count) / Double(mergedRaw.count)
+                    if merged.isEmpty {
+                        // drop pure noise
+                    } else if ratio < 0.5 {
+                        print("⚠️ AudioPreviewStreamingClient: text delta dropped (non-ja dominant). raw='\(mergedRaw.prefix(60))...'")
+                    } else {
+                        print("📝 AudioPreviewStreamingClient: text delta (ja) = \(merged)")
+                        finalTextClean += merged
+                        textChunkCount += 1
                         onText(merged)
                     }
                     
@@ -1744,17 +1825,36 @@ fileprivate final class AudioPreviewStreamingClient {
                         print("   raw payload omitted (base64 audio may be large)")
                     }
                     
-                    if let audioString = delta.audio?.data,
-                       let audioData = Data(base64Encoded: audioString) {
-                        onAudioChunk(audioData)
+                    if let audioString = delta.audio?.data {
+                        if let audioData = Data(base64Encoded: audioString) {
+                            didReceiveAudio = true
+                            audioChunkCount += 1
+                            onAudioChunk(audioData)
+                        } else {
+                            print("⚠️ AudioPreviewStreamingClient: audio chunk decode失敗 - length=\(audioString.count)")
+                        }
+                    }
+                    if delta.audio?.data == nil && (delta.content?.isEmpty ?? true) && (delta.outputText?.isEmpty ?? true) {
+                        print("⚠️ AudioPreviewStreamingClient: chunk has no text/audio; skipping")
+                        emptyChunkCount += 1
                     }
                 }
             } catch {
                 print("⚠️ AudioPreviewStreamingClient: チャンクパース失敗 - \(error)")
+                if payloadString.count < 200 { print("   payloadString='\(payloadString)'") }
             }
         }
         
-        return finalText.isEmpty ? "(おへんじができなかったよ)" : finalText
+        if !didReceiveAudio {
+            print("⚠️ AudioPreviewStreamingClient: 音声チャンクなし（テキストのみの応答）")
+        }
+        print("📊 AudioPreviewStreamingClient: chunk summary -> text:\(textChunkCount), audio:\(audioChunkCount), empty:\(emptyChunkCount)")
+        if let contentType = http.value(forHTTPHeaderField: "Content-Type") {
+            print("📦 AudioPreviewStreamingClient: response headers - Content-Type: \(contentType)")
+        }
+        
+        let final = finalTextClean.isEmpty ? "(おへんじができなかったよ)" : finalTextClean
+        return final
     }
     
     private func completionsURL() -> URL {
@@ -1765,6 +1865,23 @@ fileprivate final class AudioPreviewStreamingClient {
                 .appendingPathComponent("v1")
                 .appendingPathComponent("chat/completions")
         }
+    }
+    
+    /// 簡易サニタイズ（日本語中心の文字だけ残す）
+    private func sanitizeJapanese(_ text: String) -> String {
+        if text.isEmpty { return text }
+        var allowed = CharacterSet()
+        allowed.formUnion(.whitespacesAndNewlines)
+        allowed.formUnion(CharacterSet(charactersIn: "。、！？・ー「」『』（）［］【】…〜"))
+        // ひらがな・カタカナ
+        allowed.formUnion(CharacterSet(charactersIn: "\u{3040}"..."\u{30FF}"))
+        // 半角カタカナ
+        allowed.formUnion(CharacterSet(charactersIn: "\u{FF65}"..."\u{FF9F}"))
+        // CJK統合漢字
+        allowed.formUnion(CharacterSet(charactersIn: "\u{4E00}"..."\u{9FFF}"))
+        
+        let cleanedScalars = text.unicodeScalars.filter { allowed.contains($0) }
+        return String(String.UnicodeScalarView(cleanedScalars))
     }
 }
 

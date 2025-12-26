@@ -26,6 +26,8 @@ public final class MicrophoneCapture {
   private let onPCM: (AVAudioPCMBuffer) -> Void
   // ✅ 追加: 音量レベル（dB）を通知するコールバック
   public var onVolume: ((Double) -> Void)?
+  // ✅ 追加: バージイン検知時に呼び出すコールバック
+  public var onBargeIn: (() -> Void)?
   private var running = false
   
   // ✅ バッチ送信用：60msごとにまとめて送信（反応速度重視）
@@ -129,20 +131,18 @@ public final class MicrophoneCapture {
     // AECが効いていない場合、Echo成分で InputRMS が高くなる。
     // そのため、単なる差分ではなく、絶対値としてのOutput音量も考慮する。
     
-    // 条件調整案:
-    // 出力が大きい(>-30dB)時は、マージンを大きく取る（AIが叫んでる時は誤爆しやすい）
-    let dynamicMargin = (outputRMS > -20.0) ? rmsMarginDb + 6.0 : rmsMarginDb
+    // 出力がかなり大きい(>-15dB)場合は、絶対値で厳しめに判定する
+    // 環境音での誤爆を避けるため、入力が -20dB 以上のときのみ成立
+    if outputRMS > -15.0 {
+      return inputRMS > -20.0
+    }
+    
+    // 通常は出力との差分で判定（出力が小さい時は小さめのマージン）
+    let dynamicMargin = (outputRMS > -25.0) ? rmsMarginDb + 3.0 : rmsMarginDb
     
     // バージイン条件：
-    // 1. 入力RMSが出力RMS+動的マージン以上
-    // 2. 出力RMSが一定以下（スピーカーが鳴っていない）
-    let condition1 = avgInputRMS > (outputRMS + dynamicMargin)
-    let condition2 = outputRMS < playbackQuietDbThreshold
-    
-    // condition2 (Outputが静か) は、「相手が黙っている時の割り込み」用。
-    // 「相手が喋っている時の割り込み」を許容するなら condition1 だけで勝負する必要がある。
-    // 現状は両方の条件を満たす必要がある（より厳格な判定）
-    return condition1 && condition2
+    // 入力RMSが出力RMS+動的マージン以上なら成立
+    return avgInputRMS > (outputRMS + dynamicMargin)
   }
 
   public func start() throws {
@@ -259,6 +259,10 @@ public final class MicrophoneCapture {
         if self.checkBargeIn(inputRMS: inputRMS, outputRMS: outputRMS) {
           self.userBargeIn = true
           print("🎤 MicrophoneCapture: バージイン検出 - inputRMS: \(String(format: "%.1f", inputRMS))dB, outputRMS: \(String(format: "%.1f", outputRMS))dB")
+          // ✅ コールバックで上位へ通知（UIスレッドで処理）
+          DispatchQueue.main.async { [weak self] in
+            self?.onBargeIn?()
+          }
           // バージイン成立時は送信を許可（response.cancelは上位で送信）
         } else {
           // 再生中でバージイン未検出：送信しない（ループ根絶）

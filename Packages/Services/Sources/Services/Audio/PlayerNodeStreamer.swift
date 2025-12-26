@@ -33,6 +33,10 @@ public final class PlayerNodeStreamer {
   private let engine: AVAudioEngine
   private var ownsEngine: Bool  // エンジンの所有権を持つかどうか
   private let player = AVAudioPlayerNode()
+  // ⚙️ ボイスチェンジ方式（true: Varispeed、false: TimePitch）コメントを切り替えて試せるようにする
+  private let useVarispeed = true
+  private let timePitchNode = AVAudioUnitTimePitch()   // ピッチ/速度調整用（従来）
+  private let varispeedNode = AVAudioUnitVarispeed()   // 早回し方式（推奨）
   private var outFormat: AVAudioFormat?  // start()で設定される
   private let inFormat: AVAudioFormat
   private var converter: AVAudioConverter?  // start()で設定される
@@ -65,12 +69,27 @@ public final class PlayerNodeStreamer {
     self.inFormat = inFmt
 
     engine.attach(player)
+    engine.attach(timePitchNode)
+    engine.attach(varispeedNode)
+    // --- TimePitch 設定（元の方式に戻す場合はこちらを使う） ---
+    timePitchNode.pitch = 550.0   // 犯罪者声防止にしっかりプラス方向へ
+    timePitchNode.rate = 1.15     // 早口気味で元気に
+    timePitchNode.overlap = 12.0  // ケロりを抑えつつ滑らかに
+    // --- Varispeed 設定（推奨：早回しで自然な高音+早口） ---
+    varispeedNode.rate = 1.2     // 1.2〜1.4あたりがマスコット寄り
+
     // ✅ AEC対策：48kHz/1chで明示的に接続（AECは48kHz/モノのパスで最も安定）
     // エンジン内は48kHz/monoで統一し、送信時に24kHzに変換
     guard let mono48k = AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1) else {
       fatalError("48kHz/1chフォーマット作成失敗")
     }
-    engine.connect(player, to: engine.mainMixerNode, format: mono48k)
+    if useVarispeed {
+      engine.connect(player, to: varispeedNode, format: mono48k)
+      engine.connect(varispeedNode, to: engine.mainMixerNode, format: mono48k)
+    } else {
+      engine.connect(player, to: timePitchNode, format: mono48k)
+      engine.connect(timePitchNode, to: engine.mainMixerNode, format: mono48k)
+    }
     
     // ⚠️ エンジンの開始は後でAudioSessionが設定された後に行う
     // 実機ではAudioSessionがアクティブになる前にエンジンを開始すると失敗する
