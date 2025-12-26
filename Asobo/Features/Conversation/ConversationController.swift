@@ -30,6 +30,8 @@ public final class ConversationController: ObservableObject {
     
     // ✅ AI音声再生中フラグ（onAudioDeltaReceivedで設定、sendMicrophonePCMの早期returnを一元化）
     private var isAIPlayingAudio: Bool = false
+    // ✅ ハンズフリーモードの有効化フラグ
+    @Published public var isHandsFreeMode: Bool = false
     
     // ✅ ターン状態（拡張版）
     enum TurnState: Equatable {
@@ -58,6 +60,15 @@ public final class ConversationController: ObservableObject {
     
     // ✅ 追加: speech_startedが来ていない警告のカウンター
     private var speechStartedMissingCount: Int = 0
+    
+    // MARK: - VAD (Hands-free Conversation)
+    // 音声入力の音量がこの閾値を超えたら「発話中」とみなす
+    private let vadSpeechThresholdDb: Double = -35.0
+    // この閾値未満の状態が一定時間続いたら「発話終了（静寂）」とみなす
+    private let vadSilenceThresholdDb: Double = -50.0
+    private let vadSilenceDuration: TimeInterval = 1.2
+    private var isUserSpeaking: Bool = false
+    private var silenceTimer: Timer?
     
     // デバッグ用プロパティ
     @Published public var aiResponseText: String = ""
@@ -240,6 +251,9 @@ public final class ConversationController: ObservableObject {
             self.errorMessage = "音声認識が現在利用できません。"
             return
         }
+        if isHandsFreeMode {
+            stopHandsFreeConversation()
+        }
 
         // 1) AudioSession を先に構成（DI経由）
         do { try audioSession.configure() }
@@ -390,9 +404,10 @@ public final class ConversationController: ObservableObject {
                     print("🔊 ConversationController: 再生開始 - マイクゲート閉 (AEC/BargeInモード)")
                 } else {
                     print("🔇 ConversationController: 再生完全終了 - マイクゲート開")
-                    // ✅ AIが完全に話し終わったら、ユーザーの入力を待つ状態にしてタイマーを開始
-                    // 注意: 実際の音声再生が終了した時点でタイマーをセットする
-                    if self.turnState == .speaking {
+                    // ✅ AIが完全に話し終わったら、ユーザーの入力を待つ状態にしてタイマーを開始（ハンズフリー時は即再開）
+                    if self.isHandsFreeMode && self.isRecording {
+                        self.resumeListening()
+                    } else if self.turnState == .speaking {
                         self.turnState = .waitingUser
                         print("⏰ ConversationController: AIの音声再生完全終了 -> 促しタイマーを開始")
                         self.startWaitingForResponse()
@@ -499,9 +514,12 @@ public final class ConversationController: ObservableObject {
         
         // ✅ 促しタイマーを停止
         cancelNudge()
+        silenceTimer?.invalidate()
+        silenceTimer = nil
         
         // 状態をリセット
         isRecording = false
+        isHandsFreeMode = false
         isRealtimeActive = false
         isRealtimeConnecting = false
         turnState = .idle
@@ -557,8 +575,12 @@ public final class ConversationController: ObservableObject {
             }
         }
     }
-
+    
     public func startPTTRealtime() {
+        // ハンズフリー中にPTTを開始したらハンズフリーを明示的に無効化
+        if isHandsFreeMode {
+            stopHandsFreeConversation()
+        }
         guard audioPreviewClient != nil else {
             self.errorMessage = "音声プレビュークライアントが初期化されていません"; return
         }
@@ -656,10 +678,178 @@ public final class ConversationController: ObservableObject {
 
     public func stopPTTRealtime() {
         isRecording = false
+        isHandsFreeMode = false
         mic?.stop()
         turnState = .thinking
         Task { [weak self] in
             await self?.sendAudioPreviewRequest()
+        }
+    }
+    
+    // MARK: - Hands-free Conversation (VAD)
+    /// 1回のタップで「聞く→送る→AI応答→再開」を繰り返すモード
+    public func startHandsFreeConversation() {
+        guard audioPreviewClient != nil else {
+            self.errorMessage = "まず「開始」を押してセッションを開いてください"
+            return
+        }
+        // PTT録音中に切り替えられないようガード
+        if isRecording && !isHandsFreeMode {
+            self.errorMessage = "現在の録音を停止してからハンズフリーを開始してください"
+            return
+        }
+        
+        cancelNudge()
+        recordedPCMData.removeAll()
+        recordedSampleRate = 24_000
+        isUserSpeaking = false
+        silenceTimer?.invalidate()
+        silenceTimer = nil
+        
+        // バージイン前提でAI音声を止める
+        player.stop()
+        
+        if !sharedAudioEngine.isRunning {
+            do { try sharedAudioEngine.start() } catch {
+                print("⚠️ ConversationController: エンジン再開失敗 - \(error.localizedDescription)")
+            }
+        }
+        
+        isHandsFreeMode = true
+        startHandsFreeInternal()
+    }
+    
+    public func stopHandsFreeConversation() {
+        silenceTimer?.invalidate()
+        silenceTimer = nil
+        isHandsFreeMode = false
+        isRecording = false
+        isUserSpeaking = false
+        recordedPCMData.removeAll()
+        mic?.stop()
+        turnState = .waitingUser
+    }
+    
+    private func startHandsFreeInternal() {
+        cancelNudge()
+        player.stop()
+        mic?.stop()
+        
+        Task { @MainActor [weak self] in
+            guard let self = self else { return }
+            
+            // 1. エンジンを一度止めてから再構成
+            if self.sharedAudioEngine.isRunning {
+                self.sharedAudioEngine.stop()
+            }
+            
+            self.mic = MicrophoneCapture(sharedEngine: self.sharedAudioEngine, onPCM: { [weak self] buf in
+                self?.appendPCMBuffer(buf)
+            }, outputMonitor: self.player.outputMonitor)
+            
+            self.mic?.onVolume = { [weak self] rms in
+                Task { @MainActor [weak self] in
+                    self?.handleVAD(rms: rms)
+                }
+            }
+            
+            recordedPCMData.removeAll()
+            recordedSampleRate = 24_000
+            
+            do {
+                try self.mic?.start()
+            } catch {
+                self.errorMessage = "マイク設定失敗: \(error.localizedDescription)"
+                self.isRecording = false
+                self.isHandsFreeMode = false
+                return
+            }
+            
+            self.sharedAudioEngine.prepare()
+            do {
+                try self.sharedAudioEngine.start()
+                print("✅ ConversationController: ハンズフリー用エンジン開始")
+            } catch {
+                print("❌ ConversationController: エンジン開始失敗: \(error)")
+                self.errorMessage = "オーディオエンジンの開始に失敗しました"
+                self.isRecording = false
+                self.isHandsFreeMode = false
+                return
+            }
+            
+            self.isRecording = true
+            self.turnState = .listening
+            print("🟢 ハンズフリー会話開始: Listening...")
+        }
+    }
+    
+    private func handleVAD(rms: Double) {
+        // AIの発話中/思考中は無視（強い入力ならバージイン判定の候補）
+        if turnState == .speaking || turnState == .thinking {
+            return
+        }
+        
+        // 発話検知
+        if rms > vadSpeechThresholdDb {
+            if !isUserSpeaking {
+                print("🗣️ 発話検知開始")
+                isUserSpeaking = true
+                silenceTimer?.invalidate()
+                silenceTimer = nil
+            }
+        }
+        
+        // 静寂検知
+        if isUserSpeaking && rms < vadSilenceThresholdDb {
+            if silenceTimer == nil {
+                print("🤫 静寂検知...タイマーセット")
+                silenceTimer = Timer.scheduledTimer(withTimeInterval: vadSilenceDuration, repeats: false) { [weak self] _ in
+                    Task { @MainActor [weak self] in
+                        self?.commitUserSpeech()
+                    }
+                }
+            }
+        } else if rms > vadSpeechThresholdDb {
+            silenceTimer?.invalidate()
+            silenceTimer = nil
+        }
+    }
+    
+    private func commitUserSpeech() {
+        guard isUserSpeaking else { return }
+        print("🚀 発話終了判定 -> 送信")
+        
+        isUserSpeaking = false
+        silenceTimer?.invalidate()
+        silenceTimer = nil
+        
+        mic?.stop()
+        turnState = .thinking
+        
+        Task {
+            await self.sendAudioPreviewRequest()
+        }
+    }
+    
+    private func resumeListening() {
+        guard isHandsFreeMode else { return }
+        print("👂 聞き取り再開")
+        turnState = .listening
+        recordedPCMData.removeAll()
+        isUserSpeaking = false
+        silenceTimer?.invalidate()
+        silenceTimer = nil
+        
+        if !sharedAudioEngine.isRunning {
+            try? sharedAudioEngine.start()
+        }
+        
+        do {
+            try mic?.start()
+        } catch {
+            errorMessage = "マイク再開に失敗しました: \(error.localizedDescription)"
+            isRecording = false
+            isHandsFreeMode = false
         }
     }
 
@@ -764,7 +954,11 @@ public final class ConversationController: ObservableObject {
         guard !captured.isEmpty else {
             await MainActor.run {
                 self.errorMessage = "音声が録音されていません"
-                self.turnState = .waitingUser
+                if self.isHandsFreeMode && self.isRecording {
+                    self.resumeListening()
+                } else {
+                    self.turnState = .waitingUser
+                }
             }
             return
         }
@@ -811,7 +1005,9 @@ public final class ConversationController: ObservableObject {
                 // 吹き出し用に最終テキストをUIへ反映（音声のみの場合でもテキストを入れる）
                 self.aiResponseText = finalText
                 print("🟩 set aiResponseText final:", finalText)
-                if self.turnState != .speaking {
+                if self.isHandsFreeMode && self.isRecording && self.turnState != .speaking {
+                    self.resumeListening()
+                } else if self.turnState != .speaking {
                     self.turnState = .waitingUser
                     self.startWaitingForResponse()
                 }
@@ -853,7 +1049,11 @@ public final class ConversationController: ObservableObject {
             print("❌ ConversationController: streamResponse failed - \(error)")
             await MainActor.run {
                 self.errorMessage = error.localizedDescription
-                self.turnState = .waitingUser
+                if self.isHandsFreeMode && self.isRecording {
+                    self.resumeListening()
+                } else {
+                    self.turnState = .waitingUser
+                }
             }
         }
         

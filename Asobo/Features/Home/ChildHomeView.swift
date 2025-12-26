@@ -181,10 +181,10 @@ public struct ChildHomeView: View {
     
     private func handleMicButtonTap() {
         guard controller.isRealtimeActive else { return }
-        if controller.isRecording {
-            controller.stopPTTRealtime()
+        if controller.isHandsFreeMode {
+            controller.stopHandsFreeConversation()
         } else {
-            controller.startPTTRealtime()
+            controller.startHandsFreeConversation()
         }
     }
     

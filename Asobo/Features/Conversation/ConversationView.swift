@@ -14,11 +14,11 @@ public struct ConversationView: View {
                     Text("テキスト化(ローカル)").tag(ConversationController.Mode.localSTT)
                     Text("会話(Realtime)").tag(ConversationController.Mode.realtime)
                 }
-                .pickerStyle(.segmented)
-            .onChange(of: vm.mode) { newValue in
-                switch newValue {
-                case .localSTT:
-                    vm.stopRealtimeSession()
+                        .pickerStyle(.segmented)
+                    .onChange(of: vm.mode) { newValue in
+                        switch newValue {
+                        case .localSTT:
+                            vm.stopRealtimeSession()
                 case .realtime:
                     vm.stopLocalTranscription()
                     // 少し遅延してから開始（重複を防ぐ）
@@ -236,15 +236,23 @@ public struct ConversationView: View {
                         }
 
                         Button {
-                            vm.isRecording ? vm.stopPTTRealtime() : vm.startPTTRealtime()
+                            if vm.isHandsFreeMode {
+                                vm.stopHandsFreeConversation()
+                            } else if vm.isRecording {
+                                vm.stopPTTRealtime()
+                            } else {
+                                vm.startHandsFreeConversation()
+                            }
                         } label: {
-                            Image(systemName: vm.isRecording ? "stop.circle.fill" : "mic.circle.fill")
+                            Image(systemName: vm.isHandsFreeMode ? "stop.circle.fill" : (vm.isRecording ? "stop.circle.fill" : "mic.circle.fill"))
                                 .font(.system(size: 60))
-                                .foregroundStyle(vm.isRecording ? .red : .blue)
+                                .foregroundStyle(vm.isHandsFreeMode ? .red : (vm.isRecording ? .red : .blue))
                         }
                         .padding(.top, 4)
 
-                        Text(vm.isRecording ? "録音中（Realtime送信）" : (vm.isRealtimeConnecting ? "接続中..." : (vm.isRealtimeActive ? "タップで話す（PTT）" : "まずはセッション開始を押してください")))
+                        Text(vm.isHandsFreeMode
+                             ? "ハンズフリー会話中（沈黙で自動送信）"
+                             : (vm.isRecording ? "録音中（Realtime送信）" : (vm.isRealtimeConnecting ? "接続中..." : (vm.isRealtimeActive ? "タップでハンズフリー開始" : "まずはセッション開始を押してください"))))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .multilineTextAlignment(.center)
