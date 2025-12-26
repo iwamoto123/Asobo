@@ -100,6 +100,16 @@ public final class ConversationController: NSObject, ObservableObject {
     private var audioPreviewClient: AudioPreviewStreamingClient?
     private var recordedPCMData = Data()
     private var recordedSampleRate: Double = 24_000
+    // ✅ 相槌再生ON/OFF（当面OFFにする）
+    private let enableFillers = false
+    // ✅ 再生する相槌ファイルのリスト（バンドルに追加したファイル名）
+    //    バンドル内の実ファイル名（拡張子なし）を列挙。英語ベース名と日本語名どちらでも拾えるようにした。
+    private let fillerFiles = [
+        "うんうん", "うんうん、確かに", "そうなんだ", "そっかそっか",
+        "なるほど", "ふーん", "へー", "へーなるほど"
+    ]
+    // ✅ 相槌再生中かのフラグ（AI音声が来たら一度だけ止める）
+    private var isFillerPlaying = false
     private var receiveTextTask: Task<Void, Never>?
     private var receiveAudioTask: Task<Void, Never>?
     private var receiveInputTextTask: Task<Void, Never>?
@@ -906,6 +916,22 @@ public final class ConversationController: NSObject, ObservableObject {
         recordedPCMData.append(data)
         recordedSampleRate = buffer.format.sampleRate
     }
+
+    // ✅ 相槌をランダム再生する
+    private func playRandomFiller() {
+        guard enableFillers else {
+            isFillerPlaying = false
+            return
+        }
+        guard let fileName = fillerFiles.randomElement(),
+              let url = Bundle.main.url(forResource: fileName, withExtension: "wav") else {
+            print("⚠️ 相槌ファイルが見つかりません: \(fillerFiles)")
+            return
+        }
+        print("🗣️ 相槌再生: \(fileName)")
+        player.playLocalFile(url)
+        isFillerPlaying = true
+    }
     
     private func pcm16ToWav(pcmData: Data, sampleRate: Double) -> Data {
         // シンプルなPCM16(LE)/モノラル -> WAVヘッダー付与
@@ -1000,6 +1026,12 @@ public final class ConversationController: NSObject, ObservableObject {
             }
             return
         }
+
+        // AIが考え始めるタイミングで相槌を打つ
+        await MainActor.run {
+            self.isThinking = true
+            self.playRandomFiller()
+        }
         
         let wav = pcm16ToWav(pcmData: captured, sampleRate: recordedSampleRate)
         
@@ -1010,7 +1042,6 @@ public final class ConversationController: NSObject, ObservableObject {
             }
             : nil
         
-        await MainActor.run { self.isThinking = true }
         let tStart = Date()
         print("⏱️ ConversationController: sendAudioPreviewRequest start - pcmBytes=\(captured.count), sampleRate=\(recordedSampleRate)")
         
@@ -1033,6 +1064,11 @@ public final class ConversationController: NSObject, ObservableObject {
                     Task { @MainActor in
                         print("🔊 onAudioChunk bytes:", chunk.count)
                         self.turnState = .speaking
+                        // 相槌が鳴っていれば一度だけ止める
+                        if self.isFillerPlaying {
+                            self.player.stopImmediately()
+                            self.isFillerPlaying = false
+                        }
                         self.player.resumeIfNeeded()
                         // 出力はpcm16指定なのでそのまま再生
                         self.player.playChunk(chunk)

@@ -20,6 +20,14 @@
 		146EA9CD2E87A65400BBD955 /* Release.xcconfig in Resources */ = {isa = PBXBuildFile; fileRef = 146EA9CC2E87A65400BBD955 /* Release.xcconfig */; };
 		1491CFAA2EE535C700CE3323 /* GoogleSignIn in Frameworks */ = {isa = PBXBuildFile; productRef = 1491CFA92EE535C700CE3323 /* GoogleSignIn */; };
 		1491CFAC2EE535C700CE3323 /* GoogleSignInSwift in Frameworks */ = {isa = PBXBuildFile; productRef = 1491CFAB2EE535C700CE3323 /* GoogleSignInSwift */; };
+		14E6047F2EFE7814008528CE /* へー.wav in Resources */ = {isa = PBXBuildFile; fileRef = 14E6047D2EFE7814008528CE /* へー.wav */; };
+		14E604812EFE7814008528CE /* そうなんだ.wav in Resources */ = {isa = PBXBuildFile; fileRef = 14E604792EFE7814008528CE /* そうなんだ.wav */; };
+		14E604822EFE7814008528CE /* そっかそっか.wav in Resources */ = {isa = PBXBuildFile; fileRef = 14E6047A2EFE7814008528CE /* そっかそっか.wav */; };
+		14E604832EFE7814008528CE /* なるほど.wav in Resources */ = {isa = PBXBuildFile; fileRef = 14E6047B2EFE7814008528CE /* なるほど.wav */; };
+		14E604842EFE7814008528CE /* ふーん.wav in Resources */ = {isa = PBXBuildFile; fileRef = 14E6047C2EFE7814008528CE /* ふーん.wav */; };
+		14E604852EFE7814008528CE /* うんうん.wav in Resources */ = {isa = PBXBuildFile; fileRef = 14E604762EFE7814008528CE /* うんうん.wav */; };
+		14E604862EFE7814008528CE /* へーなるほど.wav in Resources */ = {isa = PBXBuildFile; fileRef = 14E6047E2EFE7814008528CE /* へーなるほど.wav */; };
+		14E604872EFE7814008528CE /* うんうん、確かに.wav in Resources */ = {isa = PBXBuildFile; fileRef = 14E604772EFE7814008528CE /* うんうん、確かに.wav */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -45,6 +53,14 @@
 		1497CE682E72D88900051217 /* Asobo.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Asobo.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		1497CE762E72D88A00051217 /* AsoboTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AsoboTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		1497CE802E72D88A00051217 /* AsoboUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AsoboUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		14E604762EFE7814008528CE /* うんうん.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; path = "うんうん.wav"; sourceTree = "<group>"; };
+		14E604772EFE7814008528CE /* うんうん、確かに.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; path = "うんうん、確かに.wav"; sourceTree = "<group>"; };
+		14E604792EFE7814008528CE /* そうなんだ.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; path = "そうなんだ.wav"; sourceTree = "<group>"; };
+		14E6047A2EFE7814008528CE /* そっかそっか.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; path = "そっかそっか.wav"; sourceTree = "<group>"; };
+		14E6047B2EFE7814008528CE /* なるほど.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; path = "なるほど.wav"; sourceTree = "<group>"; };
+		14E6047C2EFE7814008528CE /* ふーん.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; path = "ふーん.wav"; sourceTree = "<group>"; };
+		14E6047D2EFE7814008528CE /* へー.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; path = "へー.wav"; sourceTree = "<group>"; };
+		14E6047E2EFE7814008528CE /* へーなるほど.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; path = "へーなるほど.wav"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -131,6 +147,14 @@
 				146EA9CA2E87A63F00BBD955 /* Debug.xcconfig */,
 				146EA9CC2E87A65400BBD955 /* Release.xcconfig */,
 				144153962ED5E81E006341CB /* Frameworks */,
+				14E604762EFE7814008528CE /* うんうん.wav */,
+				14E604772EFE7814008528CE /* うんうん、確かに.wav */,
+				14E604792EFE7814008528CE /* そうなんだ.wav */,
+				14E6047A2EFE7814008528CE /* そっかそっか.wav */,
+				14E6047B2EFE7814008528CE /* なるほど.wav */,
+				14E6047C2EFE7814008528CE /* ふーん.wav */,
+				14E6047D2EFE7814008528CE /* へー.wav */,
+				14E6047E2EFE7814008528CE /* へーなるほど.wav */,
 			);
 			sourceTree = "<group>";
 		};
@@ -285,6 +309,14 @@
 			files = (
 				146EA9CD2E87A65400BBD955 /* Release.xcconfig in Resources */,
 				146EA9CB2E87A63F00BBD955 /* Debug.xcconfig in Resources */,
+				14E6047F2EFE7814008528CE /* へー.wav in Resources */,
+				14E604812EFE7814008528CE /* そうなんだ.wav in Resources */,
+				14E604822EFE7814008528CE /* そっかそっか.wav in Resources */,
+				14E604832EFE7814008528CE /* なるほど.wav in Resources */,
+				14E604842EFE7814008528CE /* ふーん.wav in Resources */,
+				14E604852EFE7814008528CE /* うんうん.wav in Resources */,
+				14E604862EFE7814008528CE /* へーなるほど.wav in Resources */,
+				14E604872EFE7814008528CE /* うんうん、確かに.wav in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

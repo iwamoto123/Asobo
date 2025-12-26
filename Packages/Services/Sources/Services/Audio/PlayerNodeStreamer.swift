@@ -35,6 +35,8 @@ public final class PlayerNodeStreamer {
   private let player = AVAudioPlayerNode()
   // ⚙️ ボイスチェンジ方式（true: Varispeed、false: TimePitch）コメントを切り替えて試せるようにする
   private let useVarispeed = true
+  // 🎤 フィラー音源を録音/準備する間はエフェクトを外す（必要なときだけtrueに）
+  private let bypassVoiceEffectForFillerPrep = false
   private let timePitchNode = AVAudioUnitTimePitch()   // ピッチ/速度調整用（従来）
   private let varispeedNode = AVAudioUnitVarispeed()   // 早回し方式（推奨）
   private var outFormat: AVAudioFormat?  // start()で設定される
@@ -83,7 +85,12 @@ public final class PlayerNodeStreamer {
     guard let mono48k = AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1) else {
       fatalError("48kHz/1chフォーマット作成失敗")
     }
-    if useVarispeed {
+    if bypassVoiceEffectForFillerPrep {
+      // 一時的にプレイヤーをミキサーへ直結（ピッチ/速度加工なし）
+      // ✅ フィラー素材を「素の声」で録っておきたいとき用
+      engine.connect(player, to: engine.mainMixerNode, format: mono48k)
+      print("⚠️ PlayerNodeStreamer: Voice FX bypass中（bypassVoiceEffectForFillerPrep=true）。falseに戻すとVarispeed経路に復帰します。")
+    } else if useVarispeed {
       engine.connect(player, to: varispeedNode, format: mono48k)
       engine.connect(varispeedNode, to: engine.mainMixerNode, format: mono48k)
     } else {
@@ -395,6 +402,29 @@ public final class PlayerNodeStreamer {
     if !player.isPlaying {
       player.play()
     }
+  }
+
+  /// ✅ ローカルの音声ファイル（相槌など）を再生する
+  /// エフェクター（Varispeed/TimePitch）を通るため、自動的にキャラ声になって再生される
+  public func playLocalFile(_ url: URL) {
+    // エンジンが止まっていれば開始を試みる
+    if !engine.isRunning {
+      try? engine.start()
+    }
+
+    // 進行中の再生（相槌など）があれば即停止してから再生
+    if player.isPlaying {
+      stopImmediately()
+    }
+
+    guard let file = try? AVAudioFile(forReading: url) else {
+      print("⚠️ PlayerNodeStreamer: ファイル読み込み失敗 - \(url.lastPathComponent)")
+      return
+    }
+
+    // ファイルをスケジュールして即再生
+    player.scheduleFile(file, at: nil, completionHandler: nil)
+    player.play()
   }
   
   /// ✅ 参考プロジェクトパターン：再生中かどうかを確認
