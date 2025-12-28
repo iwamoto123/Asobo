@@ -101,12 +101,10 @@ public final class ConversationController: NSObject, ObservableObject {
     private var recordedPCMData = Data()
     private var recordedSampleRate: Double = 24_000
     // ✅ 相槌再生ON/OFF（当面OFFにする）
-    private let enableFillers = false
+    private let enableFillers = true
     // ✅ 再生する相槌ファイルのリスト（バンドルに追加したファイル名）
-    //    バンドル内の実ファイル名（拡張子なし）を列挙。英語ベース名と日本語名どちらでも拾えるようにした。
     private let fillerFiles = [
-        "うんうん", "うんうん、確かに", "そうなんだ", "そっかそっか",
-        "なるほど", "ふーん", "へー", "へーなるほど"
+        "うんうん", "そっか", "ふーん", "へー"
     ]
     // ✅ 相槌再生中かのフラグ（AI音声が来たら一度だけ止める）
     private var isFillerPlaying = false
@@ -130,13 +128,30 @@ public final class ConversationController: NSObject, ObservableObject {
     // ✅ 認証情報（AuthViewModelから設定される）
     private var currentUserId: String?
     private var currentChildId: String?
+    private var currentChildName: String?
+    private var currentChildNickname: String?
     private var turnCount: Int = 0
     
+    // 会話で呼ぶ名前（ニックネーム優先）
+    private var childCallName: String? {
+        if let nickname = currentChildNickname?.trimmingCharacters(in: .whitespacesAndNewlines), !nickname.isEmpty {
+            return nickname
+        }
+        if let name = currentChildName?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty {
+            return name
+        }
+        return nil
+    }
+    
     // ✅ ユーザー情報を設定するメソッド
-    public func setupUser(userId: String, childId: String) {
+    public func setupUser(userId: String, childId: String, childName: String? = nil, childNickname: String? = nil) {
         self.currentUserId = userId
         self.currentChildId = childId
-        print("✅ ConversationController: ユーザー情報を設定 - Parent=\(userId), Child=\(childId)")
+        let trimmedName = childName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedNickname = childNickname?.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.currentChildName = trimmedName?.isEmpty == true ? nil : trimmedName
+        self.currentChildNickname = trimmedNickname?.isEmpty == true ? nil : trimmedNickname
+        print("✅ ConversationController: ユーザー情報を設定 - Parent=\(userId), Child=\(childId), Name=\(childCallName ?? "n/a")")
     }
     
     private static func pcmFromWavIfPossible(_ data: Data) -> Data? {
@@ -1187,10 +1202,17 @@ public final class ConversationController: NSObject, ObservableObject {
                 let temperature: Double?
             }
             
+            let nameNote: String
+            if let callName = childCallName {
+                nameNote = "こどものなまえは「\(callName)」。あいさつやこたえの中で、ようすにあわせてやさしく名前を入れてね（れんこは禁止）。"
+            } else {
+                nameNote = ""
+            }
+            
             let payload = Payload(
                 model: "gpt-4o-mini",
                 messages: [
-                    ["role": "system", "content": "あなたは幼児向けのAIアシスタントです。日本語のみで答えてください。ひらがな中心・一文を短く・やさしく・むずかしい言葉をさけます。"],
+                    ["role": "system", "content": "あなたは幼児向けのAIアシスタントです。日本語のみで答えてください。ひらがな中心・一文を短く・やさしく・むずかしい言葉をさけます。" + (nameNote.isEmpty ? "" : " " + nameNote)],
                     ["role": "user", "content": userText]
                 ],
                 max_tokens: 120,
@@ -1319,15 +1341,27 @@ private static func humanReadable(_ error: Error) -> String {
     
     /// 子ども向けのシステムプロンプト（文脈維持と聞き返しを強制）
     private var currentSystemPrompt: String {
+        let callName = childCallName
+        let nameInstruction: String
+        if let callName {
+            nameInstruction = """
+        【子どもの名前】
+        - 子どもは「\(callName)」。挨拶や励まし、問いかけなど自然なタイミングでときどき名前を呼んでください。
+        - 同じ返答で連呼したり、文脈に合わない呼びかけはしないでください。
         """
-        あなたは3〜5歳の子どもと話す、優しくて楽しくて可愛い「マスコットキャラクター」です。日本語のみで答えます。
-        最重要: 毎回答えの音声(TTS)も必ず生成し、テキストだけの応答は禁止です。音声チャンクを省略しないでください。
+        } else {
+            nameInstruction = ""
+        }
+        
+        var prompt = """
+        あなたは3〜5歳の子どもと話す、優しくて楽しくて可愛いマスコットキャラクターです。日本語のみで答えます。
+        最重要: 毎回答えの音声(TTS)も必ず生成し、テキストだけの応答は禁止です。音声チャンク「audio」も必ず生成してください。
         もしテキストのみの応答がきたらバグとみなし再生成してください。
 
         【キャラ設定と話し方】
-        - 一人称は「ボク」、語尾は「〜だヨ！」「〜だね！」「〜かな？」のようにカタカナを混ぜて元気よく話す。
+        - 一人称は「ボク」、語尾は「〜だよ！」「〜だね！」「〜かな？」のようにカタカナを混ぜて元気よく話す。
         - 常にハイテンションで、オーバーリアクション気味に。
-
+        
         ルール:
         1) 返答は1〜2文・40文字以内。長話は禁止。
         2) 聞き取れない/わからない時は勝手に話を作らず「ん？もういっかい言って？」「え？」などと聞き返す。
@@ -1335,6 +1369,12 @@ private static func humanReadable(_ error: Error) -> String {
         4) むずかしい言葉を避け、ひらがな中心でやさしく。擬音語もOK。
         5) 直前の会話文脈を維持し、話題を飛ばさない。
         """
+        
+        if !nameInstruction.isEmpty {
+            prompt += "\n\n\(nameInstruction)"
+        }
+        
+        return prompt
     }
     
     // MARK: - ライブ要約生成
@@ -1367,7 +1407,7 @@ private static func humanReadable(_ error: Error) -> String {
         }
         
         let prompt = """
-        以下の親子の会話を分析し、JSON形式で出力してください。
+        以下のAIと子どもの会話を分析し、JSON形式で出力してください。
         - summary: 親向けに1行で要約（50文字以内）。AIの返答も加味して状況をまとめてください。
         - interests: 子どもが興味を示したトピック（dinosaurs, space, cooking, animals, vehicles, music, sports, crafts, stories, insects, princess, heroes, robots, nature, others の英語enum値配列）。子どもの発話を主に見てください。
         - newWords: 子どもが使った特徴的な言葉（3つまで）。必ず子どもの発話からのみ選んでください。

@@ -111,8 +111,13 @@ public struct ChildHomeView: View {
         }
         .onAppear {
             // ✅ AuthViewModelからユーザー情報を取得してConversationControllerに設定
-            if let userId = authVM.currentUser?.uid, let childId = authVM.selectedChild?.id {
-                controller.setupUser(userId: userId, childId: childId)
+            if let userId = authVM.currentUser?.uid, let child = authVM.selectedChild, let childId = child.id {
+                controller.setupUser(
+                    userId: userId,
+                    childId: childId,
+                    childName: child.displayName,
+                    childNickname: child.nickName
+                )
             }
             
             withAnimation(.easeInOut(duration: 3.0).repeatForever(autoreverses: true)) {

@@ -33,7 +33,9 @@ public final class PlayerNodeStreamer {
   private let engine: AVAudioEngine
   private var ownsEngine: Bool  // エンジンの所有権を持つかどうか
   private let player = AVAudioPlayerNode()
-  // ⚙️ ボイスチェンジ方式（true: Varispeed、false: TimePitch）コメントを切り替えて試せるようにする
+  // 🎛️ 声質を加工するかどうか（オフにするとAI音声を素のまま再生）
+  private let enableVoiceEffect = true
+  // ⚙️ ボイスチェンジ方式（true: Varispeed、false: TimePitch）コメントを切り替えて試せるようにする(falseにするとTimePitchになる)
   private let useVarispeed = true
   // 🎤 フィラー音源を録音/準備する間はエフェクトを外す（必要なときだけtrueに）
   private let bypassVoiceEffectForFillerPrep = false
@@ -78,14 +80,17 @@ public final class PlayerNodeStreamer {
     timePitchNode.rate = 1.15     // 早口気味で元気に
     timePitchNode.overlap = 12.0  // ケロりを抑えつつ滑らかに
     // --- Varispeed 設定（推奨：早回しで自然な高音+早口） ---
-    varispeedNode.rate = 1.2     // 1.2〜1.4あたりがマスコット寄り
+    varispeedNode.rate = 1.35     // 1.2〜1.4あたりがマスコット寄り
 
     // ✅ AEC対策：48kHz/1chで明示的に接続（AECは48kHz/モノのパスで最も安定）
     // エンジン内は48kHz/monoで統一し、送信時に24kHzに変換
     guard let mono48k = AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1) else {
       fatalError("48kHz/1chフォーマット作成失敗")
     }
-    if bypassVoiceEffectForFillerPrep {
+    if !enableVoiceEffect {
+      engine.connect(player, to: engine.mainMixerNode, format: mono48k)
+      print("ℹ️ PlayerNodeStreamer: Voice FX disabled（素の音声を再生）")
+    } else if bypassVoiceEffectForFillerPrep {
       // 一時的にプレイヤーをミキサーへ直結（ピッチ/速度加工なし）
       // ✅ フィラー素材を「素の声」で録っておきたいとき用
       engine.connect(player, to: engine.mainMixerNode, format: mono48k)
