@@ -814,7 +814,7 @@ public final class ConversationController: NSObject, ObservableObject {
             print("🟢 ハンズフリー会話開始: Listening...")
         }
     }
-    
+
     private func handleVAD(rms: Double) {
         // AI発話中の割り込み判定（MicrophoneCaptureのonBargeInからも呼ばれるが二重保険）
         if turnState == .speaking && rms > vadSpeechThresholdDb {

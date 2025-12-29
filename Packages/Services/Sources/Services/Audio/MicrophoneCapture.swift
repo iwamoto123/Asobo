@@ -53,6 +53,9 @@ public final class MicrophoneCapture {
   // 変更後: 3 (約60msの平均で判断、一瞬の発話に反応させる)
   private let rmsWindowSize: Int = 3  // 3フレーム（約60ms）
   private var isFirstBuffer: Bool = true  // ✅ 初回バッファ受信フラグ（converter作成のため）
+  // ✅ 再生中はVoiceProcessing（コンフォートノイズ含む）をオフにしてノイズ源を減らす
+  //    再生中は送信ゲートでマイクデータをサーバに出さないため、AECを一時停止してもエコーのリスクは低い想定
+  private let disableVoiceProcessingDuringPlayback: Bool = true
   
   // ✅ 初回接続時の音声認識問題対策：マイク開始直後の初期フレームをスキップ
   private var startTime: Date?  // マイク開始時刻
@@ -89,6 +92,11 @@ public final class MicrophoneCapture {
       // 再生終了時にバージインフラグをリセット
       userBargeIn = false
       recentInputRMS.removeAll()
+    }
+    
+    // ✅ 再生中はVoiceProcessing（コンフォートノイズ生成源）を一時停止
+    if disableVoiceProcessingDuringPlayback {
+      setVoiceProcessingEnabled(!isPlaying)
     }
   }
   
@@ -152,12 +160,7 @@ public final class MicrophoneCapture {
     // ✅ 追加: 強力なAEC有効化設定 (iOS 13+)
     // VoiceProcessingモードであっても、明示的にバイパス無効（＝処理有効）を設定するのが安全
     if #available(iOS 13.0, *) {
-      do {
-        try inputNode.setVoiceProcessingEnabled(true)
-        print("✅ MicrophoneCapture: VoiceProcessingEnabled = true")
-      } catch {
-        print("⚠️ MicrophoneCapture: VoiceProcessingEnabled設定失敗 - \(error)")
-      }
+      setVoiceProcessingEnabled(true)
     }
     
     // ✅ 既にタップがインストールされている場合は先に削除（エラー回避）
@@ -224,7 +227,9 @@ public final class MicrophoneCapture {
             
             if self.converter == nil {
                 print("✅ MicrophoneCapture: Converter作成 Input:\(actualFormat.sampleRate)Hz -> Output:\(self.outFormat.sampleRate)Hz")
-                self.converter = AVAudioConverter(from: actualFormat, to: self.outFormat)
+                let conv = AVAudioConverter(from: actualFormat, to: self.outFormat)
+                conv?.sampleRateConverterQuality = .max
+                self.converter = conv
             }
             self.isFirstBuffer = false
         }
@@ -370,5 +375,18 @@ public final class MicrophoneCapture {
     isFirstBuffer = true
     
     running = false
+  }
+}
+
+extension MicrophoneCapture {
+  /// VoiceProcessingのON/OFFを安全に切り替える（iOS 13+のみ）
+  private func setVoiceProcessingEnabled(_ enabled: Bool) {
+    guard #available(iOS 13.0, *) else { return }
+    do {
+      try engine.inputNode.setVoiceProcessingEnabled(enabled)
+      print("✅ MicrophoneCapture: VoiceProcessingEnabled = \(enabled)")
+    } catch {
+      print("⚠️ MicrophoneCapture: VoiceProcessingEnabled設定失敗 - \(error)")
+    }
   }
 }

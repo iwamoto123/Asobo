@@ -34,9 +34,9 @@ public final class PlayerNodeStreamer {
   private var ownsEngine: Bool  // エンジンの所有権を持つかどうか
   private let player = AVAudioPlayerNode()
   // 🎛️ 声質を加工するかどうか（オフにするとAI音声を素のまま再生）
-  private let enableVoiceEffect = true
-  // ⚙️ ボイスチェンジ方式（true: Varispeed、false: TimePitch）コメントを切り替えて試せるようにする(falseにするとTimePitchになる)
-  private let useVarispeed = true
+  private var enableVoiceEffect = true
+  // ⚙️ ボイスチェンジ方式（true: Varispeed、false: TimePitch）
+  private var useVarispeed = true
   // 🎤 フィラー音源を録音/準備する間はエフェクトを外す（必要なときだけtrueに）
   private let bypassVoiceEffectForFillerPrep = false
   private let timePitchNode = AVAudioUnitTimePitch()   // ピッチ/速度調整用（従来）
@@ -139,6 +139,7 @@ public final class PlayerNodeStreamer {
       guard let conv = AVAudioConverter(from: inFormat, to: mono48k) else {
         throw NSError(domain: "PlayerNodeStreamer", code: -1, userInfo: [NSLocalizedDescriptionKey: "AVAudioConverter 作成失敗"])
       }
+      conv.sampleRateConverterQuality = .max
       self.converter = conv
       print("✅ PlayerNodeStreamer: 共通エンジン使用 - outFormat: \(mono48k.sampleRate)Hz, \(mono48k.channelCount)ch")
       return
@@ -157,6 +158,7 @@ public final class PlayerNodeStreamer {
       guard let conv = AVAudioConverter(from: inFormat, to: mono48k) else {
         throw NSError(domain: "PlayerNodeStreamer", code: -1, userInfo: [NSLocalizedDescriptionKey: "AVAudioConverter 作成失敗"])
       }
+      conv.sampleRateConverterQuality = .max
       self.converter = conv
       
       // ✅ 出力RMSモニタリング用のタップを設定
@@ -253,6 +255,7 @@ public final class PlayerNodeStreamer {
         print("⚠️ PlayerNodeStreamer: AVAudioConverter 作成失敗")
         return
       }
+      c.sampleRateConverterQuality = .max
       self.converter = c
       format = mono48k
       conv = c
@@ -435,5 +438,39 @@ public final class PlayerNodeStreamer {
   /// ✅ 参考プロジェクトパターン：再生中かどうかを確認
   public var isPlaying: Bool {
     return player.isPlaying
+  }
+  
+  /// 🎛️ ランタイムでエフェクトON/OFFやVarispeed/TimePitchを切り替える
+  public func updateVoiceEffect(enabled: Bool, useVarispeed newUseVarispeed: Bool? = nil) {
+    let targetUseVarispeed = newUseVarispeed ?? self.useVarispeed
+    guard let mono48k = AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1) else {
+      print("⚠️ PlayerNodeStreamer: フォーマット作成失敗（updateVoiceEffect）")
+      return
+    }
+    
+    let wasPlaying = player.isPlaying
+    if wasPlaying { player.pause() }
+    
+    engine.disconnectNodeOutput(player)
+    engine.disconnectNodeOutput(varispeedNode)
+    engine.disconnectNodeOutput(timePitchNode)
+    
+    if !enabled || bypassVoiceEffectForFillerPrep {
+      engine.connect(player, to: engine.mainMixerNode, format: mono48k)
+    } else if targetUseVarispeed {
+      engine.connect(player, to: varispeedNode, format: mono48k)
+      engine.connect(varispeedNode, to: engine.mainMixerNode, format: mono48k)
+    } else {
+      engine.connect(player, to: timePitchNode, format: mono48k)
+      engine.connect(timePitchNode, to: engine.mainMixerNode, format: mono48k)
+    }
+    
+    self.enableVoiceEffect = enabled
+    self.useVarispeed = targetUseVarispeed
+    
+    if wasPlaying { player.play() }
+    
+    let modeText = (!enabled || bypassVoiceEffectForFillerPrep) ? "bypass" : (targetUseVarispeed ? "Varispeed" : "TimePitch")
+    print("🎛️ PlayerNodeStreamer: Voice FX updated -> enabled=\(enabled && !bypassVoiceEffectForFillerPrep), mode=\(modeText)")
   }
 }
