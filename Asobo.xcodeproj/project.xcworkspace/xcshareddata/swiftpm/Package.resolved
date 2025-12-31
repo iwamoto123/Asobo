@@ -1,5 +1,5 @@
 {
-  "originHash" : "9b3bd470c36b3dc0f200d911e12c0b78fee079d0e9644465e16150000d54039b",
+  "originHash" : "bd456a5aade02c7e52e8b387fd9f11bf75410cb13c517ada65ab0db80285374b",
   "pins" : [
     {
       "identity" : "abseil-cpp-binary",
@@ -134,6 +134,15 @@
       "state" : {
         "revision" : "b7e1104502eca3a213b46303391ca4d3bc8ddec1",
         "version" : "2.30910.0"
+      }
+    },
+    {
+      "identity" : "onnxruntime-swift-package-manager",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/microsoft/onnxruntime-swift-package-manager.git",
+      "state" : {
+        "revision" : "12ce7374c86944e1f68f3a866d10105d8357f074",
+        "version" : "1.20.0"
       }
     },
     {

@@ -164,24 +164,28 @@ public struct ChildHomeView: View {
     private var currentDisplayText: String {
         if controller.isRealtimeConnecting {
             return "つながっています..."
-        } else if controller.isThinking {
+        }
+        
+        // 返答テキストが届いたら思考中でも即表示する
+        if controller.isThinking && controller.aiResponseText.isEmpty {
             return "かんがえちゅう..."
+        }
+        
+        if !controller.aiResponseText.isEmpty {
+            return controller.aiResponseText
         } else if controller.isRecording {
             // ユーザー発話中は前ターンのAIテキストをそのまま表示
             if !lastAIDisplayText.isEmpty {
                 return lastAIDisplayText
             } else if !initialGreetingText.isEmpty {
                 return initialGreetingText
-            } else {
-                return controller.aiResponseText
             }
-        } else if !controller.aiResponseText.isEmpty {
-            return controller.aiResponseText
-        } else if !lastAIDisplayText.isEmpty {
-            return lastAIDisplayText
-        } else {
-            return initialGreetingText
         }
+        
+        if !lastAIDisplayText.isEmpty {
+            return lastAIDisplayText
+        }
+        return initialGreetingText
     }
     
     private func handleMicButtonTap() {
@@ -618,17 +622,9 @@ struct SpeechBubbleView: View {
                 .offset(y: 50) // 下へ
                 .shadow(color: .anoneShadowDark.opacity(0.1), radius: 2, x: 0, y: 2)
             
-            // テキスト表示エリア
+            // テキスト表示エリア（インジケーターなしで常に同じスタイル）
             VStack {
-                if isConnecting || isThinking {
-                    HStack(spacing: 10) {
-                        ProgressView()
-                            .tint(Color.anoneButton)
-                        Text(text)
-                            .font(.system(size: 18, weight: .bold, design: .rounded))
-                            .foregroundColor(Color(hex: "5A4A42"))
-                    }
-                } else if !text.isEmpty {
+                if !text.isEmpty {
                     Text(text)
                         .font(.system(size: 20, weight: .bold, design: .rounded))
                         .foregroundColor(Color(hex: "5A4A42"))

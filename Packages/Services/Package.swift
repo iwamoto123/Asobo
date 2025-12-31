@@ -8,17 +8,26 @@ let package = Package(
         .library(name: "Services", targets: ["Services"])
     ],
     dependencies: [
-        // ← これが無いと Services 側で import Domain/Support できません
+        // ← 既存
         .package(path: "../Domain"),
         .package(path: "../Support"),
+        // ← ここを追加（URLと package 名がとても大事）
+        .package(
+            url: "https://github.com/microsoft/onnxruntime-swift-package-manager.git",
+            from: "1.20.0"
+        ),
     ],
     targets: [
         .target(
             name: "Services",
-            // ← product 名は import 名と一致させる（超重要）
             dependencies: [
+                // ← 既存
                 .product(name: "Domain",  package: "Domain"),
                 .product(name: "Support", package: "Support"),
+                // ← ここを追加（綴り必ずこの通り）
+                .product(name: "onnxruntime", package: "onnxruntime-swift-package-manager"),
+                // 拡張を使うなら↓も追加（使わないなら不要）
+                // .product(name: "onnxruntime_extensions", package: "onnxruntime-swift-package-manager"),
             ],
             path: "Sources/Services"
         ),

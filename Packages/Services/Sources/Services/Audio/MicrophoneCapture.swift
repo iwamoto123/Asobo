@@ -1,5 +1,6 @@
 import AVFoundation
 
+
 /// ✅ マイク入力キャプチャとフォーマット変換
 /// 
 /// ## 重要な設定ポイント
@@ -26,9 +27,18 @@ public final class MicrophoneCapture {
   private let onPCM: (AVAudioPCMBuffer) -> Void
   // ✅ 追加: 音量レベル（dB）を通知するコールバック
   public var onVolume: ((Double) -> Void)?
+  // ✅ 追加: VAD確率を通知するコールバック
+  public var onVADProbability: ((Float) -> Void)?
   // ✅ 追加: バージイン検知時に呼び出すコールバック
   public var onBargeIn: (() -> Void)?
   private var running = false
+  private var vad: SileroVAD?
+  private var vadBuffer16k: [Float] = []
+  private let vadChunkSize = 512
+  private let vadTargetSampleRate: Double = 16_000
+  private let vadQueue = DispatchQueue(label: "com.asobo.audio.vad")
+  private var vadLogCounter: Int = 0
+  private var vadConverter: AVAudioConverter?
   
   // ✅ バッチ送信用：60msごとにまとめて送信（反応速度重視）
   // 変更前: 200ms (安定重視)
@@ -77,6 +87,7 @@ public final class MicrophoneCapture {
     self.outFormat = out
     // ✅ converterはstart()で作成（エンジン開始後のフォーマットを使用）
     self.converter = nil
+    self.vad = try? SileroVAD()
   }
   
   /// ✅ 独自エンジンを使用する場合（後方互換性のため）
@@ -256,6 +267,9 @@ public final class MicrophoneCapture {
       // ✅ 追加: 計算したRMS音量を外部へ通知
       // -------------------------------------------------------
       self.onVolume?(inputRMS)
+      if let vadSamples = self.downsampleTo16kSamples(from: buffer) {
+        self.enqueueVADProcessing(samples: vadSamples)
+      }
       
       let outputRMS = self.outputMonitor?.currentRMS ?? -60.0
       
@@ -370,9 +384,12 @@ public final class MicrophoneCapture {
     
     // ★ 再開に備えて初期化
     converter = nil
+    vadConverter = nil
     userBargeIn = false
     recentInputRMS.removeAll()
     isFirstBuffer = true
+    vadBuffer16k.removeAll()
+    vad = nil
     
     running = false
   }
@@ -387,6 +404,111 @@ extension MicrophoneCapture {
       print("✅ MicrophoneCapture: VoiceProcessingEnabled = \(enabled)")
     } catch {
       print("⚠️ MicrophoneCapture: VoiceProcessingEnabled設定失敗 - \(error)")
+    }
+  }
+
+  // ✅ 48kHz→16kHzへ間引きしてVADに渡す
+  private func downsampleTo16kSamples(from buffer: AVAudioPCMBuffer) -> [Float]? {
+    let inputRate = buffer.format.sampleRate
+    let ratio = inputRate / vadTargetSampleRate
+
+    // Fast path: exact 48k->16k decimation by 3 with stride
+    if abs(ratio - 3.0) < 0.01 {
+      let step = 3
+      let frameCount = Int(buffer.frameLength)
+      var samples: [Float] = []
+      samples.reserveCapacity(frameCount / step + 1)
+
+      if let floatChannel = buffer.floatChannelData?.pointee {
+        for i in stride(from: 0, to: frameCount, by: step) {
+          samples.append(floatChannel[i])
+        }
+        return samples
+      } else if let int16Channel = buffer.int16ChannelData?.pointee {
+        let scale = Float(Int16.max)
+        for i in stride(from: 0, to: frameCount, by: step) {
+          samples.append(Float(int16Channel[i]) / scale)
+        }
+        return samples
+      }
+      return nil
+    }
+
+    // General path: use AVAudioConverter for non-48k inputs (e.g., 44.1k or 24k)
+    let targetFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32,
+                                     sampleRate: vadTargetSampleRate,
+                                     channels: buffer.format.channelCount,
+                                     interleaved: false)
+    if vadConverter == nil || vadConverter?.inputFormat.sampleRate != inputRate {
+      vadConverter = AVAudioConverter(from: buffer.format, to: targetFormat!)
+      vadConverter?.sampleRateConverterQuality = .max
+    }
+    guard let converter = vadConverter,
+          let targetFormat else { return nil }
+
+    let inFrames = Int(buffer.frameLength)
+    let outFrames = Int(Double(inFrames) * (vadTargetSampleRate / inputRate) + 8)
+    guard let outBuf = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: AVAudioFrameCount(outFrames)) else {
+      return nil
+    }
+
+    var error: NSError?
+    let status = converter.convert(to: outBuf, error: &error) { _, outStatus in
+      outStatus.pointee = .haveData
+      return buffer
+    }
+    guard (status == .haveData || status == .endOfStream),
+          let floatChannel = outBuf.floatChannelData?.pointee else {
+      if let error { print("❌ VAD converter error: \(error)") }
+      return nil
+    }
+
+    let framesOut = Int(outBuf.frameLength)
+    return Array(UnsafeBufferPointer(start: floatChannel, count: framesOut))
+  }
+
+  private func enqueueVADProcessing(samples: [Float]) {
+    guard !samples.isEmpty else { return }
+    vadQueue.async { [weak self] in
+      guard let self else { return }
+      if self.vad == nil {
+        self.vad = try? SileroVAD()
+        if self.vad == nil {
+          print("❌ MicrophoneCapture: SileroVAD init failed")
+        } else {
+          print("🎯 MicrophoneCapture: SileroVAD initialized")
+        }
+      }
+      guard let vad = self.vad else { return }
+
+      self.vadBuffer16k.append(contentsOf: samples)
+      while self.vadBuffer16k.count >= self.vadChunkSize {
+        let chunk = Array(self.vadBuffer16k.prefix(self.vadChunkSize))
+        self.vadBuffer16k.removeFirst(self.vadChunkSize)
+
+        // Normalize energy so the model sees a consistent amplitude.
+        let rms = sqrt(chunk.reduce(0) { $0 + $1 * $1 } / Float(chunk.count))
+        let targetRMS: Float = 0.80  // drive close to full-scale to raise VAD output
+        let rawGain = rms > 1e-6 ? targetRMS / rms : 1
+        let gain = max(0.05, min(rawGain, 2000))  // allow strong boost, keep bounds
+        var clippedCount = 0
+        let scaled = chunk.map { sample -> Float in
+          let v = sample * gain
+          if v > 1 { clippedCount += 1; return 1 }
+          if v < -1 { clippedCount += 1; return -1 }
+          return v
+        }
+
+        let probability = vad.process(segment: scaled)
+        self.vadLogCounter &+= 1
+        if let callback = self.onVADProbability {
+          DispatchQueue.main.async {
+            callback(probability)
+          }
+        } else {
+          print("⚠️ MicrophoneCapture: onVADProbability not set (prob=\(probability))")
+        }
+      }
     }
   }
 }

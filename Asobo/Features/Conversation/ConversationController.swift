@@ -62,13 +62,18 @@ public final class ConversationController: NSObject, ObservableObject {
     private var speechStartedMissingCount: Int = 0
     
     // MARK: - VAD (Hands-free Conversation)
-    // 音声入力の音量がこの閾値を超えたら「発話中」とみなす
-    private let vadSpeechThresholdDb: Double = -32.0   // 環境音での誤検知を防ぐために少し高め
-    // この閾値未満の状態が一定時間続いたら「発話終了（静寂）」とみなす
-    private let vadSilenceThresholdDb: Double = -46.0  // 環境音を静寂とみなしやすくする
-    private let vadSilenceDuration: TimeInterval = 1.0 // 送信までの待ち時間も短縮
-    private var isUserSpeaking: Bool = false
+    private enum VADState { case idle, speaking }
+    // 🔧 Temporarily extremely low thresholds to force VAD triggering
+    // 🔧 Loosened but practical thresholds after input gain boost
+    private let speechStartThreshold: Float = 0.02
+    private let speechEndThreshold: Float = 0.01
+    private let minSpeechDuration: TimeInterval = 0.25
+    // 長めの思考間を許容するため無音許容量を拡大
+    private let minSilenceDuration: TimeInterval = 1.5
+    private var vadState: VADState = .idle
+    private var speechStartTime: Date?
     private var silenceTimer: Timer?
+    private var isUserSpeaking: Bool = false
     
     // デバッグ用プロパティ
     @Published public var aiResponseText: String = ""
@@ -745,6 +750,10 @@ public final class ConversationController: NSObject, ObservableObject {
         }
         
         isHandsFreeMode = true
+        vadState = .idle
+        speechStartTime = nil
+        silenceTimer?.invalidate()
+        silenceTimer = nil
         startHandsFreeInternal()
     }
     
@@ -754,6 +763,8 @@ public final class ConversationController: NSObject, ObservableObject {
         isHandsFreeMode = false
         isRecording = false
         isUserSpeaking = false
+        vadState = .idle
+        speechStartTime = nil
         recordedPCMData.removeAll()
         mic?.stop()
         turnState = .waitingUser
@@ -776,13 +787,13 @@ public final class ConversationController: NSObject, ObservableObject {
                 self?.appendPCMBuffer(buf)
             }, outputMonitor: self.player.outputMonitor)
             
-            self.mic?.onVolume = { [weak self] rms in
-                Task { @MainActor [weak self] in
-                    self?.handleVAD(rms: rms)
-                }
-            }
             self.mic?.onBargeIn = { [weak self] in
                 self?.interruptAI()
+            }
+            self.mic?.onVADProbability = { [weak self] probability in
+                Task { @MainActor [weak self] in
+                    self?.handleVAD(probability: probability)
+                }
             }
             
             recordedPCMData.removeAll()
@@ -811,42 +822,66 @@ public final class ConversationController: NSObject, ObservableObject {
             
             self.isRecording = true
             self.turnState = .listening
+            self.vadState = .idle
+            self.speechStartTime = nil
             print("🟢 ハンズフリー会話開始: Listening...")
         }
     }
 
-    private func handleVAD(rms: Double) {
-        // AI発話中の割り込み判定（MicrophoneCaptureのonBargeInからも呼ばれるが二重保険）
-        if turnState == .speaking && rms > vadSpeechThresholdDb {
+    private func handleVAD(probability: Float) {
+        // 割り込み判定（MicrophoneCaptureのonBargeInからも呼ばれるが二重保険）
+        if turnState == .speaking && probability > 0.6 {
             interruptAI()
             return
         }
         if turnState == .thinking { return }
         
-        // 発話検知
-        if rms > vadSpeechThresholdDb {
-            if !isUserSpeaking {
-                print("🗣️ 発話検知開始")
+        switch vadState {
+        case .idle:
+            if probability > speechStartThreshold {
+                vadState = .speaking
                 isUserSpeaking = true
+                speechStartTime = Date()
+                silenceTimer?.invalidate()
+                silenceTimer = nil
+            }
+        case .speaking:
+            if probability < speechEndThreshold {
+                if silenceTimer == nil {
+                    silenceTimer = Timer.scheduledTimer(withTimeInterval: minSilenceDuration, repeats: false) { [weak self] _ in
+                        Task { @MainActor [weak self] in
+                            self?.handleSilenceTimeout()
+                        }
+                    }
+                }
+            } else {
                 silenceTimer?.invalidate()
                 silenceTimer = nil
             }
         }
+    }
+    
+    private func handleSilenceTimeout() {
+        guard vadState == .speaking else { return }
+        silenceTimer?.invalidate()
+        silenceTimer = nil
         
-        // 静寂検知
-        if isUserSpeaking && rms < vadSilenceThresholdDb {
-            if silenceTimer == nil {
-                print("🤫 静寂検知...タイマーセット")
-                silenceTimer = Timer.scheduledTimer(withTimeInterval: vadSilenceDuration, repeats: false) { [weak self] _ in
-                    Task { @MainActor [weak self] in
-                        self?.commitUserSpeech()
-                    }
-                }
-            }
-        } else if rms > vadSpeechThresholdDb {
-            silenceTimer?.invalidate()
-            silenceTimer = nil
+        let now = Date()
+        let speechBegan = speechStartTime ?? now
+        let duration = now.timeIntervalSince(speechBegan)
+        speechStartTime = nil
+        
+        if duration < minSpeechDuration {
+            vadState = .idle
+            isUserSpeaking = false
+            recordedPCMData.removeAll()
+            let formattedDuration = String(format: "%.2f", duration)
+            print("🪫 短すぎる発話を破棄 (duration=\(formattedDuration)s)")
+            return
         }
+        
+        vadState = .idle
+        commitUserSpeech()
     }
     
     private func interruptAI() {
@@ -879,17 +914,49 @@ public final class ConversationController: NSObject, ObservableObject {
     }
     
     private func commitUserSpeech() {
+        guard isHandsFreeMode else { return }
         guard isUserSpeaking else { return }
-        print("🚀 発話終了判定 -> 送信")
+        print("🚀 発話終了判定 -> ゲート通過チェック")
         
         isUserSpeaking = false
         silenceTimer?.invalidate()
         silenceTimer = nil
         
-        mic?.stop()
-        turnState = .thinking
+        let audioData = recordedPCMData
+        recordedPCMData.removeAll()
+        let sampleRate = recordedSampleRate > 0 ? recordedSampleRate : 16_000
+        let durationSec = Double(audioData.count) / 2.0 / sampleRate
+        guard durationSec >= 0.2 else {
+            let formatted = String(format: "%.2f", durationSec)
+            print("🎧 User speech too short, discarding (\(formatted)s)")
+            return
+        }
         
-        Task {
+        let wavData = pcm16ToWav(pcmData: audioData, sampleRate: sampleRate)
+        
+        Task { [weak self] in
+            guard let self else { return }
+            
+            let transcript = await ConversationController.transcribeUserAudio(wavData: wavData)
+            let cleaned = transcript?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if cleaned.count < 2 {
+                print("🧹 Discard utterance: no meaningful speech in local STT (\(cleaned))")
+                await MainActor.run {
+                    self.turnState = .idle
+                    if self.isHandsFreeMode && self.isRecording {
+                        self.resumeListening()
+                    }
+                }
+                return
+            }
+            
+            await MainActor.run {
+                self.recordedPCMData = audioData
+                self.recordedSampleRate = sampleRate
+                self.mic?.stop()
+                self.turnState = .thinking
+            }
+            
             await self.sendAudioPreviewRequest()
         }
     }
@@ -1026,6 +1093,11 @@ public final class ConversationController: NSObject, ObservableObject {
         guard let client = audioPreviewClient else {
             await MainActor.run { self.errorMessage = "音声プレビュークライアントが初期化されていません" }
             return
+        }
+
+        await MainActor.run {
+            // 新しい返答を開始するので前の表示テキストをクリア
+            self.aiResponseText = ""
         }
         
         let captured = recordedPCMData
