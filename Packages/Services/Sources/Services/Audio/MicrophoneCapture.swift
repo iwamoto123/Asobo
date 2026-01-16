@@ -28,7 +28,7 @@ public final class MicrophoneCapture {
   // ✅ 追加: 音量レベル（dB）を通知するコールバック
   public var onVolume: ((Double) -> Void)?
   // ✅ 追加: VAD確率を通知するコールバック
-  public var onVADProbability: ((Float) -> Void)?
+  public var onVADProbability: ((Float) -> Void)?  // Silero VAD の生確率を通知（UI/Viz 用）
   // ✅ 追加: バージイン検知時に呼び出すコールバック
   public var onBargeIn: (() -> Void)?
   private var running = false
@@ -39,6 +39,13 @@ public final class MicrophoneCapture {
   private let vadQueue = DispatchQueue(label: "com.asobo.audio.vad")
   private var vadLogCounter: Int = 0
   private var vadConverter: AVAudioConverter?
+  // ✅ VAD確率の最新値（バージイン判定にも共通利用）
+  private var latestVADProbability: Float = 0.0
+  private let vadProbabilityLock = NSLock()
+  // ✅ Silero VAD による割り込み判定用（連続検出ヒステリシス）
+  private let bargeInVADThreshold: Float = 0.5
+  private let bargeInHoldDuration: TimeInterval = 0.15  // 150ms 以上連続でspeechを検出したらバージイン
+  private var vadSpeechStartTimeForBargeIn: Date?
   
   // ✅ バッチ送信用：60msごとにまとめて送信（反応速度重視）
   // 変更前: 200ms (安定重視)
@@ -52,12 +59,7 @@ public final class MicrophoneCapture {
   private var isAIPlayingAudio: Bool = false
   private var userBargeIn: Bool = false
   private var outputMonitor: OutputMonitor?
-  // 変更前: 12.0 (AECなし時の安全マージン)
-  // 変更後: 4.0 (AECありなら、わずかでも上回ればユーザーの声とみなす)
-  private let rmsMarginDb: Double = 4.0  // 入力RMSが出力RMS+4dB以上でバージイン
-  // 変更前: -35.0 (かなり静かじゃないと許可しない)
-  // 変更後: -20.0 (多少BGMが鳴っていても、声が大きければ許可)
-  private let playbackQuietDbThreshold: Double = -20.0  // 出力が-20dBFS以下でバージイン許可
+  // ✅ バージイン判定の補助ログ用に入力RMSの短期履歴を保持
   private var recentInputRMS: [Double] = []  // 直近60msの入力RMS
   // 変更前: 10 (約200msの平均を見るため遅い)
   // 変更後: 3 (約60msの平均で判断、一瞬の発話に反応させる)
@@ -65,7 +67,8 @@ public final class MicrophoneCapture {
   private var isFirstBuffer: Bool = true  // ✅ 初回バッファ受信フラグ（converter作成のため）
   // ✅ 再生中はVoiceProcessing（コンフォートノイズ含む）をオフにしてノイズ源を減らす
   //    再生中は送信ゲートでマイクデータをサーバに出さないため、AECを一時停止してもエコーのリスクは低い想定
-  private let disableVoiceProcessingDuringPlayback: Bool = true
+  // ⚠️ playback中の切替で-10849が頻発しAVAudioEngineが不安定になるため一時的に無効化
+  private let disableVoiceProcessingDuringPlayback: Bool = false
   
   // ✅ 初回接続時の音声認識問題対策：マイク開始直後の初期フレームをスキップ
   private var startTime: Date?  // マイク開始時刻
@@ -103,6 +106,7 @@ public final class MicrophoneCapture {
       // 再生終了時にバージインフラグをリセット
       userBargeIn = false
       recentInputRMS.removeAll()
+      vadSpeechStartTimeForBargeIn = nil
     }
     
     // ✅ 再生中はVoiceProcessing（コンフォートノイズ生成源）を一時停止
@@ -137,31 +141,27 @@ public final class MicrophoneCapture {
   }
   
   /// ✅ バージイン判定
-  private func checkBargeIn(inputRMS: Double, outputRMS: Double) -> Bool {
+  private func checkBargeIn(inputRMS: Double, outputRMS _: Double, vadProbability: Float) -> Bool {
+    // VADが一定以上で「人声」と判定された場合のみ、一定時間継続を待ってから許可
+    let now = Date()
+    guard vadProbability >= bargeInVADThreshold else {
+      vadSpeechStartTimeForBargeIn = nil
+      return false
+    }
+
     // 直近60msの入力RMSを記録（反応速度重視）
     recentInputRMS.append(inputRMS)
     if recentInputRMS.count > rmsWindowSize {
       recentInputRMS.removeFirst()
     }
     
-    // 直近60msの平均入力RMS
-    let avgInputRMS = recentInputRMS.reduce(0, +) / Double(recentInputRMS.count)
-    
-    // AECが効いていない場合、Echo成分で InputRMS が高くなる。
-    // そのため、単なる差分ではなく、絶対値としてのOutput音量も考慮する。
-    
-    // 出力がかなり大きい(>-15dB)場合は、絶対値で厳しめに判定する
-    // 環境音での誤爆を避けるため、入力が -20dB 以上のときのみ成立
-    if outputRMS > -15.0 {
-      return inputRMS > -20.0
+    // VADが継続している時間をチェック（ヒステリシス）
+    if vadSpeechStartTimeForBargeIn == nil {
+      vadSpeechStartTimeForBargeIn = now
+      return false
     }
-    
-    // 通常は出力との差分で判定（出力が小さい時は小さめのマージン）
-    let dynamicMargin = (outputRMS > -25.0) ? rmsMarginDb + 3.0 : rmsMarginDb
-    
-    // バージイン条件：
-    // 入力RMSが出力RMS+動的マージン以上なら成立
-    return avgInputRMS > (outputRMS + dynamicMargin)
+    let elapsed = now.timeIntervalSince(vadSpeechStartTimeForBargeIn ?? now)
+    return elapsed >= bargeInHoldDuration
   }
 
   public func start() throws {
@@ -272,12 +272,18 @@ public final class MicrophoneCapture {
       }
       
       let outputRMS = self.outputMonitor?.currentRMS ?? -60.0
+      // 最新のVAD確率（SileroVAD）をバージイン判定にも使用
+      let vadProbability: Float = {
+        self.vadProbabilityLock.lock(); defer { self.vadProbabilityLock.unlock() }
+        return self.latestVADProbability
+      }()
       
       if self.isAIPlayingAudio && !self.userBargeIn {
         // バージイン判定
-        if self.checkBargeIn(inputRMS: inputRMS, outputRMS: outputRMS) {
+        if self.checkBargeIn(inputRMS: inputRMS, outputRMS: outputRMS, vadProbability: vadProbability) {
           self.userBargeIn = true
-          print("🎤 MicrophoneCapture: バージイン検出 - inputRMS: \(String(format: "%.1f", inputRMS))dB, outputRMS: \(String(format: "%.1f", outputRMS))dB")
+          let elapsedMs = Int((Date().timeIntervalSince(self.vadSpeechStartTimeForBargeIn ?? Date())) * 1000)
+          print("🎤 MicrophoneCapture: バージイン検出 - VAD \(String(format: "%.2f", vadProbability)) を \(elapsedMs)ms 継続検出 (inputRMS: \(String(format: "%.1f", inputRMS))dB, outputRMS: \(String(format: "%.1f", outputRMS))dB)")
           // ✅ コールバックで上位へ通知（UIスレッドで処理）
           DispatchQueue.main.async { [weak self] in
             self?.onBargeIn?()
@@ -386,6 +392,7 @@ public final class MicrophoneCapture {
     converter = nil
     vadConverter = nil
     userBargeIn = false
+    vadSpeechStartTimeForBargeIn = nil
     recentInputRMS.removeAll()
     isFirstBuffer = true
     vadBuffer16k.removeAll()
@@ -500,7 +507,15 @@ extension MicrophoneCapture {
         }
 
         let probability = vad.process(segment: scaled)
+        // VAD最新値を保持（バージイン判定と共有）
+        self.vadProbabilityLock.lock()
+        self.latestVADProbability = probability
+        self.vadProbabilityLock.unlock()
         self.vadLogCounter &+= 1
+        // デバッグ用: VAD確率と入力RMSを適度な頻度でログ出力（約640msごと）
+        if self.vadLogCounter % 20 == 0 {
+          print("🎯 MicrophoneCapture: VAD prob=\(String(format: "%.2f", probability)), rms=\(String(format: "%.2f", rms)), gain=\(String(format: "%.2f", gain))")
+        }
         if let callback = self.onVADProbability {
           DispatchQueue.main.async {
             callback(probability)

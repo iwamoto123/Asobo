@@ -55,43 +55,47 @@ public struct ChildHomeView: View {
                 AmbientCircles()
                 
                 // 2. Main Character & Interface
-                VStack {
+                VStack(spacing: 12) {
                     Spacer()
                     
-                    ZStack(alignment: .center) {
-                        
-                        // A. 吹き出し
-                        SpeechBubbleView(
-                            text: currentDisplayText,
-                            isThinking: controller.isThinking,
-                            isConnecting: controller.isRealtimeConnecting
-                        )
-                        .frame(width: geometry.size.width * 0.85)
-                        .offset(y: -geometry.size.width * 0.68) // 少し上に調整
-                        .animation(.spring(response: 0.5, dampingFraction: 0.7), value: currentDisplayText)
-                        
-                        // B. キャラクター with ハートボタン
-                        MocchyBearView(
-                            size: geometry.size.width * 0.8,
-                            isRecording: controller.isRecording,
-                            isPressed: isPressed,
-                            isBreathing: isBreathing,
-                            isBlinking: isBlinking,
-                            isSquinting: isSquinting,
-                            isNodding: isNodding,
-                            onTap: handleMicButtonTap,
-                            onPressChanged: { pressed in
-                                withAnimation(.spring(response: 0.3, dampingFraction: 0.5)) { // バウンスを強めに
-                                    isPressed = pressed
+                    VStack(spacing: 12) {
+                        ZStack(alignment: .center) {
+                            
+                            // A. 吹き出し
+                            SpeechBubbleView(
+                                text: currentDisplayText,
+                                isThinking: controller.isThinking,
+                                isConnecting: controller.isRealtimeConnecting
+                            )
+                            .frame(width: geometry.size.width * 0.85)
+                            .offset(y: -geometry.size.width * 0.55) // 画面内に収まるよう少し下げる
+                            .animation(.spring(response: 0.5, dampingFraction: 0.7), value: currentDisplayText)
+                            
+                            // B. キャラクター with ハートボタン
+                            MocchyBearView(
+                                size: geometry.size.width * 0.8,
+                                isRecording: controller.isRecording,
+                                isPressed: isPressed,
+                                isBreathing: isBreathing,
+                                isBlinking: isBlinking,
+                                isSquinting: isSquinting,
+                                isNodding: isNodding,
+                                onTap: handleMicButtonTap,
+                                onPressChanged: { pressed in
+                                    withAnimation(.spring(response: 0.3, dampingFraction: 0.5)) { // バウンスを強めに
+                                        isPressed = pressed
+                                    }
                                 }
-                            }
-                        )
-                        .opacity((controller.isRealtimeActive || controller.isRealtimeConnecting) ? 1.0 : 0.6)
-                        .disabled(!controller.isRealtimeActive && !controller.isRealtimeConnecting)
+                            )
+                            .opacity((controller.isRealtimeActive || controller.isRealtimeConnecting) ? 1.0 : 0.6)
+                            .disabled(!controller.isRealtimeActive && !controller.isRealtimeConnecting)
+                        }
+                        
+                        stateMonitorView
+                            .padding(.horizontal, 24)
+                            .padding(.top, 16)
+                            .padding(.bottom, 4)
                     }
-                    .frame(maxHeight: .infinity)
-                    
-                    Spacer()
                 }
                 
                 // エラー表示
@@ -186,6 +190,84 @@ public struct ChildHomeView: View {
             return lastAIDisplayText
         }
         return initialGreetingText
+    }
+
+    private var stateMonitorView: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("状態モニター")
+                .font(.caption)
+                .foregroundColor(.secondary)
+            
+            stateRow("TurnState", value: turnStateLabel, color: .blue)
+            stateRow("VADState", value: vadStateLabel, color: .purple)
+            
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 6) {
+                ForEach(flagItems, id: \.0) { title, isOn in
+                    flagChip(title: title, isOn: isOn)
+                }
+            }
+            
+            Divider()
+                .padding(.vertical, 4)
+        }
+        .padding(12)
+        .background(Color.white.opacity(0.92), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .shadow(color: Color.black.opacity(0.08), radius: 10, x: 0, y: 4)
+        .font(.caption2)
+    }
+    
+    private var flagItems: [(String, Bool)] {
+        [
+            ("録音", controller.isRecording),
+            ("Realtime接続", controller.isRealtimeActive),
+            ("接続中", controller.isRealtimeConnecting),
+            ("ハンズフリー", controller.isHandsFreeMode),
+            ("AI再生中", controller.isAIPlayingAudio),
+            ("思考中", controller.isThinking),
+            ("再生フラグ", controller.isPlayingAudio)
+        ]
+    }
+    
+    private var turnStateLabel: String {
+        switch controller.turnState {
+        case .idle: return "idle"
+        case .waitingUser: return "waitingUser"
+        case .nudgedByAI(let count): return "nudgedByAI(\(count))"
+        case .listening: return "listening"
+        case .thinking: return "thinking"
+        case .speaking: return "speaking"
+        case .clarifying: return "clarifying"
+        }
+    }
+    
+    private var vadStateLabel: String {
+        switch controller.vadState {
+        case .idle: return "idle"
+        case .speaking: return "speaking"
+        }
+    }
+    
+    private func stateRow(_ title: String, value: String, color: Color = .primary) -> some View {
+        HStack {
+            Text(title)
+                .foregroundColor(.secondary)
+            Spacer()
+            Text(value)
+                .foregroundColor(color)
+        }
+    }
+    
+    private func flagChip(title: String, isOn: Bool) -> some View {
+        HStack(spacing: 6) {
+            Circle()
+                .fill(isOn ? Color.green : Color.gray.opacity(0.7))
+                .frame(width: 6, height: 6)
+            Text(title)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(isOn ? Color.green.opacity(0.15) : Color.gray.opacity(0.12))
+        .cornerRadius(8)
     }
     
     private func handleMicButtonTap() {

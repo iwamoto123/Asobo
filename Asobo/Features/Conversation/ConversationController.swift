@@ -9,12 +9,17 @@ import Domain
 import Services
 import Support
 import DataStores
+import Network
 
 @MainActor
 public final class ConversationController: NSObject, ObservableObject {
 
     // MARK: - UI State
     public enum Mode: String, CaseIterable { case localSTT, realtime }
+
+    // ✅ 機能トグル
+    public static let localSTTEnabled: Bool = true
+    public var isLocalSTTEnabled: Bool { Self.localSTTEnabled }
 
     @Published public var mode: Mode = .localSTT
     @Published public var transcript: String = ""
@@ -23,13 +28,13 @@ public final class ConversationController: NSObject, ObservableObject {
     @Published public var isRealtimeActive: Bool = false
     @Published public var isRealtimeConnecting: Bool = false
     // ✅ 音声プレビュー用のローカル文字起こしを行うか（端末環境で kAFAssistantErrorDomain 1101 が多発するためデフォルトOFF）
-    private let enableLocalUserTranscription: Bool = true
+    private let enableLocalUserTranscription: Bool = ConversationController.localSTTEnabled
     
     // 追加: ユーザーが停止したかを覚えるフラグ
     private var userStoppedRecording = false
     
     // ✅ AI音声再生中フラグ（onAudioDeltaReceivedで設定、sendMicrophonePCMの早期returnを一元化）
-    private var isAIPlayingAudio: Bool = false
+    @Published private(set) var isAIPlayingAudio: Bool = false
     // ✅ ハンズフリーモードの有効化フラグ
     @Published public var isHandsFreeMode: Bool = false
     
@@ -43,7 +48,7 @@ public final class ConversationController: NSObject, ObservableObject {
         case speaking           // AIがTTS出力中
         case clarifying         // 聞き取り不可→聞き返し中
     }
-    @Published private var turnState: TurnState = .idle
+    @Published private(set) var turnState: TurnState = .idle
     
     // ✅ 「待つ→促す」タイマー
     private var nudgeTimer: Timer?
@@ -62,18 +67,35 @@ public final class ConversationController: NSObject, ObservableObject {
     private var speechStartedMissingCount: Int = 0
     
     // MARK: - VAD (Hands-free Conversation)
-    private enum VADState { case idle, speaking }
+    enum VADState { case idle, speaking }
     // 🔧 Temporarily extremely low thresholds to force VAD triggering
     // 🔧 Loosened but practical thresholds after input gain boost
     private let speechStartThreshold: Float = 0.02
     private let speechEndThreshold: Float = 0.01
     private let minSpeechDuration: TimeInterval = 0.25
     // 長めの思考間を許容するため無音許容量を拡大
-    private let minSilenceDuration: TimeInterval = 1.5
-    private var vadState: VADState = .idle
+    private let minSilenceDuration: TimeInterval = 2.0
+    // ✅ 割り込み判定用（Silero VADを一定時間連続検出した場合のみ停止）
+    private let bargeInVADThreshold: Float = 0.5
+    private let bargeInHoldDuration: TimeInterval = 0.15  // 150ms ヒステリシス
+    private var vadInterruptSpeechStart: Date?
+    @Published private(set) var vadState: VADState = .idle
     private var speechStartTime: Date?
     private var silenceTimer: Timer?
     private var isUserSpeaking: Bool = false
+    
+    // ✅ 各ターンのレイテンシ計測用
+    private struct TurnMetrics {
+        var listenStart: Date?
+        var speechEnd: Date?
+        var requestStart: Date?
+        var firstByte: Date?
+        var firstAudio: Date?
+        var firstText: Date?
+        var streamComplete: Date?
+        var playbackEnd: Date?
+    }
+    private var turnMetrics = TurnMetrics()
     
     // デバッグ用プロパティ
     @Published public var aiResponseText: String = ""
@@ -82,6 +104,11 @@ public final class ConversationController: NSObject, ObservableObject {
     @Published public var liveSummary: String = ""                 // 会話の簡易要約（毎ターン更新）
     @Published public var liveInterests: [FirebaseInterestTag] = [] // セッション終了時に更新
     @Published public var liveNewVocabulary: [String] = []          // セッション終了時に更新
+    // ✅ 割り込み後に流入する古いAIチャンクを無視するためのゲート
+    private var ignoreIncomingAIChunks: Bool = false
+    private var currentTurnId: Int = 0         // ターンの世代ID（単一の真実）
+    private var listeningTurnId: Int = 0       // VAD/録音用の世代ID
+    private var playbackTurnId: Int?           // 再生状態通知の世代ID
     
     // AI呼び出し用フィールド
     @Published public var isThinking: Bool = false   // ぐるぐる表示用
@@ -119,6 +146,7 @@ public final class ConversationController: NSObject, ObservableObject {
     private var sessionStartTask: Task<Void, Never>?     // セッション開始タスクの管理
     private var liveSummaryTask: Task<Void, Never>?      // ライブ要約生成タスク
     private var inMemoryTurns: [FirebaseTurn] = []       // 会話ログ（要約用）
+    private var routeChangeObserver: Any?
     
     // ✅ 会話文脈（過去のテキスト履歴）をステートレスAPIに渡すために保持
     struct HistoryItem: Codable {
@@ -220,6 +248,10 @@ public final class ConversationController: NSObject, ObservableObject {
         // セッション開始タスクをキャンセル
         sessionStartTask?.cancel()
         sessionStartTask = nil
+        if let observer = routeChangeObserver {
+            NotificationCenter.default.removeObserver(observer)
+            routeChangeObserver = nil
+        }
         liveSummaryTask?.cancel()
         liveSummaryTask = nil
         
@@ -231,7 +263,7 @@ public final class ConversationController: NSObject, ObservableObject {
         receiveInputTextTask?.cancel()
         receiveInputTextTask = nil
         
-        // マイクとプレイヤーを停止
+        // マイクとプレイヤーを停止（deinitは非isolatedなので直接停止）
         mic?.stop()
         mic = nil
         player.stop()
@@ -261,6 +293,10 @@ public final class ConversationController: NSObject, ObservableObject {
         // finishSession()は非同期処理のため、deinit内では実行しない
         // 代わりに、realtimeClientの参照をnilにして、deinit時に自動的にクリーンアップされるようにする
         realtimeClient = nil
+        if let observer = routeChangeObserver {
+            NotificationCenter.default.removeObserver(observer)
+            routeChangeObserver = nil
+        }
         
         print("✅ ConversationController: deinit - リソースクリーンアップ完了")
     }
@@ -374,6 +410,7 @@ public final class ConversationController: NSObject, ObservableObject {
         // 接続中フラグを設定
         isRealtimeConnecting = true
         nudgeCount = 0  // セッション開始時に促し回数をリセット
+        logNetworkEnvironment()
         
         // オーディオセッションを構成
         do {
@@ -428,11 +465,23 @@ public final class ConversationController: NSObject, ObservableObject {
         player.onPlaybackStateChange = { [weak self] isPlaying in
             Task { @MainActor in
                 guard let self = self else { return }
+                guard let playbackId = self.playbackTurnId, playbackId == self.currentTurnId else {
+                    if let playbackId = self.playbackTurnId {
+                        print("⏭️ ConversationController: playback state change ignored for stale turn \(playbackId)")
+                    }
+                    if !isPlaying { self.playbackTurnId = nil }
+                    return
+                }
                 self.isAIPlayingAudio = isPlaying
+                self.isPlayingAudio = isPlaying
                 self.mic?.setAIPlayingAudio(isPlaying)
                 
                 if isPlaying {
                     print("🔊 ConversationController: 再生開始 - マイクゲート閉 (AEC/BargeInモード)")
+                    if self.turnMetrics.firstAudio == nil {
+                        self.turnMetrics.firstAudio = Date()
+                        self.logTurnStageTiming(event: "firstAudio", at: self.turnMetrics.firstAudio!)
+                    }
                 } else {
                     print("🔇 ConversationController: 再生完全終了 - マイクゲート開")
                     // ✅ AIが完全に話し終わったら、ユーザーの入力を待つ状態にしてタイマーを開始（ハンズフリー時は即再開）
@@ -443,6 +492,16 @@ public final class ConversationController: NSObject, ObservableObject {
                         print("⏰ ConversationController: AIの音声再生完全終了 -> 促しタイマーを開始")
                         self.startWaitingForResponse()
                     }
+                    self.turnMetrics.playbackEnd = Date()
+                    // firstAudio が未設定で playbackEnd が先に来た場合のフォールバック
+                    if self.turnMetrics.firstAudio == nil {
+                        self.turnMetrics.firstAudio = self.turnMetrics.requestStart ?? self.turnMetrics.playbackEnd
+                    }
+                    if let end = self.turnMetrics.playbackEnd {
+                        self.logTurnStageTiming(event: "playbackEnd", at: end)
+                    }
+                    self.logTurnLatencySummary(context: "playback complete")
+                    self.playbackTurnId = nil
                 }
             }
         }
@@ -469,6 +528,17 @@ public final class ConversationController: NSObject, ObservableObject {
         self.turnCount = 0
         conversationHistory.removeAll()
         
+        // オーディオルート変更時にグラフを立て直す
+        if routeChangeObserver == nil {
+            routeChangeObserver = NotificationCenter.default.addObserver(
+                forName: AVAudioSession.routeChangeNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] note in
+                self?.handleAudioRouteChange(note)
+            }
+        }
+        
         let session = FirebaseConversationSession(
             id: newSessionId,
             mode: .freeTalk,
@@ -479,17 +549,19 @@ public final class ConversationController: NSObject, ObservableObject {
             turnCount: 0
         )
         
-        Task { [weak self] in
-            guard let self = self else { return }
+        Task.detached { [weak self, userId, childId, session] in
+            let repo = FirebaseConversationsRepository()
             do {
-                try await self.firebaseRepository.createSession(
+                try await repo.createSession(
                     userId: userId,
                     childId: childId,
                     session: session
                 )
-                print("✅ ConversationController: Firebaseセッション作成完了 - sessionId: \(newSessionId)")
+                print("✅ ConversationController: Firebaseセッション作成完了 - sessionId: \(session.id ?? "nil")")
             } catch {
-                self.logFirebaseError(error, operation: "Firebaseセッション作成")
+                await MainActor.run {
+                    self?.logFirebaseError(error, operation: "Firebaseセッション作成")
+                }
             }
         }
 
@@ -518,6 +590,10 @@ public final class ConversationController: NSObject, ObservableObject {
 
     public func stopRealtimeSession() {
         print("🛑 ConversationController: Realtimeセッション終了")
+        ignoreIncomingAIChunks = true
+        currentTurnId = 0
+        listeningTurnId = 0
+        playbackTurnId = nil
         
         // セッション開始タスクをキャンセル
         sessionStartTask?.cancel()
@@ -530,7 +606,9 @@ public final class ConversationController: NSObject, ObservableObject {
         
         // マイクとプレイヤーを停止
         mic?.stop(); mic = nil
-        player.stop()
+        stopPlayer(reason: "stopRealtimeSession")
+        isAIPlayingAudio = false
+        isPlayingAudio = false
         
         // ★ 重要：先にセッションを非アクティブ化（他アプリへも通知）
         let s = AVAudioSession.sharedInstance()
@@ -621,7 +699,11 @@ public final class ConversationController: NSObject, ObservableObject {
         recordedSampleRate = 24_000
         
         // バージイン前提でAI音声を止める
-        player.stop()
+        stopPlayer(reason: "startPTTRealtime (barge-in before PTT)")
+        playbackTurnId = nil
+        isAIPlayingAudio = false
+        isPlayingAudio = false
+        mic?.setAIPlayingAudio(false)
         
         // 共有エンジンが止まっていたら再開
         if !sharedAudioEngine.isRunning {
@@ -636,7 +718,12 @@ public final class ConversationController: NSObject, ObservableObject {
     private func startPTTRealtimeInternal() {
         cancelNudge()             // ✅ ユーザーが話し始めるので促しを止める
         // 🔇 いま流れているAI音声を止める（barge-in 前提）
-        player.stop()
+        stopPlayer(reason: "startPTTRealtimeInternal (barge-in before reconfigure)")
+        playbackTurnId = nil
+        isAIPlayingAudio = false
+        isPlayingAudio = false
+        mic?.setAIPlayingAudio(false)
+        ignoreIncomingAIChunks = false
 
         mic?.stop()
         
@@ -702,6 +789,10 @@ public final class ConversationController: NSObject, ObservableObject {
             self.isRecording = true
             self.transcript = ""
             self.turnState = .listening
+            self.markListeningTurn()
+            self.turnMetrics = TurnMetrics()
+            self.turnMetrics.listenStart = Date()
+            print("⏱️ Latency: listen start (PTT) at \(self.turnMetrics.listenStart!)")
             
             // 注意: 促しタイマーは onResponseDone でのみセットする（AI応答完了時のみ）
             // ユーザーが話し始めた直後はタイマーをセットしない
@@ -714,6 +805,9 @@ public final class ConversationController: NSObject, ObservableObject {
         isRecording = false
         isHandsFreeMode = false
         mic?.stop()
+        if turnMetrics.speechEnd == nil {
+            turnMetrics.speechEnd = Date()
+        }
         turnState = .thinking
         Task { [weak self] in
             await self?.sendAudioPreviewRequest()
@@ -741,7 +835,11 @@ public final class ConversationController: NSObject, ObservableObject {
         silenceTimer = nil
         
         // バージイン前提でAI音声を止める
-        player.stop()
+        stopPlayer(reason: "startHandsFreeConversation (barge-in before HF start)")
+        playbackTurnId = nil
+        isAIPlayingAudio = false
+        isPlayingAudio = false
+        mic?.setAIPlayingAudio(false)
         
         if !sharedAudioEngine.isRunning {
             do { try sharedAudioEngine.start() } catch {
@@ -772,8 +870,13 @@ public final class ConversationController: NSObject, ObservableObject {
     
     private func startHandsFreeInternal() {
         cancelNudge()
-        player.stop()
+        stopPlayer(reason: "startHandsFreeInternal (reset before VAD start)")
+        playbackTurnId = nil
+        isAIPlayingAudio = false
+        isPlayingAudio = false
+        mic?.setAIPlayingAudio(false)
         mic?.stop()
+        ignoreIncomingAIChunks = false
         
         Task { @MainActor [weak self] in
             guard let self = self else { return }
@@ -822,19 +925,37 @@ public final class ConversationController: NSObject, ObservableObject {
             
             self.isRecording = true
             self.turnState = .listening
+            self.markListeningTurn()
             self.vadState = .idle
             self.speechStartTime = nil
+            self.turnMetrics = TurnMetrics()
+            self.turnMetrics.listenStart = Date()
+            print("⏱️ Latency: listen start (handsfree) at \(self.turnMetrics.listenStart!)")
             print("🟢 ハンズフリー会話開始: Listening...")
         }
     }
 
     private func handleVAD(probability: Float) {
-        // 割り込み判定（MicrophoneCaptureのonBargeInからも呼ばれるが二重保険）
-        if turnState == .speaking && probability > 0.6 {
-            interruptAI()
-            return
+        // AI再生中の割り込み判定：Silero VAD を一定時間連続検出した場合のみ停止
+        if isAIPlayingAudio && turnState == .speaking {
+            if probability >= bargeInVADThreshold {
+                if vadInterruptSpeechStart == nil {
+                    vadInterruptSpeechStart = Date()
+                } else if let start = vadInterruptSpeechStart,
+                          Date().timeIntervalSince(start) >= bargeInHoldDuration {
+                    vadInterruptSpeechStart = nil
+                    interruptAI()
+                    return
+                }
+            } else {
+                vadInterruptSpeechStart = nil
+            }
+        } else {
+            vadInterruptSpeechStart = nil
         }
+        
         if turnState == .thinking { return }
+        guard listeningTurnId == currentTurnId else { return }
         
         switch vadState {
         case .idle:
@@ -844,13 +965,16 @@ public final class ConversationController: NSObject, ObservableObject {
                 speechStartTime = Date()
                 silenceTimer?.invalidate()
                 silenceTimer = nil
+                turnMetrics.listenStart = turnMetrics.listenStart ?? speechStartTime
+                print("⏱️ Latency: speech start detected at \(speechStartTime!)")
             }
         case .speaking:
             if probability < speechEndThreshold {
                 if silenceTimer == nil {
+                    let turnId = listeningTurnId
                     silenceTimer = Timer.scheduledTimer(withTimeInterval: minSilenceDuration, repeats: false) { [weak self] _ in
                         Task { @MainActor [weak self] in
-                            self?.handleSilenceTimeout()
+                            self?.handleSilenceTimeout(for: turnId)
                         }
                     }
                 }
@@ -860,8 +984,8 @@ public final class ConversationController: NSObject, ObservableObject {
             }
         }
     }
-    
-    private func handleSilenceTimeout() {
+    private func handleSilenceTimeout(for turnId: Int) {
+        guard turnId == currentTurnId, turnId == listeningTurnId else { return }
         guard vadState == .speaking else { return }
         silenceTimer?.invalidate()
         silenceTimer = nil
@@ -870,6 +994,13 @@ public final class ConversationController: NSObject, ObservableObject {
         let speechBegan = speechStartTime ?? now
         let duration = now.timeIntervalSince(speechBegan)
         speechStartTime = nil
+        turnMetrics.speechEnd = now
+        if let listenStart = turnMetrics.listenStart {
+            let totalListen = now.timeIntervalSince(listenStart)
+            print("⏱️ Latency: speech end (listen->speechEnd=\(String(format: "%.2f", totalListen))s, speechDuration=\(String(format: "%.2f", duration))s)")
+        } else {
+            print("⏱️ Latency: speech end (duration=\(String(format: "%.2f", duration))s)")
+        }
         
         if duration < minSpeechDuration {
             vadState = .idle
@@ -887,16 +1018,24 @@ public final class ConversationController: NSObject, ObservableObject {
     private func interruptAI() {
         guard turnState == .speaking else { return }
         print("⚡️ 割り込み検知: AI停止 -> 聞き取りへ")
+        vadInterruptSpeechStart = nil
+        ignoreIncomingAIChunks = true
         
         // 再生を即時停止し、マイクゲートを開く
-        player.stopImmediately()
+        stopPlayer(reason: "interruptAI (barge-in)")
+        playbackTurnId = nil
         isAIPlayingAudio = false
+        isPlayingAudio = false
         mic?.setAIPlayingAudio(false)
         
         // ステートをListeningへ戻し、バッファを新規発話用にする
         turnState = .listening
+        markListeningTurn()
         recordedPCMData.removeAll()
         isUserSpeaking = true
+        turnMetrics = TurnMetrics()
+        turnMetrics.listenStart = Date()
+        print("⏱️ Latency: listen start (barge-in) at \(turnMetrics.listenStart!)")
         silenceTimer?.invalidate()
         silenceTimer = nil
         
@@ -939,25 +1078,34 @@ public final class ConversationController: NSObject, ObservableObject {
             
             let transcript = await ConversationController.transcribeUserAudio(wavData: wavData)
             let cleaned = transcript?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            if cleaned.count < 2 {
-                print("🧹 Discard utterance: no meaningful speech in local STT (\(cleaned))")
+            let formattedDuration = String(format: "%.2f", durationSec)
+            if cleaned.isEmpty || cleaned == "(voice)" {
+                print("🔎 Local STT returned empty, skip AI request (duration=\(formattedDuration)s, bytes=\(audioData.count))")
+            } else {
+                print("📝 Local STT succeeded: '\(cleaned)' (duration=\(formattedDuration)s)")
+            }
+            
+            await MainActor.run {
+                self.mic?.stop()
+                self.turnState = .thinking
+                if self.turnMetrics.speechEnd == nil { self.turnMetrics.speechEnd = Date() }
+                if let listenStart = self.turnMetrics.listenStart, let speechEnd = self.turnMetrics.speechEnd {
+                    print("⏱️ Latency: capture done (listen->speechEnd=\(String(format: "%.2f", speechEnd.timeIntervalSince(listenStart)))s)")
+                }
+            }
+            
+            if !cleaned.isEmpty, cleaned != "(voice)" {
+                await self.sendTextPreviewRequest(userText: cleaned)
+            } else {
+                await self.persistVoiceOnlyTurn()
                 await MainActor.run {
-                    self.turnState = .idle
+                    self.isThinking = false
+                    self.turnState = .waitingUser
                     if self.isHandsFreeMode && self.isRecording {
                         self.resumeListening()
                     }
                 }
-                return
             }
-            
-            await MainActor.run {
-                self.recordedPCMData = audioData
-                self.recordedSampleRate = sampleRate
-                self.mic?.stop()
-                self.turnState = .thinking
-            }
-            
-            await self.sendAudioPreviewRequest()
         }
     }
     
@@ -965,10 +1113,15 @@ public final class ConversationController: NSObject, ObservableObject {
         guard isHandsFreeMode else { return }
         print("👂 聞き取り再開")
         turnState = .listening
+        markListeningTurn()
         recordedPCMData.removeAll()
         isUserSpeaking = false
+        turnMetrics = TurnMetrics()
+        turnMetrics.listenStart = Date()
+        print("⏱️ Latency: listen start (resume) at \(turnMetrics.listenStart!)")
         silenceTimer?.invalidate()
         silenceTimer = nil
+        ignoreIncomingAIChunks = false
         
         if !sharedAudioEngine.isRunning {
             try? sharedAudioEngine.start()
@@ -988,6 +1141,22 @@ public final class ConversationController: NSObject, ObservableObject {
     }
     
     // MARK: - Private Helpers
+    private func advanceTurnId() -> Int {
+        currentTurnId += 1
+        playbackTurnId = nil
+        return currentTurnId
+    }
+    
+    private func markListeningTurn() {
+        listeningTurnId = currentTurnId
+        silenceTimer?.invalidate()
+        silenceTimer = nil
+    }
+    
+    private func isCurrentTurn(_ turnId: Int) -> Bool {
+        turnId == currentTurnId
+    }
+    
     private func appendPCMBuffer(_ buffer: AVAudioPCMBuffer) {
         guard let channelData = buffer.int16ChannelData else { return }
         let frameLength = Int(buffer.frameLength)
@@ -997,6 +1166,12 @@ public final class ConversationController: NSObject, ObservableObject {
         let data = Data(bytes: channelData[0], count: byteCount)
         recordedPCMData.append(data)
         recordedSampleRate = buffer.format.sampleRate
+    }
+
+    private func stopPlayer(reason: String, function: String = #function) {
+        let playbackIdText = playbackTurnId.map(String.init) ?? "nil"
+        print("🛑 PlayerNodeStreamer.stop() call - caller=\(function), reason=\(reason), playbackTurnId=\(playbackIdText), currentTurnId=\(currentTurnId), turnState=\(turnState)")
+        player.stop()
     }
 
     // ✅ 相槌をランダム再生する
@@ -1089,6 +1264,181 @@ public final class ConversationController: NSObject, ObservableObject {
         }
     }
     
+    private func sendTextPreviewRequest(userText: String) async {
+        guard let client = audioPreviewClient else {
+            await MainActor.run { self.errorMessage = "音声プレビュークライアントが初期化されていません" }
+            return
+        }
+        
+        let trimmed = userText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+
+        await MainActor.run {
+            // 新しい返答を開始するので前の表示テキストをクリア
+            self.aiResponseText = ""
+            self.turnMetrics.requestStart = Date()
+            self.logTurnStageTiming(event: "request", at: self.turnMetrics.requestStart!)
+        }
+
+        let turnId = advanceTurnId()
+        ignoreIncomingAIChunks = false
+
+        // AIが考え始めるタイミングで相槌を打つ
+        await MainActor.run {
+            self.isThinking = true
+            self.playRandomFiller()
+            self.player.prepareForNextStream()
+        }
+
+        let tStart = Date()
+        print("⏱️ ConversationController: sendTextPreviewRequest start - textLen=\(trimmed.count)")
+        
+        do {
+            let finalText = try await client.streamResponseText(
+                userText: trimmed,
+                systemPrompt: currentSystemPrompt,
+                history: conversationHistory,
+                onText: { [weak self] delta in
+                    guard let self else { return }
+                    Task { @MainActor in
+                        guard !self.ignoreIncomingAIChunks, self.isCurrentTurn(turnId) else { return }
+                        if self.turnMetrics.firstText == nil {
+                            self.turnMetrics.firstText = Date()
+                            self.logTurnStageTiming(event: "firstText", at: self.turnMetrics.firstText!)
+                        }
+                        let clean = self.sanitizeAIText(delta)
+                        if clean.isEmpty { return }
+                        print("🟦 onText delta (clean):", clean)
+                        self.aiResponseText += clean
+                    }
+                },
+                onAudioChunk: { [weak self] chunk in
+                    guard let self else { return }
+                    Task { @MainActor in
+                        guard !self.ignoreIncomingAIChunks, self.isCurrentTurn(turnId) else { return }
+                        print("🔊 onAudioChunk bytes:", chunk.count)
+                        self.playbackTurnId = turnId
+                        self.turnState = .speaking
+                        // 相槌が鳴っていても強制停止せず自然に終わらせる
+                        if self.isFillerPlaying {
+                            self.isFillerPlaying = false
+                        }
+                        self.handleFirstAudioChunk(for: turnId)
+                        self.player.resumeIfNeeded()
+                        // 出力はpcm16指定なのでそのまま再生
+                        self.player.playChunk(chunk)
+                    }
+                },
+                onFirstByte: { [weak self] firstByte in
+                    guard let self else { return }
+                    Task { @MainActor in
+                        guard !self.ignoreIncomingAIChunks, self.isCurrentTurn(turnId) else { return }
+                        self.turnMetrics.firstByte = firstByte
+                        self.logTurnStageTiming(event: "firstByte", at: firstByte)
+                    }
+                }
+            )
+            let tEnd = Date()
+            print("⏱️ ConversationController: sendTextPreviewRequest completed in \(String(format: "%.2f", tEnd.timeIntervalSince(tStart)))s, finalText.count=\(finalText.count), finalText=\"\(finalText)\"")
+            let cleanFinal = self.sanitizeAIText(finalText)
+            guard self.isCurrentTurn(turnId) else { return }
+            turnMetrics.streamComplete = tEnd
+            logTurnStageTiming(event: "streamComplete", at: tEnd)
+            logTurnLatencySummary(context: "stream complete (text)")
+            
+            await MainActor.run {
+                // 吹き出し用に最終テキストをUIへ反映
+                self.aiResponseText = cleanFinal
+                if self.isHandsFreeMode && self.isRecording && self.turnState != .speaking {
+                    self.resumeListening()
+                } else if self.turnState != .speaking {
+                    self.turnState = .waitingUser
+                    self.startWaitingForResponse()
+                }
+            }
+            
+            // Firebase保存
+            if let userId = currentUserId, let childId = currentChildId, let sessionId = currentSessionId {
+                let userTurn = FirebaseTurn(role: .child, text: trimmed, timestamp: Date())
+                let aiTurn = FirebaseTurn(role: .ai, text: cleanFinal, timestamp: Date())
+                print("🗂️ ConversationController: append inMemoryTurns (user:'\(userTurn.text ?? "nil")', ai:'\(aiTurn.text ?? "nil")')")
+                inMemoryTurns.append(contentsOf: [userTurn, aiTurn])
+                // ✅ 履歴にテキストを積む（直近の文脈としてステートレスAPIへ渡す）
+                conversationHistory.append(HistoryItem(role: "user", text: trimmed))
+                conversationHistory.append(HistoryItem(role: "assistant", text: cleanFinal))
+                // 履歴が長くなりすぎないように6ターン分（12エントリ）に抑える
+                if conversationHistory.count > 12 {
+                    conversationHistory.removeFirst(conversationHistory.count - 12)
+                }
+                turnCount += 2
+                let updatedTurnCount = turnCount
+                Task.detached { [weak self, userId, childId, sessionId, userTurn, aiTurn, updatedTurnCount] in
+                    let repo = FirebaseConversationsRepository()
+                    do {
+                        try await repo.addTurn(userId: userId, childId: childId, sessionId: sessionId, turn: userTurn)
+                        try await repo.addTurn(userId: userId, childId: childId, sessionId: sessionId, turn: aiTurn)
+                        try? await repo.updateTurnCount(userId: userId, childId: childId, sessionId: sessionId, turnCount: updatedTurnCount)
+                    } catch {
+                        await MainActor.run {
+                            self?.logFirebaseError(error, operation: "テキスト会話の保存")
+                        }
+                    }
+                }
+                
+                // 各ターンの終了時にライブ要約/タグ/新語を生成して即時保存
+                liveSummaryTask?.cancel()
+                liveSummaryTask = Task { [weak self] in
+                    print("📝 ConversationController: live analysis task start (turnCount=\(self?.inMemoryTurns.count ?? 0))")
+                    await self?.generateLiveAnalysisAndPersist()
+                    print("📝 ConversationController: live analysis task end (summary='\(self?.liveSummary ?? "")', interests=\(self?.liveInterests.map { $0.rawValue } ?? []), newWords=\(self?.liveNewVocabulary ?? []))")
+                }
+            }
+        } catch {
+            print("❌ ConversationController: sendTextPreviewRequest failed - \(error)")
+            await MainActor.run {
+                guard self.isCurrentTurn(turnId) else { return }
+                self.errorMessage = error.localizedDescription
+                if self.isHandsFreeMode && self.isRecording {
+                    self.resumeListening()
+                } else {
+                    self.turnState = .waitingUser
+                }
+            }
+        }
+        
+        await MainActor.run {
+            if self.isCurrentTurn(turnId) {
+                self.isThinking = false
+            }
+        }
+    }
+    
+    private func persistVoiceOnlyTurn() async {
+        let placeholder = "(voice)"
+        print("🟨 persistVoiceOnlyTurn: saving placeholder '\(placeholder)'")
+        inMemoryTurns.append(FirebaseTurn(role: .child, text: placeholder, timestamp: Date()))
+        conversationHistory.append(HistoryItem(role: "user", text: placeholder))
+        if conversationHistory.count > 12 {
+            conversationHistory.removeFirst(conversationHistory.count - 12)
+        }
+        turnCount += 1
+        let updatedTurnCount = turnCount
+        
+        guard let userId = currentUserId, let childId = currentChildId, let sessionId = currentSessionId else { return }
+        Task.detached { [weak self, userId, childId, sessionId, updatedTurnCount] in
+            let repo = FirebaseConversationsRepository()
+            do {
+                let userTurn = FirebaseTurn(role: .child, text: placeholder, timestamp: Date())
+                try await repo.addTurn(userId: userId, childId: childId, sessionId: sessionId, turn: userTurn)
+                try? await repo.updateTurnCount(userId: userId, childId: childId, sessionId: sessionId, turnCount: updatedTurnCount)
+            } catch {
+                await MainActor.run {
+                    self?.logFirebaseError(error, operation: "音声のみターンの保存")
+                }
+            }
+        }
+    }
+    
     private func sendAudioPreviewRequest() async {
         guard let client = audioPreviewClient else {
             await MainActor.run { self.errorMessage = "音声プレビュークライアントが初期化されていません" }
@@ -1098,6 +1448,8 @@ public final class ConversationController: NSObject, ObservableObject {
         await MainActor.run {
             // 新しい返答を開始するので前の表示テキストをクリア
             self.aiResponseText = ""
+            self.turnMetrics.requestStart = Date()
+            self.logTurnStageTiming(event: "request", at: self.turnMetrics.requestStart!)
         }
         
         let captured = recordedPCMData
@@ -1113,6 +1465,9 @@ public final class ConversationController: NSObject, ObservableObject {
             }
             return
         }
+
+        let turnId = advanceTurnId()
+        ignoreIncomingAIChunks = false
 
         // AIが考え始めるタイミングで相槌を打つ
         await MainActor.run {
@@ -1131,6 +1486,9 @@ public final class ConversationController: NSObject, ObservableObject {
         
         let tStart = Date()
         print("⏱️ ConversationController: sendAudioPreviewRequest start - pcmBytes=\(captured.count), sampleRate=\(recordedSampleRate)")
+        await MainActor.run {
+            self.player.prepareForNextStream()
+        }
         
         do {
             let finalText = try await client.streamResponse(
@@ -1140,6 +1498,11 @@ public final class ConversationController: NSObject, ObservableObject {
                 onText: { [weak self] delta in
                     guard let self else { return }
                     Task { @MainActor in
+                        guard !self.ignoreIncomingAIChunks, self.isCurrentTurn(turnId) else { return }
+                        if self.turnMetrics.firstText == nil {
+                            self.turnMetrics.firstText = Date()
+                            self.logTurnStageTiming(event: "firstText", at: self.turnMetrics.firstText!)
+                        }
                         let clean = self.sanitizeAIText(delta)
                         if clean.isEmpty { return }
                         print("🟦 onText delta (clean):", clean)
@@ -1149,22 +1512,36 @@ public final class ConversationController: NSObject, ObservableObject {
                 onAudioChunk: { [weak self] chunk in
                     guard let self else { return }
                     Task { @MainActor in
+                        guard !self.ignoreIncomingAIChunks, self.isCurrentTurn(turnId) else { return }
                         print("🔊 onAudioChunk bytes:", chunk.count)
+                        self.playbackTurnId = turnId
                         self.turnState = .speaking
-                        // 相槌が鳴っていれば一度だけ止める
+                        // 相槌が鳴っていても強制停止せず自然に終わらせる
                         if self.isFillerPlaying {
-                            self.player.stopImmediately()
                             self.isFillerPlaying = false
                         }
+                        self.handleFirstAudioChunk(for: turnId)
                         self.player.resumeIfNeeded()
                         // 出力はpcm16指定なのでそのまま再生
                         self.player.playChunk(chunk)
+                    }
+                },
+                onFirstByte: { [weak self] firstByte in
+                    guard let self else { return }
+                    Task { @MainActor in
+                        guard !self.ignoreIncomingAIChunks, self.isCurrentTurn(turnId) else { return }
+                        self.turnMetrics.firstByte = firstByte
+                        self.logTurnStageTiming(event: "firstByte", at: firstByte)
                     }
                 }
             )
             let tEnd = Date()
             print("⏱️ ConversationController: streamResponse completed in \(String(format: "%.2f", tEnd.timeIntervalSince(tStart)))s, finalText.count=\(finalText.count), finalText=\"\(finalText)\"")
             let cleanFinal = self.sanitizeAIText(finalText)
+            guard self.isCurrentTurn(turnId) else { return }
+            turnMetrics.streamComplete = tEnd
+            logTurnStageTiming(event: "streamComplete", at: tEnd)
+            logTurnLatencySummary(context: "stream complete")
             
             await MainActor.run {
                 // 吹き出し用に最終テキストをUIへ反映（音声のみの場合でもテキストを入れる）
@@ -1193,13 +1570,19 @@ public final class ConversationController: NSObject, ObservableObject {
                 if conversationHistory.count > 12 {
                     conversationHistory.removeFirst(conversationHistory.count - 12)
                 }
-                do {
-                    try await firebaseRepository.addTurn(userId: userId, childId: childId, sessionId: sessionId, turn: userTurn)
-                    try await firebaseRepository.addTurn(userId: userId, childId: childId, sessionId: sessionId, turn: aiTurn)
-                    turnCount += 2
-                    try? await firebaseRepository.updateTurnCount(userId: userId, childId: childId, sessionId: sessionId, turnCount: turnCount)
-                } catch {
-                    logFirebaseError(error, operation: "音声会話の保存")
+                turnCount += 2
+                let updatedTurnCount = turnCount
+                Task.detached { [weak self, userId, childId, sessionId, userTurn, aiTurn, updatedTurnCount] in
+                    let repo = FirebaseConversationsRepository()
+                    do {
+                        try await repo.addTurn(userId: userId, childId: childId, sessionId: sessionId, turn: userTurn)
+                        try await repo.addTurn(userId: userId, childId: childId, sessionId: sessionId, turn: aiTurn)
+                        try? await repo.updateTurnCount(userId: userId, childId: childId, sessionId: sessionId, turnCount: updatedTurnCount)
+                    } catch {
+                        await MainActor.run {
+                            self?.logFirebaseError(error, operation: "音声会話の保存")
+                        }
+                    }
                 }
                 
                 // 各ターンの終了時にライブ要約/タグ/新語を生成して即時保存
@@ -1213,6 +1596,7 @@ public final class ConversationController: NSObject, ObservableObject {
         } catch {
             print("❌ ConversationController: streamResponse failed - \(error)")
             await MainActor.run {
+                guard self.isCurrentTurn(turnId) else { return }
                 self.errorMessage = error.localizedDescription
                 if self.isHandsFreeMode && self.isRecording {
                     self.resumeListening()
@@ -1222,7 +1606,135 @@ public final class ConversationController: NSObject, ObservableObject {
             }
         }
         
-        await MainActor.run { self.isThinking = false }
+        await MainActor.run {
+            if self.isCurrentTurn(turnId) {
+                self.isThinking = false
+            }
+        }
+    }
+    
+    private func handleFirstAudioChunk(for turnId: Int) {
+        guard turnMetrics.firstAudio == nil else { return }
+        player.clearStopRequestForPlayback(playbackTurnId: turnId, reason: "first audio chunk")
+        turnMetrics.firstAudio = Date()
+        logTurnStageTiming(event: "firstAudio", at: turnMetrics.firstAudio!)
+        logFirstAudioChunkContext(turnId: turnId)
+    }
+    
+    private func logFirstAudioChunkContext(turnId: Int) {
+        let playbackIdText = playbackTurnId.map(String.init) ?? "nil"
+        let session = AVAudioSession.sharedInstance()
+        let route = session.currentRoute
+        let outputs = route.outputs.map { $0.portType.rawValue }.joined(separator: ",")
+        let inputs = route.inputs.map { $0.portType.rawValue }.joined(separator: ",")
+        print("🎯 ConversationController: first audio chunk - turnId=\(turnId), playbackTurnId=\(playbackIdText), currentTurnId=\(currentTurnId)")
+        print("🎯 ConversationController: route outputs=[\(outputs.isEmpty ? "none" : outputs)], inputs=[\(inputs.isEmpty ? "none" : inputs)], category=\(session.category.rawValue), mode=\(session.mode.rawValue), sampleRate=\(session.sampleRate)")
+        player.logFirstChunkStateIfNeeded()
+    }
+    
+    private func logTurnLatencySummary(context: String) {
+        let m = turnMetrics
+        var parts: [String] = []
+        func add(_ label: String, _ start: Date?, _ end: Date?) {
+            if let s = start, let e = end, e >= s {
+                parts.append("\(label)=\(String(format: "%.2f", e.timeIntervalSince(s)))s")
+            }
+        }
+        
+        add("listen->speechEnd", m.listenStart, m.speechEnd)
+        add("speechEnd->request", m.speechEnd, m.requestStart)
+        add("request->firstByte", m.requestStart, m.firstByte)
+        add("request->firstAudio", m.requestStart, m.firstAudio)
+        add("request->firstText", m.requestStart, m.firstText)
+        add("request->playbackEnd", m.requestStart, m.playbackEnd)
+        add("firstByte->firstAudio", m.firstByte, m.firstAudio)
+        add("firstByte->firstText", m.firstByte, m.firstText)
+        add("request->streamComplete", m.requestStart, m.streamComplete)
+        add("audioPlay->done", m.firstAudio, m.playbackEnd)
+        
+        if parts.isEmpty {
+            print("⏱️ Latency: \(context) (no metrics)")
+        } else {
+            print("⏱️ Latency: \(context) | " + parts.joined(separator: ", "))
+        }
+    }
+    
+    private func logTurnStageTiming(event: String, at time: Date) {
+        var parts: [String] = []
+        func add(_ label: String, _ start: Date?) {
+            guard let start else { return }
+            let delta = time.timeIntervalSince(start)
+            parts.append("\(label)=\(String(format: "%.2f", delta))s")
+        }
+        add("listen->\(event)", turnMetrics.listenStart)
+        add("speechEnd->\(event)", turnMetrics.speechEnd)
+        add("request->\(event)", turnMetrics.requestStart)
+        if parts.isEmpty {
+            print("⏱️ TurnTiming[\(event)]: (no anchors)")
+        } else {
+            print("⏱️ TurnTiming[\(event)]: " + parts.joined(separator: ", "))
+        }
+    }
+    
+    private func logNetworkEnvironment() {
+        let monitor = NWPathMonitor()
+        let queue = DispatchQueue(label: "ConversationController.NetworkEnv")
+        monitor.pathUpdateHandler = { path in
+            let status: String
+            switch path.status {
+            case .satisfied: status = "satisfied"
+            case .requiresConnection: status = "requiresConnection"
+            case .unsatisfied: status = "unsatisfied"
+            @unknown default: status = "unknown"
+            }
+            
+            let activeInterfaces = path.availableInterfaces
+                .filter { path.usesInterfaceType($0.type) }
+                .map { iface -> String in
+                    switch iface.type {
+                    case .wifi: return "wifi"
+                    case .cellular: return "cellular"
+                    case .wiredEthernet: return "ethernet"
+                    case .loopback: return "loopback"
+                    case .other: return "other"
+                    @unknown default: return "unknown"
+                    }
+                }
+                .joined(separator: ",")
+            
+            let constrained = path.isConstrained ? "true" : "false"
+            let expensive = path.isExpensive ? "true" : "false"
+            print("📶 ConversationController: Network status=\(status), activeInterfaces=[\(activeInterfaces)], expensive=\(expensive), constrained=\(constrained)")
+            
+            monitor.cancel()
+        }
+        monitor.start(queue: queue)
+        
+        // 念のためタイムアウトでキャンセル
+        queue.asyncAfter(deadline: .now() + 2.0) {
+            monitor.cancel()
+        }
+    }
+
+    private func handleAudioRouteChange(_ notification: Notification) {
+        guard isRealtimeActive else { return }
+        let reasonValue = notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt
+        let reason = reasonValue.flatMap(AVAudioSession.RouteChangeReason.init) ?? .unknown
+        let session = AVAudioSession.sharedInstance()
+        let outputs = session.currentRoute.outputs.map { $0.portType.rawValue }.joined(separator: ",")
+        print("🔄 ConversationController: audio route change detected - reason=\(reason.rawValue), outputs=[\(outputs.isEmpty ? "none" : outputs)]")
+
+        // ルート変更でパイプラインが途切れた場合に備えて再開を試みる
+        player.prepareForNextStream()
+        if !sharedAudioEngine.isRunning {
+            do {
+                try sharedAudioEngine.start()
+                print("✅ ConversationController: sharedAudioEngine restarted after route change")
+            } catch {
+                print("⚠️ ConversationController: sharedAudioEngine restart failed after route change - \(error.localizedDescription)")
+            }
+        }
+        player.resumeIfNeeded()
     }
     
     private func finishSTTCleanup() {
@@ -1575,32 +2087,17 @@ private static func humanReadable(_ error: Error) -> String {
     
     // ✅ 修正: タイマー開始ロジック（10.0秒に延長、デバッグログ強化）
     private func startWaitingForResponse() {
-        print("⏰ ConversationController: 促しタイマーをセットしました (10秒後に発火)")
-        
-        // 既存のタイマーがあればキャンセル
+        print("⏹ ConversationController: 促し機能は無効化中（タイマーをセットしません）")
         cancelNudge()
-        
-        // 促し上限に達している場合はタイマーを張らない
-        guard nudgeCount < maxNudgeCount else {
-            print("⏹ ConversationController: 促し上限(\(maxNudgeCount)回)に達したためタイマーを開始しません")
-            return
-        }
-        
-        // メインスレッドで安全にタイマーを作成
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self else { return }
-            
-            self.nudgeTimer = Timer.scheduledTimer(withTimeInterval: 10.0, repeats: false) { [weak self] _ in
-                Task { @MainActor [weak self] in
-                    print("⏰ ConversationController: 促しタイマー発火！ -> 状態チェック開始")
-                    await self?.sendNudgeIfNoResponse()
-                }
-            }
-        }
     }
     
     // ✅ 修正: サーバーの状態に関わらず、実際の無音時間が長ければ促す
     private func sendNudgeIfNoResponse() async {
+        // 促し機能を停止中
+        print("⏹ ConversationController: 促し機能は無効化中（nudge送信も行いません）")
+        cancelNudge()
+        return
+        
         guard isRealtimeActive else {
             print("⚠️ ConversationController: セッションがアクティブでないため nudge スキップ")
             return
@@ -1864,7 +2361,62 @@ fileprivate final class AudioPreviewStreamingClient {
         systemPrompt: String,
         history: [ConversationController.HistoryItem],
         onText: @escaping (String) -> Void,
-        onAudioChunk: @escaping (Data) -> Void
+        onAudioChunk: @escaping (Data) -> Void,
+        onFirstByte: ((Date) -> Void)? = nil,
+        emitText: Bool = true
+    ) async throws -> String {
+        var messages: [AudioPreviewPayload.Message] = []
+        messages.append(.init(role: "system", content: [.text(systemPrompt)]))
+        for item in history {
+            let role = (item.role == "assistant") ? "assistant" : "user"
+            messages.append(.init(role: role, content: [.text(item.text)]))
+        }
+        messages.append(.init(role: "user", content: [.inputAudio(.init(data: audioData.base64EncodedString(), format: "wav"))]))
+
+        return try await stream(
+            messages: messages,
+            inputSummary: "audioBytes=\(audioData.count)",
+            emitText: emitText,
+            onText: onText,
+            onAudioChunk: onAudioChunk,
+            onFirstByte: onFirstByte
+        )
+    }
+    
+    func streamResponseText(
+        userText: String,
+        systemPrompt: String,
+        history: [ConversationController.HistoryItem],
+        onText: @escaping (String) -> Void,
+        onAudioChunk: @escaping (Data) -> Void,
+        onFirstByte: ((Date) -> Void)? = nil,
+        emitText: Bool = true
+    ) async throws -> String {
+        var messages: [AudioPreviewPayload.Message] = []
+        messages.append(.init(role: "system", content: [.text(systemPrompt)]))
+        for item in history {
+            let role = (item.role == "assistant") ? "assistant" : "user"
+            messages.append(.init(role: role, content: [.text(item.text)]))
+        }
+        messages.append(.init(role: "user", content: [.text(userText)]))
+        
+        return try await stream(
+            messages: messages,
+            inputSummary: "textChars=\(userText.count)",
+            emitText: emitText,
+            onText: onText,
+            onAudioChunk: onAudioChunk,
+            onFirstByte: onFirstByte
+        )
+    }
+    
+    private func stream(
+        messages: [AudioPreviewPayload.Message],
+        inputSummary: String,
+        emitText: Bool,
+        onText: @escaping (String) -> Void,
+        onAudioChunk: @escaping (Data) -> Void,
+        onFirstByte: ((Date) -> Void)? = nil
     ) async throws -> String {
         var request = URLRequest(url: completionsURL())
         request.httpMethod = "POST"
@@ -1876,15 +2428,6 @@ fileprivate final class AudioPreviewStreamingClient {
         
         let t0 = Date()
         
-        // ✅ システム + 履歴 + 今回の音声をまとめて渡す
-        var messages: [AudioPreviewPayload.Message] = []
-        messages.append(.init(role: "system", content: [.text(systemPrompt)]))
-        for item in history {
-            let role = (item.role == "assistant") ? "assistant" : "user"
-            messages.append(.init(role: role, content: [.text(item.text)]))
-        }
-        messages.append(.init(role: "user", content: [.inputAudio(.init(data: audioData.base64EncodedString(), format: "wav"))]))
-        
         let payload = AudioPreviewPayload(
             model: "gpt-4o-audio-preview",
             stream: true,
@@ -1894,6 +2437,8 @@ fileprivate final class AudioPreviewStreamingClient {
             messages: messages
         )
         request.httpBody = try JSONEncoder().encode(payload)
+        print("⏱️ AudioPreviewStreamingClient: stream start - \(inputSummary)")
+        print("🎯 AudioPreviewStreamingClient: request config - model=\(payload.model), modalities=\(payload.modalities), audio.voice=\(payload.audio.voice), audio.format=\(payload.audio.format), messages=\(messages.count)")
         
         var finalTextClean = ""
         var didReceiveAudio = false
@@ -1906,6 +2451,7 @@ fileprivate final class AudioPreviewStreamingClient {
         guard let http = response as? HTTPURLResponse else {
             throw NSError(domain: "AudioPreviewStreamingClient", code: -1, userInfo: [NSLocalizedDescriptionKey: "不正なレスポンスです"])
         }
+        onFirstByte?(tReqDone)
         print("📦 AudioPreviewStreamingClient: response status=\(http.statusCode), headers=\(http.allHeaderFields)")
         if !(200..<300).contains(http.statusCode) {
             // レスポンスボディを文字列化
@@ -1965,7 +2511,7 @@ fileprivate final class AudioPreviewStreamingClient {
                         print("📝 AudioPreviewStreamingClient: text delta (ja) = \(merged)")
                         finalTextClean += merged
                         textChunkCount += 1
-                        onText(merged)
+                        if emitText { onText(merged) }
                     }
                     
                     if merged.isEmpty {
@@ -1994,7 +2540,8 @@ fileprivate final class AudioPreviewStreamingClient {
         }
         
         if !didReceiveAudio {
-            print("⚠️ AudioPreviewStreamingClient: 音声チャンクなし（テキストのみの応答）")
+            print("❌ AudioPreviewStreamingClient: 音声チャンクなし（テキストのみの応答） - model=\(payload.model), modalities=\(payload.modalities), audio.voice=\(payload.audio.voice), audio.format=\(payload.audio.format)")
+            throw NSError(domain: "AudioPreviewStreamingClient", code: -2, userInfo: [NSLocalizedDescriptionKey: "音声が返りませんでした（audio=0）。API応答がテキストのみでした。"])
         }
         print("📊 AudioPreviewStreamingClient: chunk summary -> text:\(textChunkCount), audio:\(audioChunkCount), empty:\(emptyChunkCount)")
         if let contentType = http.value(forHTTPHeaderField: "Content-Type") {

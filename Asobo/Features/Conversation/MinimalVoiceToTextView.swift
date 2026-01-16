@@ -96,7 +96,6 @@ public struct MinimalVoiceToTextView: View {
                             .foregroundColor(.white)
                     }
                 }
-
                 Text(vm.isRecording ? "録音中（ローカル文字起こし）" : "タップして録音開始")
                     .font(.caption)
                     .foregroundStyle(.secondary)

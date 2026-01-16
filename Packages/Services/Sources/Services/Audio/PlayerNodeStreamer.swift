@@ -56,6 +56,10 @@ public final class PlayerNodeStreamer {
   // ✅ 追加: 正確な再生状態追跡用
   private var pendingBufferCount: Int = 0
   private let stateLock = NSLock()
+  // ✅ 停止要求フラグ（バッファを破棄せず自然に枯渇させる）
+  private var stopRequested: Bool = false
+  // ✅ 最初のチャンク受信時に状態をログするためのフラグ
+  private var firstChunkLogged: Bool = false
   
   // ✅ 追加: 再生状態変更通知クロージャ
   public var onPlaybackStateChange: ((Bool) -> Void)?
@@ -80,7 +84,7 @@ public final class PlayerNodeStreamer {
     timePitchNode.rate = 1.15     // 早口気味で元気に
     timePitchNode.overlap = 12.0  // ケロりを抑えつつ滑らかに
     // --- Varispeed 設定（推奨：早回しで自然な高音+早口） ---
-    varispeedNode.rate = 1.35     // 1.2〜1.4あたりがマスコット寄り
+    varispeedNode.rate = 1.35    // 1.2〜1.4あたりがマスコット寄り
 
     // ✅ AEC対策：48kHz/1chで明示的に接続（AECは48kHz/モノのパスで最も安定）
     // エンジン内は48kHz/monoで統一し、送信時に24kHzに変換
@@ -205,6 +209,12 @@ public final class PlayerNodeStreamer {
 
   /// 受信した Int16/mono（24kHz）のPCMチャンクを再生
   public func playChunk(_ data: Data) {
+    stateLock.lock()
+    let shouldStop = stopRequested
+    stateLock.unlock()
+    if shouldStop { return }
+    logFirstChunkStateIfNeeded()
+
     // ✅ エンジンが停止している場合は再開を試みる
     if !engine.isRunning {
       if ownsEngine {
@@ -231,10 +241,10 @@ public final class PlayerNodeStreamer {
       }
     }
     
-    // ✅ volumeが0の場合は1.0に戻す（stopImmediately()でvolume=0になった場合の復帰）
+    // ✅ ミュート状態からの復帰
     if player.volume < 0.1 {
       player.volume = 1.0
-      print("✅ PlayerNodeStreamer: volumeを1.0に戻す（stopImmediately()からの復帰）")
+      print("✅ PlayerNodeStreamer: volumeを1.0に戻す（mute解除）")
     }
     
     // ✅ outFormat/converterが設定されていない場合は再設定
@@ -335,7 +345,7 @@ public final class PlayerNodeStreamer {
       self.stateLock.lock()
       self.pendingBufferCount -= 1
       let isNowEmpty = (self.pendingBufferCount <= 0)
-      // カウンタが負にならないように補正（stopImmediately時の対策）
+      // カウンタが負にならないように補正
       if self.pendingBufferCount < 0 { self.pendingBufferCount = 0 }
       self.stateLock.unlock()
       
@@ -347,21 +357,27 @@ public final class PlayerNodeStreamer {
       }
     })
     
-    if !player.isPlaying { player.play() }
+    if !player.isPlaying {
+      player.play()
+      stateLock.lock()
+      let stopFlag = stopRequested
+      stateLock.unlock()
+      print("▶️ PlayerNodeStreamer: player.play() issued - stopRequested=\(stopFlag), engineRunning=\(engine.isRunning), pendingBuffers=\(pendingBufferCount)")
+    }
   }
 
   public func stop() {
+    let newlyRequested = requestStop(muteWhileDraining: true)
     queue.removeAll()
     queuedFrames = 0
-    player.stop()
-    
-    // ✅ カウンタをリセットして停止状態を即時通知
     stateLock.lock()
-    pendingBufferCount = 0
+    firstChunkLogged = false
     stateLock.unlock()
     
-    DispatchQueue.main.async {
-      self.onPlaybackStateChange?(false)
+    if newlyRequested {
+      DispatchQueue.main.async {
+        self.onPlaybackStateChange?(false)
+      }
     }
     
     // ✅ 出力モニタリングをリセット
@@ -370,29 +386,13 @@ public final class PlayerNodeStreamer {
     engine.mainMixerNode.removeTap(onBus: 0)
   }
   
-  /// ✅ ユーザーの発話を検知したら即停止（フェードや残バッファ消費なし）
-  /// バージイン時にミュート再生を続けると、サーバから届いたTTSがサイレントで消費されてしまう（再開しても過去音声は戻らない）ため、
-  /// player.stop() + reset()（scheduleBufferキューを破棄）にする
-  public func stopImmediately() {
-    // ✅ 中断→直後の最新TTSだけ聴きたい要件のため、player.stop() + reset() でキューを破棄
-    player.stop()  // ✅ 再生を停止してキューを破棄
-    queue.removeAll()  // バッファを消費しないよう自前キューもクリア
-    queuedFrames = 0
-    
-    // ✅ カウンタをリセットして停止状態を即時通知
-    stateLock.lock()
-    pendingBufferCount = 0
-    stateLock.unlock()
-    
-    DispatchQueue.main.async {
-      self.onPlaybackStateChange?(false)
-    }
-    
-    print("🛑 PlayerNodeStreamer: 即時停止（バッファ破棄）")
-  }
-  
   /// ✅ エンジンを再開（response.audio.delta受信時に呼ぶ）
   public func resumeIfNeeded() {
+    stateLock.lock()
+    let shouldStop = stopRequested
+    stateLock.unlock()
+    guard !shouldStop else { return }
+    
     // ✅ エンジンが停止している場合は再開を試みる（共通エンジンの場合も含む）
     if !engine.isRunning {
       do {
@@ -415,6 +415,14 @@ public final class PlayerNodeStreamer {
   /// ✅ ローカルの音声ファイル（相槌など）を再生する
   /// エフェクター（Varispeed/TimePitch）を通るため、自動的にキャラ声になって再生される
   public func playLocalFile(_ url: URL) {
+    stateLock.lock()
+    let shouldStop = stopRequested
+    stateLock.unlock()
+    guard !shouldStop else {
+      print("⚠️ PlayerNodeStreamer: stop要求中のためローカル再生をスキップ")
+      return
+    }
+
     // エンジンが止まっていれば開始を試みる
     if !engine.isRunning {
       try? engine.start()
@@ -422,7 +430,7 @@ public final class PlayerNodeStreamer {
 
     // 進行中の再生（相槌など）があれば即停止してから再生
     if player.isPlaying {
-      stopImmediately()
+      player.stop()
     }
 
     guard let file = try? AVAudioFile(forReading: url) else {
@@ -472,5 +480,57 @@ public final class PlayerNodeStreamer {
     
     let modeText = (!enabled || bypassVoiceEffectForFillerPrep) ? "bypass" : (targetUseVarispeed ? "Varispeed" : "TimePitch")
     print("🎛️ PlayerNodeStreamer: Voice FX updated -> enabled=\(enabled && !bypassVoiceEffectForFillerPrep), mode=\(modeText)")
+  }
+
+  /// ✅ 次のストリーム開始前に呼び出して停止要求やミュート状態を解除
+  public func prepareForNextStream() {
+    stateLock.lock()
+    stopRequested = false
+    stateLock.unlock()
+    queue.removeAll()
+    queuedFrames = 0
+    if player.volume < 0.9 {
+      player.volume = 1.0
+    }
+    stateLock.lock()
+    firstChunkLogged = false
+    stateLock.unlock()
+  }
+
+  /// 新しい再生ターン開始時に stopRequested を確実に解除しておく
+  public func clearStopRequestForPlayback(playbackTurnId: Int, reason: String) {
+    stateLock.lock()
+    let wasStopping = stopRequested
+    stopRequested = false
+    firstChunkLogged = false
+    stateLock.unlock()
+    let prefix = wasStopping ? "🟢" : "ℹ️"
+    print("\(prefix) PlayerNodeStreamer: stopRequested cleared for turn \(playbackTurnId) (\(reason)), wasStopping=\(wasStopping)")
+  }
+
+  @discardableResult
+  private func requestStop(muteWhileDraining: Bool) -> Bool {
+    stateLock.lock()
+    let alreadyStopping = stopRequested
+    stopRequested = true
+    stateLock.unlock()
+    if muteWhileDraining {
+      player.volume = 0
+    }
+    return !alreadyStopping
+  }
+
+  /// 最初のチャンク受信時の状態を一度だけログする
+  public func logFirstChunkStateIfNeeded() {
+    stateLock.lock()
+    if firstChunkLogged {
+      stateLock.unlock()
+      return
+    }
+    firstChunkLogged = true
+    let stopFlag = stopRequested
+    stateLock.unlock()
+
+    print("🎯 PlayerNodeStreamer: first audio chunk state - stopRequested=\(stopFlag), volume=\(player.volume), engineRunning=\(engine.isRunning)")
   }
 }
