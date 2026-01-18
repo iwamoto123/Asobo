@@ -2645,6 +2645,8 @@ fileprivate final class AudioPreviewStreamingClient {
     private let apiKey: String
     private let apiBase: URL
     private let decoder = JSONDecoder()
+    // 🔊 音声生成を強く促す隠しリマインド（毎ターン先頭に挿入）
+    private let audioReminder = "必ず音声つきで返して。音声が作れないなら、内容を短くしてでも音声を出して。"
     
     struct AudioPreviewResult {
         let text: String
@@ -2671,6 +2673,8 @@ fileprivate final class AudioPreviewStreamingClient {
             let role = (item.role == "assistant") ? "assistant" : "user"
             messages.append(.init(role: role, content: [.text(item.text)]))
         }
+        // ✅ 音声出力を逃さないためのリマインドを追加
+        messages.append(.init(role: "user", content: [.text(audioReminder)]))
         messages.append(.init(role: "user", content: [.inputAudio(.init(data: audioData.base64EncodedString(), format: "wav"))]))
 
         return try await stream(
@@ -2698,6 +2702,8 @@ fileprivate final class AudioPreviewStreamingClient {
             let role = (item.role == "assistant") ? "assistant" : "user"
             messages.append(.init(role: role, content: [.text(item.text)]))
         }
+        // ✅ 音声出力を逃さないためのリマインドを追加
+        messages.append(.init(role: "user", content: [.text(audioReminder)]))
         messages.append(.init(role: "user", content: [.text(userText)]))
         
         return try await stream(
