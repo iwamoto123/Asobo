@@ -58,6 +58,7 @@ public final class ConversationController: NSObject, ObservableObject {
     
     // ✅ 追加: 最後に「ユーザーの声（環境音含む）」が閾値を超えた時刻
     private var lastUserVoiceActivityTime: Date = Date()
+    private var lastInputRMS: Double?
     
     // ✅ 追加: 無音判定の閾値（-50dBより大きければ「何か音がしている」とみなす）
     // 調整目安: -40dB(普通) 〜 -60dB(静寂)。-50dBは「ささやき声や環境音」レベル
@@ -69,12 +70,17 @@ public final class ConversationController: NSObject, ObservableObject {
     // MARK: - VAD (Hands-free Conversation)
     enum VADState { case idle, speaking }
     // 🔧 Temporarily extremely low thresholds to force VAD triggering
-    // 🔧 Loosened but practical thresholds after input gain boost
-    private let speechStartThreshold: Float = 0.02
-    private let speechEndThreshold: Float = 0.01
+    // 🔧 Loosened thresholds to verify sensitivity (see VAD logging)
+    private let speechStartThreshold: Float = 0.005
+    private let speechEndThreshold: Float = 0.002
+    private let defaultRmsStartThresholdDb: Double = -35.0
+    private let bluetoothRmsStartThresholdDb: Double = -45.0
+    private let defaultSpeechEndRmsThresholdDb: Double = -45.0
+    private let bluetoothSpeechEndRmsThresholdDb: Double = -42.0
+    private let defaultMinSilenceDuration: TimeInterval = 1.0
+    private let bluetoothMinSilenceDuration: TimeInterval = 1.0
+    private let speechStartHoldDuration: TimeInterval = 0.15
     private let minSpeechDuration: TimeInterval = 0.25
-    // 長めの思考間を許容するため無音許容量を拡大
-    private let minSilenceDuration: TimeInterval = 2.0
     // ✅ 割り込み判定用（Silero VADを一定時間連続検出した場合のみ停止）
     private let bargeInVADThreshold: Float = 0.5
     private let bargeInHoldDuration: TimeInterval = 0.15  // 150ms ヒステリシス
@@ -83,6 +89,21 @@ public final class ConversationController: NSObject, ObservableObject {
     private var speechStartTime: Date?
     private var silenceTimer: Timer?
     private var isUserSpeaking: Bool = false
+    private var speechStartCandidateTime: Date?
+    
+    private var isBluetoothInput: Bool {
+        let session = AVAudioSession.sharedInstance()
+        return session.currentRoute.inputs.contains { $0.portType == .bluetoothHFP }
+    }
+    private var activeRmsStartThresholdDb: Double {
+        isBluetoothInput ? bluetoothRmsStartThresholdDb : defaultRmsStartThresholdDb
+    }
+    private var activeSpeechEndRmsThresholdDb: Double {
+        isBluetoothInput ? bluetoothSpeechEndRmsThresholdDb : defaultSpeechEndRmsThresholdDb
+    }
+    private var activeMinSilenceDuration: TimeInterval {
+        isBluetoothInput ? bluetoothMinSilenceDuration : defaultMinSilenceDuration
+    }
     
     // ✅ 各ターンのレイテンシ計測用
     private struct TurnMetrics {
@@ -188,20 +209,42 @@ public final class ConversationController: NSObject, ObservableObject {
     }
     
     private static func pcmFromWavIfPossible(_ data: Data) -> Data? {
-        // 最低限のWAVヘッダー検証とPCM16LE抽出（リトルエンディアン）
-        if data.count < 44 { return nil }
-        let riff = data[0..<4]
-        let wave = data[8..<12]
-        guard String(data: riff, encoding: .ascii) == "RIFF",
-              String(data: wave, encoding: .ascii) == "WAVE" else { return nil }
-        // fmtチャンクは16bit PCM想定（オフセット固定簡易版）
-        let audioFormat = UInt16(littleEndian: data.subdata(in: 20..<22).withUnsafeBytes { $0.load(as: UInt16.self) })
-        let bitsPerSample = UInt16(littleEndian: data.subdata(in: 34..<36).withUnsafeBytes { $0.load(as: UInt16.self) })
-        guard audioFormat == 1, bitsPerSample == 16 else { return nil }
-        // dataチャンク位置（簡易：通常44バイト固定）
-        let dataOffset = 44
-        guard data.count >= dataOffset else { return nil }
-        return data.advanced(by: dataOffset)
+        // RIFF/WAVEヘッダチェック
+        guard data.count >= 12,
+              String(data: data[0..<4], encoding: .ascii) == "RIFF",
+              String(data: data[8..<12], encoding: .ascii) == "WAVE" else {
+            return nil
+        }
+        
+        var offset = 12 // RIFFヘッダの後からチャンクを走査
+        var fmtFound = false
+        var audioFormat: UInt16 = 0
+        var bitsPerSample: UInt16 = 0
+        
+        while offset + 8 <= data.count {
+            let chunkIDData = data[offset..<offset+4]
+            let chunkSize = data[offset+4..<offset+8].withUnsafeBytes { $0.load(as: UInt32.self) }
+            let chunkID = String(data: chunkIDData, encoding: .ascii) ?? ""
+            let chunkStart = offset + 8
+            let chunkEnd = chunkStart + Int(chunkSize)
+            guard chunkEnd <= data.count else { return nil }
+            
+            if chunkID == "fmt " {
+                // PCM16フォーマット確認
+                guard chunkSize >= 16 else { return nil }
+                audioFormat = data[chunkStart..<chunkStart+2].withUnsafeBytes { $0.load(as: UInt16.self) }
+                bitsPerSample = data[chunkStart+14..<chunkStart+16].withUnsafeBytes { $0.load(as: UInt16.self) }
+                fmtFound = true
+            } else if chunkID == "data" {
+                guard fmtFound, audioFormat == 1, bitsPerSample == 16 else { return nil }
+                let pcmRange = chunkStart..<chunkEnd
+                return data.subdata(in: pcmRange)
+            }
+            
+            // チャンクサイズは偶数境界に揃うためパディング考慮
+            offset = chunkEnd + (chunkSize % 2 == 1 ? 1 : 0)
+        }
+        return nil
     }
 
     /// Firebaseエラーの詳細ログ出力（Permission deniedの場合にセキュリティルールの設定方法を案内）
@@ -753,6 +796,7 @@ public final class ConversationController: NSObject, ObservableObject {
                 // バックグラウンドスレッドから呼ばれるためMainActorへ
                 Task { @MainActor [weak self] in
                     guard let self = self else { return }
+                    self.lastInputRMS = rms
                     
                     // 閾値(-50dB)より大きければ「音がしている」とみなして時刻更新
                     if rms > self.silenceThresholdDb {
@@ -760,6 +804,7 @@ public final class ConversationController: NSObject, ObservableObject {
                     }
                 }
             }
+            self.lastInputRMS = nil
             
             // マイク開始時に時刻をリセット
             self.lastUserVoiceActivityTime = Date()
@@ -898,6 +943,17 @@ public final class ConversationController: NSObject, ObservableObject {
                     self?.handleVAD(probability: probability)
                 }
             }
+            self.mic?.onVolume = { [weak self] rms in
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    self.lastInputRMS = rms
+                    
+                    if rms > self.silenceThresholdDb {
+                        self.lastUserVoiceActivityTime = Date()
+                    }
+                }
+            }
+            self.lastInputRMS = nil
             
             recordedPCMData.removeAll()
             recordedSampleRate = 24_000
@@ -959,20 +1015,44 @@ public final class ConversationController: NSObject, ObservableObject {
         
         switch vadState {
         case .idle:
-            if probability > speechStartThreshold {
+            let now = Date()
+            let rmsDb = lastInputRMS ?? -120.0
+            let probTriggered = probability > speechStartThreshold
+            let rmsTriggered = rmsDb > activeRmsStartThresholdDb
+            if probTriggered || rmsTriggered {
+                if speechStartCandidateTime == nil {
+                    speechStartCandidateTime = now
+                }
+                let elapsed = now.timeIntervalSince(speechStartCandidateTime ?? now)
+                if elapsed < speechStartHoldDuration {
+                    return
+                }
+                speechStartCandidateTime = nil
+                
                 vadState = .speaking
                 isUserSpeaking = true
                 speechStartTime = Date()
                 silenceTimer?.invalidate()
                 silenceTimer = nil
                 turnMetrics.listenStart = turnMetrics.listenStart ?? speechStartTime
-                print("⏱️ Latency: speech start detected at \(speechStartTime!)")
+                let probText = String(format: "%.4f", probability)
+                let rmsText = String(format: "%.2f", rmsDb)
+                let rmsStartText = String(format: "%.1f", activeRmsStartThresholdDb)
+                let session = AVAudioSession.sharedInstance()
+                let input = session.currentRoute.inputs.first
+                let inputName = input?.portName ?? input?.portType.rawValue ?? "none"
+                let preferredInput = session.preferredInput?.portName ?? session.preferredInput?.portType.rawValue ?? "none"
+                print("⏱️ Latency: speech start detected at \(speechStartTime!) | prob=\(probText), rms=\(rmsText)dB, input=\(inputName), preferredInput=\(preferredInput), trigProb=\(probTriggered), trigRMS=\(rmsTriggered), rmsStartThresh=\(rmsStartText)")
+            } else {
+                speechStartCandidateTime = nil
             }
         case .speaking:
-            if probability < speechEndThreshold {
+            let rmsDb = lastInputRMS ?? -120.0
+            let isSilent = probability < speechEndThreshold || rmsDb < activeSpeechEndRmsThresholdDb
+            if isSilent {
                 if silenceTimer == nil {
                     let turnId = listeningTurnId
-                    silenceTimer = Timer.scheduledTimer(withTimeInterval: minSilenceDuration, repeats: false) { [weak self] _ in
+                    silenceTimer = Timer.scheduledTimer(withTimeInterval: activeMinSilenceDuration, repeats: false) { [weak self] _ in
                         Task { @MainActor [weak self] in
                             self?.handleSilenceTimeout(for: turnId)
                         }
@@ -1294,7 +1374,7 @@ public final class ConversationController: NSObject, ObservableObject {
         print("⏱️ ConversationController: sendTextPreviewRequest start - textLen=\(trimmed.count)")
         
         do {
-            let finalText = try await client.streamResponseText(
+            let result = try await client.streamResponseText(
                 userText: trimmed,
                 systemPrompt: currentSystemPrompt,
                 history: conversationHistory,
@@ -1339,8 +1419,8 @@ public final class ConversationController: NSObject, ObservableObject {
                 }
             )
             let tEnd = Date()
-            print("⏱️ ConversationController: sendTextPreviewRequest completed in \(String(format: "%.2f", tEnd.timeIntervalSince(tStart)))s, finalText.count=\(finalText.count), finalText=\"\(finalText)\"")
-            let cleanFinal = self.sanitizeAIText(finalText)
+            print("⏱️ ConversationController: sendTextPreviewRequest completed in \(String(format: "%.2f", tEnd.timeIntervalSince(tStart)))s, finalText.count=\(result.text.count), finalText=\"\(result.text)\", audioMissing=\(result.audioMissing)")
+            let cleanFinal = self.sanitizeAIText(result.text)
             guard self.isCurrentTurn(turnId) else { return }
             turnMetrics.streamComplete = tEnd
             logTurnStageTiming(event: "streamComplete", at: tEnd)
@@ -1349,12 +1429,20 @@ public final class ConversationController: NSObject, ObservableObject {
             await MainActor.run {
                 // 吹き出し用に最終テキストをUIへ反映
                 self.aiResponseText = cleanFinal
-                if self.isHandsFreeMode && self.isRecording && self.turnState != .speaking {
-                    self.resumeListening()
-                } else if self.turnState != .speaking {
-                    self.turnState = .waitingUser
-                    self.startWaitingForResponse()
+                if !result.audioMissing {
+                    if self.isHandsFreeMode && self.isRecording && self.turnState != .speaking {
+                        self.resumeListening()
+                    } else if self.turnState != .speaking {
+                        self.turnState = .waitingUser
+                        self.startWaitingForResponse()
+                    }
+                } else {
+                    print("🎺 ConversationController: text-only response -> fallback TTS will run")
                 }
+            }
+            
+            if result.audioMissing {
+                await self.playFallbackTTS(text: cleanFinal, turnId: turnId)
             }
             
             // Firebase保存
@@ -1413,32 +1501,6 @@ public final class ConversationController: NSObject, ObservableObject {
         }
     }
     
-    private func persistVoiceOnlyTurn() async {
-        let placeholder = "(voice)"
-        print("🟨 persistVoiceOnlyTurn: saving placeholder '\(placeholder)'")
-        inMemoryTurns.append(FirebaseTurn(role: .child, text: placeholder, timestamp: Date()))
-        conversationHistory.append(HistoryItem(role: "user", text: placeholder))
-        if conversationHistory.count > 12 {
-            conversationHistory.removeFirst(conversationHistory.count - 12)
-        }
-        turnCount += 1
-        let updatedTurnCount = turnCount
-        
-        guard let userId = currentUserId, let childId = currentChildId, let sessionId = currentSessionId else { return }
-        Task.detached { [weak self, userId, childId, sessionId, updatedTurnCount] in
-            let repo = FirebaseConversationsRepository()
-            do {
-                let userTurn = FirebaseTurn(role: .child, text: placeholder, timestamp: Date())
-                try await repo.addTurn(userId: userId, childId: childId, sessionId: sessionId, turn: userTurn)
-                try? await repo.updateTurnCount(userId: userId, childId: childId, sessionId: sessionId, turnCount: updatedTurnCount)
-            } catch {
-                await MainActor.run {
-                    self?.logFirebaseError(error, operation: "音声のみターンの保存")
-                }
-            }
-        }
-    }
-    
     private func sendAudioPreviewRequest() async {
         guard let client = audioPreviewClient else {
             await MainActor.run { self.errorMessage = "音声プレビュークライアントが初期化されていません" }
@@ -1491,7 +1553,7 @@ public final class ConversationController: NSObject, ObservableObject {
         }
         
         do {
-            let finalText = try await client.streamResponse(
+            let result = try await client.streamResponse(
                 audioData: wav,
                 systemPrompt: currentSystemPrompt,
                 history: conversationHistory,
@@ -1536,8 +1598,8 @@ public final class ConversationController: NSObject, ObservableObject {
                 }
             )
             let tEnd = Date()
-            print("⏱️ ConversationController: streamResponse completed in \(String(format: "%.2f", tEnd.timeIntervalSince(tStart)))s, finalText.count=\(finalText.count), finalText=\"\(finalText)\"")
-            let cleanFinal = self.sanitizeAIText(finalText)
+            print("⏱️ ConversationController: streamResponse completed in \(String(format: "%.2f", tEnd.timeIntervalSince(tStart)))s, finalText.count=\(result.text.count), finalText=\"\(result.text)\", audioMissing=\(result.audioMissing)")
+            let cleanFinal = self.sanitizeAIText(result.text)
             guard self.isCurrentTurn(turnId) else { return }
             turnMetrics.streamComplete = tEnd
             logTurnStageTiming(event: "streamComplete", at: tEnd)
@@ -1547,12 +1609,20 @@ public final class ConversationController: NSObject, ObservableObject {
                 // 吹き出し用に最終テキストをUIへ反映（音声のみの場合でもテキストを入れる）
                 self.aiResponseText = cleanFinal
                 print("🟩 set aiResponseText final:", cleanFinal)
-                if self.isHandsFreeMode && self.isRecording && self.turnState != .speaking {
-                    self.resumeListening()
-                } else if self.turnState != .speaking {
-                    self.turnState = .waitingUser
-                    self.startWaitingForResponse()
+                if !result.audioMissing {
+                    if self.isHandsFreeMode && self.isRecording && self.turnState != .speaking {
+                        self.resumeListening()
+                    } else if self.turnState != .speaking {
+                        self.turnState = .waitingUser
+                        self.startWaitingForResponse()
+                    }
+                } else {
+                    print("🎺 ConversationController: audio missing from stream -> fallback TTS will run")
                 }
+            }
+            
+            if result.audioMissing {
+                await self.playFallbackTTS(text: cleanFinal, turnId: turnId)
             }
             
             // Firebase保存（ユーザー音声もローカル文字起こししたテキストを保存）
@@ -1611,6 +1681,231 @@ public final class ConversationController: NSObject, ObservableObject {
                 self.isThinking = false
             }
         }
+    }
+    
+    private func persistVoiceOnlyTurn() async {
+        let placeholder = "(voice)"
+        print("🟨 persistVoiceOnlyTurn: saving placeholder '\(placeholder)'")
+        inMemoryTurns.append(FirebaseTurn(role: .child, text: placeholder, timestamp: Date()))
+        conversationHistory.append(HistoryItem(role: "user", text: placeholder))
+        if conversationHistory.count > 12 {
+            conversationHistory.removeFirst(conversationHistory.count - 12)
+        }
+        turnCount += 1
+        let updatedTurnCount = turnCount
+        
+        guard let userId = currentUserId, let childId = currentChildId, let sessionId = currentSessionId else { return }
+        Task.detached { [weak self, userId, childId, sessionId, updatedTurnCount] in
+            let repo = FirebaseConversationsRepository()
+            do {
+                let userTurn = FirebaseTurn(role: .child, text: placeholder, timestamp: Date())
+                try await repo.addTurn(userId: userId, childId: childId, sessionId: sessionId, turn: userTurn)
+                try? await repo.updateTurnCount(userId: userId, childId: childId, sessionId: sessionId, turnCount: updatedTurnCount)
+            } catch {
+                await MainActor.run {
+                    self?.logFirebaseError(error, operation: "音声のみターンの保存")
+                }
+            }
+        }
+    }
+    
+    private func playFallbackTTS(text: String, turnId: Int) async {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            print("⚠️ ConversationController: fallback TTS skipped (empty text)")
+            return
+        }
+        let apiKey = AppConfig.openAIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !apiKey.isEmpty else {
+            print("⚠️ ConversationController: fallback TTS skipped - APIキー未設定")
+            return
+        }
+        
+        let base = URL(string: AppConfig.apiBase) ?? URL(string: "https://api.openai.com")!
+        let endpoint: URL
+        if base.path.contains("/v1") {
+            endpoint = base.appendingPathComponent("audio/speech")
+        } else {
+            endpoint = base.appendingPathComponent("v1").appendingPathComponent("audio/speech")
+        }
+        
+        struct SpeechPayload: Encodable {
+            let model: String
+            let voice: String
+            let input: String
+            /// OpenAI TTSの正式キー（例: "mp3", "wav", "pcm"）
+            let responseFormat: String
+            /// 旧実装互換（無視される可能性あり）
+            let format: String?
+            
+            enum CodingKeys: String, CodingKey {
+                case model
+                case voice
+                case input
+                case responseFormat = "response_format"
+                case format
+            }
+        }
+        // まずは raw PCM を要求（PlayerNodeStreamerがPCM16前提のため）
+        // ただし実際には audio/mpeg が返ることがあるので、レスポンス側でMP3/WAVも安全にデコードする
+        let payload = SpeechPayload(model: "gpt-4o-mini-tts", voice: "nova", input: trimmed, responseFormat: "pcm", format: "pcm")
+        
+        var request = URLRequest(url: endpoint)
+        request.httpMethod = "POST"
+        request.addValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.addValue("audio/pcm, audio/wav, audio/mpeg", forHTTPHeaderField: "Accept")
+        request.addValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.httpBody = try? JSONEncoder().encode(payload)
+        print("🎺 ConversationController: fallback TTS request - len=\(trimmed.count), model=\(payload.model), voice=\(payload.voice), response_format=\(payload.responseFormat), format=\(payload.format ?? "nil")")
+        
+        var startedPlayback = false
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse else {
+                print("⚠️ ConversationController: fallback TTS invalid response")
+                return
+            }
+            guard (200..<300).contains(http.statusCode) else {
+                let body = String(data: data, encoding: .utf8) ?? "(binary)"
+                print("❌ ConversationController: fallback TTS HTTP \(http.statusCode) - body: \(body)")
+                return
+            }
+            let contentType = http.value(forHTTPHeaderField: "Content-Type") ?? "(nil)"
+            let headHex = Self.fallbackHexSnippet(data, length: 16)
+            print("🎺 ConversationController: fallback TTS response - status=\(http.statusCode), bytes=\(data.count), contentType=\(contentType), head=\(headHex)")
+            
+            guard let pcmData = Self.fallbackPCM16Data(from: data, contentType: contentType) else {
+                print("⚠️ ConversationController: fallback TTS decode failed (unsupported format)")
+                startedPlayback = false
+                return
+            }
+            
+            playbackTurnId = turnId
+            turnState = .speaking
+            if isFillerPlaying { isFillerPlaying = false }
+            player.prepareForNextStream()
+            handleFirstAudioChunk(for: turnId)
+            player.resumeIfNeeded()
+            player.playChunk(pcmData)
+            startedPlayback = true
+        } catch {
+            print("⚠️ ConversationController: fallback TTS失敗 - \(error.localizedDescription)")
+        }
+        
+        if !startedPlayback {
+            // 再生が始まらなかった場合も必ず Listening/Waiting に復帰させる
+            playbackTurnId = nil
+            if isHandsFreeMode && isRecording && turnState != .speaking {
+                resumeListening()
+            } else {
+                turnState = .waitingUser
+                startWaitingForResponse()
+            }
+        }
+    }
+    
+    // MARK: - Fallback TTS helpers
+    private static func fallbackHexSnippet(_ data: Data, length: Int) -> String {
+        guard !data.isEmpty else { return "(empty)" }
+        return data.prefix(length).map { String(format: "%02X", $0) }.joined(separator: " ")
+    }
+    
+    /// TTS応答データを安全に24kHz/mono/PCM16データへ変換（WAV/PCM/MP3を安全に扱う）
+    private static func fallbackPCM16Data(from data: Data, contentType: String?) -> Data? {
+        // JSONや明らかなエラーを弾く
+        if let first = data.first, first == UInt8(ascii: "{") || first == UInt8(ascii: "[") {
+            return nil
+        }
+        
+        let lowerCT = contentType?.lowercased()
+        
+        func looksLikeMP3(_ data: Data) -> Bool {
+            if data.count >= 3, String(data: data.prefix(3), encoding: .ascii) == "ID3" {
+                return true
+            }
+            // MP3 frame sync: 0xFF E? (よくある: FF FB / FF F3 / FF F2)
+            if data.count >= 2 {
+                let b0 = data[data.startIndex]
+                let b1 = data[data.startIndex.advanced(by: 1)]
+                if b0 == 0xFF, (b1 & 0xE0) == 0xE0 {
+                    return true
+                }
+            }
+            return false
+        }
+        
+        func decodeByAVAudioFile(data: Data, fileExtension: String) -> Data? {
+            let tmpURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent("tts_fallback_\(UUID().uuidString).\(fileExtension)")
+            do {
+                try data.write(to: tmpURL)
+                defer { try? FileManager.default.removeItem(at: tmpURL) }
+                
+                let file = try AVAudioFile(forReading: tmpURL)
+                let targetFormat = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 24_000, channels: 1, interleaved: true)!
+                guard let converter = AVAudioConverter(from: file.processingFormat, to: targetFormat) else {
+                    return nil
+                }
+                
+                var pcmData = Data()
+                while true {
+                    guard let inputBuffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 1024) else { break }
+                    try file.read(into: inputBuffer)
+                    if inputBuffer.frameLength == 0 { break }
+                    
+                    let ratio = targetFormat.sampleRate / file.processingFormat.sampleRate
+                    let outFrames = AVAudioFrameCount(Double(inputBuffer.frameLength) * ratio + 16)
+                    guard let outBuffer = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: outFrames) else { break }
+                    
+                    var error: NSError?
+                    let status = converter.convert(to: outBuffer, error: &error) { _, outStatus in
+                        outStatus.pointee = .haveData
+                        return inputBuffer
+                    }
+                    
+                    if (status == .haveData || status == .endOfStream),
+                       let ch = outBuffer.int16ChannelData?.pointee {
+                        let sampleCount = Int(outBuffer.frameLength) * Int(targetFormat.channelCount)
+                        pcmData.append(UnsafeBufferPointer(start: ch, count: sampleCount))
+                    } else if let error {
+                        print("⚠️ ConversationController: audio->PCM convert error - \(error.localizedDescription)")
+                        return nil
+                    }
+                }
+                return pcmData.isEmpty ? nil : pcmData
+            } catch {
+                print("⚠️ ConversationController: audio decode failed (\(fileExtension)) - \(error.localizedDescription)")
+                try? FileManager.default.removeItem(at: tmpURL)
+                return nil
+            }
+        }
+        
+        // WAVならAVAudioFileで正規化
+        let isWav = (lowerCT?.contains("wav") == true) ||
+            (data.count >= 4 && String(data: data.prefix(4), encoding: .ascii) == "RIFF")
+        if isWav {
+            return decodeByAVAudioFile(data: data, fileExtension: "wav")
+        }
+        
+        // MP3（Content-Typeがaudio/mpeg、またはヘッダがID3/FrameSync）
+        let isMP3 = (lowerCT?.contains("mpeg") == true) || looksLikeMP3(data)
+        if isMP3 {
+            return decodeByAVAudioFile(data: data, fileExtension: "mp3")
+        }
+        
+        // PCM16前提のレスポンスの場合（audio/pcm 等）
+        // ⚠️ contentTypeが嘘で「audio/pcm」なのにMP3が来るとザーッ事故になるため、MP3っぽいものは上で弾く/デコードする
+        let isPCM =
+            lowerCT?.contains("pcm") == true ||
+            lowerCT?.contains("audio/raw") == true ||
+            lowerCT?.contains("octet-stream") == true
+        if isPCM {
+            return data
+        }
+        
+        // 不明形式は無音扱い
+        print("⚠️ ConversationController: unknown TTS format (contentType=\(contentType ?? "nil")), cannot decode safely")
+        return nil
     }
     
     private func handleFirstAudioChunk(for turnId: Int) {
@@ -2351,6 +2646,11 @@ fileprivate final class AudioPreviewStreamingClient {
     private let apiBase: URL
     private let decoder = JSONDecoder()
     
+    struct AudioPreviewResult {
+        let text: String
+        let audioMissing: Bool
+    }
+    
     init(apiKey: String, apiBase: URL) {
         self.apiKey = apiKey
         self.apiBase = apiBase
@@ -2364,7 +2664,7 @@ fileprivate final class AudioPreviewStreamingClient {
         onAudioChunk: @escaping (Data) -> Void,
         onFirstByte: ((Date) -> Void)? = nil,
         emitText: Bool = true
-    ) async throws -> String {
+    ) async throws -> AudioPreviewResult {
         var messages: [AudioPreviewPayload.Message] = []
         messages.append(.init(role: "system", content: [.text(systemPrompt)]))
         for item in history {
@@ -2391,7 +2691,7 @@ fileprivate final class AudioPreviewStreamingClient {
         onAudioChunk: @escaping (Data) -> Void,
         onFirstByte: ((Date) -> Void)? = nil,
         emitText: Bool = true
-    ) async throws -> String {
+    ) async throws -> AudioPreviewResult {
         var messages: [AudioPreviewPayload.Message] = []
         messages.append(.init(role: "system", content: [.text(systemPrompt)]))
         for item in history {
@@ -2417,7 +2717,7 @@ fileprivate final class AudioPreviewStreamingClient {
         onText: @escaping (String) -> Void,
         onAudioChunk: @escaping (Data) -> Void,
         onFirstByte: ((Date) -> Void)? = nil
-    ) async throws -> String {
+    ) async throws -> AudioPreviewResult {
         var request = URLRequest(url: completionsURL())
         request.httpMethod = "POST"
         request.addValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -2425,6 +2725,8 @@ fileprivate final class AudioPreviewStreamingClient {
         request.addValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         // audio-preview専用ヘッダ（環境によって不要な場合はコメントアウト可）
         request.addValue("audio-preview", forHTTPHeaderField: "OpenAI-Beta")
+        // 音声生成がテキストより遅れた場合のためにタイムアウトを少し長めに
+        request.timeoutInterval = 60.0
         
         let t0 = Date()
         
@@ -2445,6 +2747,10 @@ fileprivate final class AudioPreviewStreamingClient {
         var textChunkCount = 0
         var audioChunkCount = 0
         var emptyChunkCount = 0
+        var audioFieldNullCount = 0
+        var finishReasons: [String: Int] = [:]
+        var refusalSummaries: [String] = []
+        var audioMissingPayloadSamples: [String] = []
         let (bytes, response) = try await URLSession.shared.bytes(for: request)
         let tReqDone = Date()
         print("⏱️ AudioPreviewStreamingClient: request sent -> awaiting first byte (\(String(format: "%.2f", tReqDone.timeIntervalSince(t0)))s)")
@@ -2475,9 +2781,46 @@ fileprivate final class AudioPreviewStreamingClient {
                 continue
             }
             
+            // choicesのないイベントを先にふるい分け（エラー/ハートビート等）
+            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                if json["choices"] == nil {
+                    let type = json["type"] ?? json["event"] ?? json["object"] ?? "(unknown)"
+                    if json["error"] != nil {
+                        print("⚠️ AudioPreviewStreamingClient: non-choice event (error) type=\(type)")
+                    } else {
+                        print("ℹ️ AudioPreviewStreamingClient: non-choice event skipped type=\(type)")
+                    }
+                    continue
+                }
+            }
+            
             do {
                 let chunk = try decoder.decode(AudioPreviewStreamChunk.self, from: data)
-                if let delta = chunk.choices.first?.delta {
+                for choice in chunk.choices {
+                    if let fr = choice.finishReason {
+                        finishReasons[fr, default: 0] += 1
+                    }
+                    if let refusal = choice.message?.refusal {
+                        let summary = "reason=\(refusal.reason ?? "nil"), message=\(refusal.message ?? "nil")"
+                        refusalSummaries.append(summary)
+                    }
+                    
+                    if let messageAudio = choice.message?.audio {
+                        if let audioString = messageAudio.data {
+                            if let audioData = Data(base64Encoded: audioString) {
+                                didReceiveAudio = true
+                                audioChunkCount += 1
+                                onAudioChunk(audioData)
+                            } else {
+                                print("⚠️ AudioPreviewStreamingClient: message.audio decode失敗 - length=\(audioString.count)")
+                            }
+                        } else {
+                            audioFieldNullCount += 1
+                            print("⚠️ AudioPreviewStreamingClient: message.audio present but data=null")
+                        }
+                    }
+                    
+                    guard let delta = choice.delta else { continue }
                     var textFragments: [String] = []
                     
                     if let parts = delta.content {
@@ -2527,6 +2870,9 @@ fileprivate final class AudioPreviewStreamingClient {
                         } else {
                             print("⚠️ AudioPreviewStreamingClient: audio chunk decode失敗 - length=\(audioString.count)")
                         }
+                    } else if delta.audio != nil {
+                        audioFieldNullCount += 1
+                        print("⚠️ AudioPreviewStreamingClient: delta.audio present but data=null")
                     }
                     if delta.audio?.data == nil && (delta.content?.isEmpty ?? true) && (delta.outputText?.isEmpty ?? true) {
                         print("⚠️ AudioPreviewStreamingClient: chunk has no text/audio; skipping")
@@ -2537,19 +2883,36 @@ fileprivate final class AudioPreviewStreamingClient {
                 print("⚠️ AudioPreviewStreamingClient: チャンクパース失敗 - \(error)")
                 if payloadString.count < 200 { print("   payloadString='\(payloadString)'") }
             }
+            
+            if !didReceiveAudio && audioMissingPayloadSamples.count < 3 {
+                audioMissingPayloadSamples.append(Self.redactedPayloadSample(payloadString))
+            }
         }
         
         if !didReceiveAudio {
             print("❌ AudioPreviewStreamingClient: 音声チャンクなし（テキストのみの応答） - model=\(payload.model), modalities=\(payload.modalities), audio.voice=\(payload.audio.voice), audio.format=\(payload.audio.format)")
-            throw NSError(domain: "AudioPreviewStreamingClient", code: -2, userInfo: [NSLocalizedDescriptionKey: "音声が返りませんでした（audio=0）。API応答がテキストのみでした。"])
         }
-        print("📊 AudioPreviewStreamingClient: chunk summary -> text:\(textChunkCount), audio:\(audioChunkCount), empty:\(emptyChunkCount)")
+        print("📊 AudioPreviewStreamingClient: chunk summary -> text:\(textChunkCount), audio:\(audioChunkCount), empty:\(emptyChunkCount), audioMissing=\(!didReceiveAudio)")
+        if audioFieldNullCount > 0 {
+            print("📄 AudioPreviewStreamingClient: audio objects without data count=\(audioFieldNullCount)")
+        }
+        if !finishReasons.isEmpty {
+            let summary = finishReasons.map { "\($0.key):\($0.value)" }.joined(separator: ", ")
+            print("📄 AudioPreviewStreamingClient: finish_reason summary -> \(summary)")
+        }
+        if !refusalSummaries.isEmpty {
+            print("📄 AudioPreviewStreamingClient: refusal summaries (\(refusalSummaries.count)) -> \(refusalSummaries.prefix(3).joined(separator: " | "))")
+        }
+        if !audioMissingPayloadSamples.isEmpty && !didReceiveAudio {
+            print("🧪 AudioPreviewStreamingClient: audioMissing payload samples (redacted) ->")
+            audioMissingPayloadSamples.forEach { print("   \( $0 )") }
+        }
         if let contentType = http.value(forHTTPHeaderField: "Content-Type") {
             print("📦 AudioPreviewStreamingClient: response headers - Content-Type: \(contentType)")
         }
         
         let final = finalTextClean.isEmpty ? "(おへんじができなかったよ)" : finalTextClean
-        return final
+        return AudioPreviewResult(text: final, audioMissing: !didReceiveAudio)
     }
     
     private func completionsURL() -> URL {
@@ -2560,6 +2923,90 @@ fileprivate final class AudioPreviewStreamingClient {
                 .appendingPathComponent("v1")
                 .appendingPathComponent("chat/completions")
         }
+    }
+    
+    private static func redactedPayloadSample(_ payload: String) -> String {
+        var s = payload
+        while let range = s.range(of: "\"data\":\"") {
+            if let endQuote = s[range.upperBound...].firstIndex(of: "\"") {
+                let replacement = "\"data\":\"<base64:\(s[range.upperBound..<endQuote].count) bytes>\""
+                s.replaceSubrange(range.lowerBound...endQuote, with: replacement)
+            } else {
+                break
+            }
+        }
+        if s.count > 240 {
+            let prefix = s.prefix(240)
+            return "\(prefix)...(truncated, len=\(s.count))"
+        }
+        return s
+    }
+    
+    private static func hexSnippet(_ data: Data, length: Int) -> String {
+        guard !data.isEmpty else { return "(empty)" }
+        return data.prefix(length).map { String(format: "%02X", $0) }.joined(separator: " ")
+    }
+    
+    /// TTS応答データを安全に24kHz/mono/PCM16データへ変換
+    private static func pcm16Data(from data: Data, contentType: String?) -> Data? {
+        // JSONや明らかなエラーを弾く
+        if let first = data.first, first == UInt8(ascii: "{") || first == UInt8(ascii: "[") {
+            return nil
+        }
+        
+        // WAVならAVAudioFileで正規化
+        let isWav = (contentType?.lowercased().contains("wav") == true) ||
+            (data.count >= 4 && String(data: data.prefix(4), encoding: .ascii) == "RIFF")
+        if isWav {
+            let tmpURL = FileManager.default.temporaryDirectory.appendingPathComponent("tts_fallback_\(UUID().uuidString).wav")
+            do {
+                try data.write(to: tmpURL)
+                let file = try AVAudioFile(forReading: tmpURL)
+                let targetFormat = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 24_000, channels: 1, interleaved: true)!
+                let converter = AVAudioConverter(from: file.processingFormat, to: targetFormat)!
+                
+                var pcmData = Data()
+                while true {
+                    guard let inputBuffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 1024) else { break }
+                    try file.read(into: inputBuffer)
+                    if inputBuffer.frameLength == 0 { break }
+                    
+                    let ratio = targetFormat.sampleRate / file.processingFormat.sampleRate
+                    let outFrames = AVAudioFrameCount(Double(inputBuffer.frameLength) * ratio + 16)
+                    guard let outBuffer = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: outFrames) else { break }
+                    
+                    var error: NSError?
+                    let status = converter.convert(to: outBuffer, error: &error) { _, outStatus in
+                        outStatus.pointee = .haveData
+                        return inputBuffer
+                    }
+                    if status == .haveData || status == .endOfStream,
+                       let ch = outBuffer.int16ChannelData?.pointee {
+                        let sampleCount = Int(outBuffer.frameLength) * Int(targetFormat.channelCount)
+                        pcmData.append(UnsafeBufferPointer(start: ch, count: sampleCount))
+                    } else if let error {
+                        print("⚠️ ConversationController: WAV->PCM convert error - \(error.localizedDescription)")
+                        return nil
+                    }
+                }
+                try? FileManager.default.removeItem(at: tmpURL)
+                return pcmData.isEmpty ? nil : pcmData
+            } catch {
+                print("⚠️ ConversationController: WAV decode failed - \(error.localizedDescription)")
+                try? FileManager.default.removeItem(at: tmpURL)
+                return nil
+            }
+        }
+        
+        // PCM16前提のレスポンスの場合（audio/pcm 等）
+        let isPCM = contentType?.lowercased().contains("pcm") == true || contentType?.lowercased().contains("audio/raw") == true
+        if isPCM {
+            return data
+        }
+        
+        // 不明形式は無音扱い
+        print("⚠️ ConversationController: unknown TTS format (contentType=\(contentType ?? "nil")), cannot decode safely")
+        return nil
     }
     
     /// 簡易サニタイズ（日本語中心の文字だけ残す）
@@ -2652,6 +3099,14 @@ private struct AudioPreviewStreamChunk: Decodable {
             }
         }
         let delta: Delta?
+        let message: Message?
+        let finishReason: String?
+        
+        enum CodingKeys: String, CodingKey {
+            case delta
+            case message
+            case finishReason = "finish_reason"
+        }
     }
     
     struct ContentPart: Decodable {
@@ -2680,6 +3135,17 @@ private struct AudioPreviewStreamChunk: Decodable {
     struct OutputTextPart: Decodable {
         let type: String?
         let text: String?
+    }
+    
+    struct Message: Decodable {
+        let audio: AudioDelta?
+        let refusal: Refusal?
+        let content: [ContentPart]?
+    }
+    
+    struct Refusal: Decodable {
+        let reason: String?
+        let message: String?
     }
     
     let choices: [Choice]

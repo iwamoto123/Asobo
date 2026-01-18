@@ -37,6 +37,7 @@ public final class MicrophoneCapture {
   private let vadChunkSize = 512
   private let vadTargetSampleRate: Double = 16_000
   private let vadQueue = DispatchQueue(label: "com.asobo.audio.vad")
+  private var lastVADSignalLogTime: Date?
   private var vadLogCounter: Int = 0
   private var vadConverter: AVAudioConverter?
   // ✅ VAD確率の最新値（バージイン判定にも共通利用）
@@ -283,7 +284,7 @@ public final class MicrophoneCapture {
         if self.checkBargeIn(inputRMS: inputRMS, outputRMS: outputRMS, vadProbability: vadProbability) {
           self.userBargeIn = true
           let elapsedMs = Int((Date().timeIntervalSince(self.vadSpeechStartTimeForBargeIn ?? Date())) * 1000)
-          print("🎤 MicrophoneCapture: バージイン検出 - VAD \(String(format: "%.2f", vadProbability)) を \(elapsedMs)ms 継続検出 (inputRMS: \(String(format: "%.1f", inputRMS))dB, outputRMS: \(String(format: "%.1f", outputRMS))dB)")
+        print("🎤 MicrophoneCapture: バージイン検出 - VAD \(String(format: "%.4f", vadProbability)) を \(elapsedMs)ms 継続検出 (inputRMS: \(String(format: "%.1f", inputRMS))dB, outputRMS: \(String(format: "%.1f", outputRMS))dB)")
           // ✅ コールバックで上位へ通知（UIスレッドで処理）
           DispatchQueue.main.async { [weak self] in
             self?.onBargeIn?()
@@ -495,6 +496,13 @@ extension MicrophoneCapture {
 
         // Normalize energy so the model sees a consistent amplitude.
         let rms = sqrt(chunk.reduce(0) { $0 + $1 * $1 } / Float(chunk.count))
+        if shouldLogVADSignal() {
+          let peak = chunk.reduce(0) { max($0, abs($1)) }
+          let nonZeroCount = chunk.reduce(0) { $0 + (abs($1) > 1e-6 ? 1 : 0) }
+          let nonZeroRatio = Double(nonZeroCount) / Double(chunk.count)
+          let rmsDb = rms > 1e-9 ? 20 * log10(Double(rms)) : -120.0
+          print("🎯 MicrophoneCapture: VAD input stats - peak=\(String(format: "%.6f", peak)), rms=\(String(format: "%.2f", rmsDb))dB, nonZero=\(String(format: "%.2f", nonZeroRatio)), samples=\(chunk.count), sr=16k")
+        }
         let targetRMS: Float = 0.80  // drive close to full-scale to raise VAD output
         let rawGain = rms > 1e-6 ? targetRMS / rms : 1
         let gain = max(0.05, min(rawGain, 2000))  // allow strong boost, keep bounds
@@ -514,16 +522,25 @@ extension MicrophoneCapture {
         self.vadLogCounter &+= 1
         // デバッグ用: VAD確率と入力RMSを適度な頻度でログ出力（約640msごと）
         if self.vadLogCounter % 20 == 0 {
-          print("🎯 MicrophoneCapture: VAD prob=\(String(format: "%.2f", probability)), rms=\(String(format: "%.2f", rms)), gain=\(String(format: "%.2f", gain))")
+          print("🎯 MicrophoneCapture: VAD prob=\(String(format: "%.4f", probability)), rms=\(String(format: "%.2f", rms)), gain=\(String(format: "%.2f", gain))")
         }
         if let callback = self.onVADProbability {
           DispatchQueue.main.async {
             callback(probability)
           }
         } else {
-          print("⚠️ MicrophoneCapture: onVADProbability not set (prob=\(probability))")
+          print("⚠️ MicrophoneCapture: onVADProbability not set (prob=\(String(format: "%.4f", probability)))")
         }
       }
     }
+  }
+
+  private func shouldLogVADSignal() -> Bool {
+    let now = Date()
+    if let last = lastVADSignalLogTime, now.timeIntervalSince(last) < 1.0 {
+      return false
+    }
+    lastVADSignalLogTime = now
+    return true
   }
 }
