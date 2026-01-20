@@ -131,6 +131,11 @@ public final class ConversationController: NSObject, ObservableObject {
     private var listeningTurnId: Int = 0       // VAD/録音用の世代ID
     private var playbackTurnId: Int?           // 再生状態通知の世代ID
     
+    // ✅ audioMissing 対策：1回だけリトライし、それでもダメならフォールバックTTSへ
+    private let audioMissingRetryMax: Int = 1
+    // ✅ audioMissingが発生した「次のターン」だけ、音声生成をより強く促す
+    private var useStrongAudioReminderNextTurn: Bool = false
+    
     // AI呼び出し用フィールド
     @Published public var isThinking: Bool = false   // ぐるぐる表示用
     private var lastAskedText: String = ""           // 同文の連投防止
@@ -1374,6 +1379,10 @@ public final class ConversationController: NSObject, ObservableObject {
         print("⏱️ ConversationController: sendTextPreviewRequest start - textLen=\(trimmed.count)")
         
         do {
+            // ✅ 前ターンでaudioMissingが出た場合、このターンだけ強めの音声リマインドを使う
+            let useStrongReminderThisTurn = useStrongAudioReminderNextTurn
+            useStrongAudioReminderNextTurn = false
+            
             let result = try await client.streamResponseText(
                 userText: trimmed,
                 systemPrompt: currentSystemPrompt,
@@ -1416,7 +1425,9 @@ public final class ConversationController: NSObject, ObservableObject {
                         self.turnMetrics.firstByte = firstByte
                         self.logTurnStageTiming(event: "firstByte", at: firstByte)
                     }
-                }
+                },
+                emitText: true,
+                useStrongAudioReminder: useStrongReminderThisTurn
             )
             let tEnd = Date()
             print("⏱️ ConversationController: sendTextPreviewRequest completed in \(String(format: "%.2f", tEnd.timeIntervalSince(tStart)))s, finalText.count=\(result.text.count), finalText=\"\(result.text)\", audioMissing=\(result.audioMissing)")
@@ -1429,7 +1440,58 @@ public final class ConversationController: NSObject, ObservableObject {
             await MainActor.run {
                 // 吹き出し用に最終テキストをUIへ反映
                 self.aiResponseText = cleanFinal
-                if !result.audioMissing {
+            }
+            
+            var audioMissing = result.audioMissing
+            if audioMissing && audioMissingRetryMax > 0 {
+                for attempt in 1...audioMissingRetryMax {
+                    guard self.isCurrentTurn(turnId), !ignoreIncomingAIChunks else { break }
+                    print("🔁 ConversationController: audioMissing -> retry \(attempt)/\(audioMissingRetryMax) (text)")
+                    
+                    // 取り直しは「音声だけ取れればOK」なのでUIテキストは更新しない
+                    await MainActor.run {
+                        self.player.prepareForNextStream()
+                    }
+                    
+                    do {
+                        let retry = try await client.streamResponseText(
+                            userText: trimmed,
+                            systemPrompt: currentSystemPrompt,
+                            history: conversationHistory,
+                            onText: { _ in },
+                            onAudioChunk: { [weak self] chunk in
+                                guard let self else { return }
+                                Task { @MainActor in
+                                    guard !self.ignoreIncomingAIChunks, self.isCurrentTurn(turnId) else { return }
+                                    print("🔊 onAudioChunk(retry) bytes:", chunk.count)
+                                    self.playbackTurnId = turnId
+                                    self.turnState = .speaking
+                                    if self.isFillerPlaying { self.isFillerPlaying = false }
+                                    self.handleFirstAudioChunk(for: turnId)
+                                    self.player.resumeIfNeeded()
+                                    self.player.playChunk(chunk)
+                                }
+                            },
+                            onFirstByte: nil,
+                            emitText: false,
+                            useStrongAudioReminder: true
+                        )
+                        if !retry.audioMissing {
+                            audioMissing = false
+                            print("✅ ConversationController: retry succeeded (text) -> audio received")
+                            break
+                        } else {
+                            print("⚠️ ConversationController: retry still audioMissing (text)")
+                        }
+                    } catch {
+                        print("⚠️ ConversationController: retry failed (text) - \(error.localizedDescription)")
+                    }
+                }
+            }
+            
+            // ✅ 状態遷移：最終的に音声が取れた/取れなかったで分岐
+            await MainActor.run {
+                if !audioMissing {
                     if self.isHandsFreeMode && self.isRecording && self.turnState != .speaking {
                         self.resumeListening()
                     } else if self.turnState != .speaking {
@@ -1437,11 +1499,13 @@ public final class ConversationController: NSObject, ObservableObject {
                         self.startWaitingForResponse()
                     }
                 } else {
-                    print("🎺 ConversationController: text-only response -> fallback TTS will run")
+                    print("🎺 ConversationController: audio missing after retry -> fallback TTS will run")
                 }
             }
             
-            if result.audioMissing {
+            if audioMissing {
+                // 次ターンはさらに強めに促す
+                useStrongAudioReminderNextTurn = true
                 await self.playFallbackTTS(text: cleanFinal, turnId: turnId)
             }
             
@@ -1553,6 +1617,10 @@ public final class ConversationController: NSObject, ObservableObject {
         }
         
         do {
+            // ✅ 前ターンでaudioMissingが出た場合、このターンだけ強めの音声リマインドを使う
+            let useStrongReminderThisTurn = useStrongAudioReminderNextTurn
+            useStrongAudioReminderNextTurn = false
+            
             let result = try await client.streamResponse(
                 audioData: wav,
                 systemPrompt: currentSystemPrompt,
@@ -1595,7 +1663,9 @@ public final class ConversationController: NSObject, ObservableObject {
                         self.turnMetrics.firstByte = firstByte
                         self.logTurnStageTiming(event: "firstByte", at: firstByte)
                     }
-                }
+                },
+                emitText: true,
+                useStrongAudioReminder: useStrongReminderThisTurn
             )
             let tEnd = Date()
             print("⏱️ ConversationController: streamResponse completed in \(String(format: "%.2f", tEnd.timeIntervalSince(tStart)))s, finalText.count=\(result.text.count), finalText=\"\(result.text)\", audioMissing=\(result.audioMissing)")
@@ -1609,7 +1679,56 @@ public final class ConversationController: NSObject, ObservableObject {
                 // 吹き出し用に最終テキストをUIへ反映（音声のみの場合でもテキストを入れる）
                 self.aiResponseText = cleanFinal
                 print("🟩 set aiResponseText final:", cleanFinal)
-                if !result.audioMissing {
+            }
+            
+            var audioMissing = result.audioMissing
+            if audioMissing && audioMissingRetryMax > 0 {
+                for attempt in 1...audioMissingRetryMax {
+                    guard self.isCurrentTurn(turnId), !ignoreIncomingAIChunks else { break }
+                    print("🔁 ConversationController: audioMissing -> retry \(attempt)/\(audioMissingRetryMax) (audio)")
+                    
+                    await MainActor.run {
+                        self.player.prepareForNextStream()
+                    }
+                    
+                    do {
+                        let retry = try await client.streamResponse(
+                            audioData: wav,
+                            systemPrompt: currentSystemPrompt,
+                            history: conversationHistory,
+                            onText: { _ in },
+                            onAudioChunk: { [weak self] chunk in
+                                guard let self else { return }
+                                Task { @MainActor in
+                                    guard !self.ignoreIncomingAIChunks, self.isCurrentTurn(turnId) else { return }
+                                    print("🔊 onAudioChunk(retry) bytes:", chunk.count)
+                                    self.playbackTurnId = turnId
+                                    self.turnState = .speaking
+                                    if self.isFillerPlaying { self.isFillerPlaying = false }
+                                    self.handleFirstAudioChunk(for: turnId)
+                                    self.player.resumeIfNeeded()
+                                    self.player.playChunk(chunk)
+                                }
+                            },
+                            onFirstByte: nil,
+                            emitText: false,
+                            useStrongAudioReminder: true
+                        )
+                        if !retry.audioMissing {
+                            audioMissing = false
+                            print("✅ ConversationController: retry succeeded (audio) -> audio received")
+                            break
+                        } else {
+                            print("⚠️ ConversationController: retry still audioMissing (audio)")
+                        }
+                    } catch {
+                        print("⚠️ ConversationController: retry failed (audio) - \(error.localizedDescription)")
+                    }
+                }
+            }
+            
+            await MainActor.run {
+                if !audioMissing {
                     if self.isHandsFreeMode && self.isRecording && self.turnState != .speaking {
                         self.resumeListening()
                     } else if self.turnState != .speaking {
@@ -1617,11 +1736,12 @@ public final class ConversationController: NSObject, ObservableObject {
                         self.startWaitingForResponse()
                     }
                 } else {
-                    print("🎺 ConversationController: audio missing from stream -> fallback TTS will run")
+                    print("🎺 ConversationController: audio missing after retry -> fallback TTS will run")
                 }
             }
             
-            if result.audioMissing {
+            if audioMissing {
+                useStrongAudioReminderNextTurn = true
                 await self.playFallbackTTS(text: cleanFinal, turnId: turnId)
             }
             
@@ -2645,8 +2765,10 @@ fileprivate final class AudioPreviewStreamingClient {
     private let apiKey: String
     private let apiBase: URL
     private let decoder = JSONDecoder()
-    // 🔊 音声生成を強く促す隠しリマインド（毎ターン先頭に挿入）
+    // 🔊 音声生成を促すリマインド（ユーザー側で音声が必須のため）
     private let audioReminder = "必ず音声つきで返して。音声が作れないなら、内容を短くしてでも音声を出して。"
+    // 🔊 音声が欠けた直後の「強め」リマインド（成功率を少しでも上げる狙い）
+    private let strongAudioReminder = "【重要】この返答は必ず音声を含めてください。テキストだけの返答は禁止。短くてもよいので音声データ(audio.data)を出してください。"
     
     struct AudioPreviewResult {
         let text: String
@@ -2665,7 +2787,8 @@ fileprivate final class AudioPreviewStreamingClient {
         onText: @escaping (String) -> Void,
         onAudioChunk: @escaping (Data) -> Void,
         onFirstByte: ((Date) -> Void)? = nil,
-        emitText: Bool = true
+        emitText: Bool = true,
+        useStrongAudioReminder: Bool = false
     ) async throws -> AudioPreviewResult {
         var messages: [AudioPreviewPayload.Message] = []
         messages.append(.init(role: "system", content: [.text(systemPrompt)]))
@@ -2674,7 +2797,8 @@ fileprivate final class AudioPreviewStreamingClient {
             messages.append(.init(role: role, content: [.text(item.text)]))
         }
         // ✅ 音声出力を逃さないためのリマインドを追加
-        messages.append(.init(role: "user", content: [.text(audioReminder)]))
+        let reminder = useStrongAudioReminder ? strongAudioReminder : audioReminder
+        messages.append(.init(role: "user", content: [.text(reminder)]))
         messages.append(.init(role: "user", content: [.inputAudio(.init(data: audioData.base64EncodedString(), format: "wav"))]))
 
         return try await stream(
@@ -2694,7 +2818,8 @@ fileprivate final class AudioPreviewStreamingClient {
         onText: @escaping (String) -> Void,
         onAudioChunk: @escaping (Data) -> Void,
         onFirstByte: ((Date) -> Void)? = nil,
-        emitText: Bool = true
+        emitText: Bool = true,
+        useStrongAudioReminder: Bool = false
     ) async throws -> AudioPreviewResult {
         var messages: [AudioPreviewPayload.Message] = []
         messages.append(.init(role: "system", content: [.text(systemPrompt)]))
@@ -2703,7 +2828,8 @@ fileprivate final class AudioPreviewStreamingClient {
             messages.append(.init(role: role, content: [.text(item.text)]))
         }
         // ✅ 音声出力を逃さないためのリマインドを追加
-        messages.append(.init(role: "user", content: [.text(audioReminder)]))
+        let reminder = useStrongAudioReminder ? strongAudioReminder : audioReminder
+        messages.append(.init(role: "user", content: [.text(reminder)]))
         messages.append(.init(role: "user", content: [.text(userText)]))
         
         return try await stream(

@@ -2,6 +2,7 @@
 # .p8鍵ファイルを直接読み込んで、ビルド→TestFlightへアップロードする最小レーン
 
 require 'fileutils'
+require 'tmpdir'
 
 default_platform(:ios)
 
@@ -48,14 +49,20 @@ end
     
     clean_build_artifacts
 
+    # まずは xcarchive まで作る（IPA化の前に、onnxruntime.framework をパッチするため）
+    archive_path = File.expand_path("build/Asobo.xcarchive")
+
     # CocoaPods を使っていない（.xcodeproj直）の場合
-    ipa_path = build_app(
+    build_app(
       scheme: "Asobo",                # ← XcodeのScheme名に合わせる
       export_method: "app-store",
       output_directory: "build",
       skip_profile_detection: true,
       destination: "generic/platform=iOS",
       sdk: "iphoneos",  
+      archive_path: archive_path,
+      skip_package_ipa: true,
+      skip_package_pkg: true,
       # project: "Asobo.xcodeproj",   # （必要なら明示。workspaceとどちらか片方のみ）
       # workspace: "Asobo.xcworkspace" # CocoaPods使用時はこっちを有効化して、project行は消す
 
@@ -64,6 +71,56 @@ end
       },
       xcargs: "-allowProvisioningUpdates"  # 書き出し時にプロファイル/証明書を自動取得
     )
+
+    # build_app が archive_path を別パスにした場合に備えて lane context からも拾う
+    begin
+      if defined?(SharedValues) && SharedValues.const_defined?(:XCODEBUILD_ARCHIVE)
+        ctx_archive = Actions.lane_context[SharedValues::XCODEBUILD_ARCHIVE]
+        archive_path = ctx_archive if ctx_archive && !ctx_archive.to_s.empty?
+      end
+    rescue
+      # ignore
+    end
+
+    UI.user_error!("❌ xcarchive が見つかりません: #{archive_path}") unless File.directory?(archive_path)
+
+    # ✅ xcarchive 内の onnxruntime.framework に MinimumOSVersion を埋め込む（App Store Connect 対策）
+    onnx_plist = File.join(
+      archive_path,
+      "Products/Applications/Asobo.app/Frameworks/onnxruntime.framework/Info.plist"
+    )
+
+    UI.message("🔧 Patching onnxruntime.framework Info.plist in archive: #{onnx_plist}")
+    UI.user_error!("❌ onnxruntime.framework Info.plist が見つかりません: #{onnx_plist}") unless File.exist?(onnx_plist)
+
+    # IPHONEOS_DEPLOYMENT_TARGET をそのまま使う（空ならプロジェクト側の値に合わせて要調整）
+    min_os = ENV["IPHONEOS_DEPLOYMENT_TARGET"]
+    min_os = "18.5" if min_os.to_s.empty?
+
+    sh("/usr/libexec/PlistBuddy -c \"Add :MinimumOSVersion string #{min_os}\" \"#{onnx_plist}\" 2>/dev/null || /usr/libexec/PlistBuddy -c \"Set :MinimumOSVersion #{min_os}\" \"#{onnx_plist}\"")
+    UI.message("✅ onnxruntime.framework MinimumOSVersion => #{min_os}")
+
+    # ✅ ここから IPA を書き出す（exportArchive が再署名するので、plist編集後でも整合する）
+    export_plist = File.join(Dir.mktmpdir, "exportOptions.plist")
+    File.write(export_plist, <<~PLIST)
+      <?xml version="1.0" encoding="UTF-8"?>
+      <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+      <plist version="1.0">
+      <dict>
+        <key>method</key>
+        <string>app-store</string>
+        <key>signingStyle</key>
+        <string>automatic</string>
+      </dict>
+      </plist>
+    PLIST
+
+    ipa_output_dir = File.expand_path("build")
+    FileUtils.mkdir_p(ipa_output_dir)
+
+    sh("xcodebuild -exportArchive -archivePath \"#{archive_path}\" -exportPath \"#{ipa_output_dir}\" -exportOptionsPlist \"#{export_plist}\" -allowProvisioningUpdates")
+
+    ipa_path = File.join(ipa_output_dir, "Asobo.ipa")
 
     # ✅ IPAファイルの存在確認
     if ipa_path && File.exist?(ipa_path)

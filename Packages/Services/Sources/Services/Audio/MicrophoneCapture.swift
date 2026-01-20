@@ -37,6 +37,7 @@ public final class MicrophoneCapture {
   private let vadChunkSize = 512
   private let vadTargetSampleRate: Double = 16_000
   private let vadQueue = DispatchQueue(label: "com.asobo.audio.vad")
+  private let vadQueueSpecificKey = DispatchSpecificKey<Bool>()
   private var lastVADSignalLogTime: Date?
   private var vadLogCounter: Int = 0
   private var vadConverter: AVAudioConverter?
@@ -92,6 +93,8 @@ public final class MicrophoneCapture {
     // ✅ converterはstart()で作成（エンジン開始後のフォーマットを使用）
     self.converter = nil
     self.vad = try? SileroVAD()
+    // ✅ VADバッファへのアクセスをvadQueueに直列化するためのマーカー
+    vadQueue.setSpecific(key: vadQueueSpecificKey, value: true)
   }
   
   /// ✅ 独自エンジンを使用する場合（後方互換性のため）
@@ -396,14 +399,33 @@ public final class MicrophoneCapture {
     vadSpeechStartTimeForBargeIn = nil
     recentInputRMS.removeAll()
     isFirstBuffer = true
-    vadBuffer16k.removeAll()
-    vad = nil
+    // ✅ enqueueVADProcessing と同じキューでVAD状態をリセット（並行アクセスでのクラッシュ防止）
+    resetVADState()
     
     running = false
   }
 }
 
 extension MicrophoneCapture {
+  /// VAD関連の状態をvadQueue上で安全にリセットする
+  private func resetVADState() {
+    let work = { [weak self] in
+      guard let self else { return }
+      self.vadBuffer16k.removeAll(keepingCapacity: true)
+      self.vad = nil
+      self.vadLogCounter = 0
+      self.lastVADSignalLogTime = nil
+      self.vadProbabilityLock.lock()
+      self.latestVADProbability = 0.0
+      self.vadProbabilityLock.unlock()
+    }
+    if DispatchQueue.getSpecific(key: vadQueueSpecificKey) == true {
+      work()
+    } else {
+      vadQueue.sync(execute: work)
+    }
+  }
+
   /// VoiceProcessingのON/OFFを安全に切り替える（iOS 13+のみ）
   private func setVoiceProcessingEnabled(_ enabled: Bool) {
     guard #available(iOS 13.0, *) else { return }
@@ -491,6 +513,8 @@ extension MicrophoneCapture {
 
       self.vadBuffer16k.append(contentsOf: samples)
       while self.vadBuffer16k.count >= self.vadChunkSize {
+        // ✅ 念のため再確認（stop()等でリセットが走った場合でもクラッシュしない）
+        guard self.vadBuffer16k.count >= self.vadChunkSize else { break }
         let chunk = Array(self.vadBuffer16k.prefix(self.vadChunkSize))
         self.vadBuffer16k.removeFirst(self.vadChunkSize)
 

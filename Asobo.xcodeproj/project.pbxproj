@@ -164,6 +164,7 @@
 			buildConfigurationList = 1497CE8A2E72D88A00051217 /* Build configuration list for PBXNativeTarget "Asobo" */;
 			buildPhases = (
 				1497CE642E72D88900051217 /* Sources */,
+				14F0A0AA3C0F1A2B3C4D5E6F /* Fix onnxruntime MinimumOSVersion */,
 				1497CE652E72D88900051217 /* Frameworks */,
 				1497CE662E72D88900051217 /* Resources */,
 			);
@@ -319,6 +320,27 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		14F0A0AA3C0F1A2B3C4D5E6F /* Fix onnxruntime MinimumOSVersion */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(CONFIGURATION_BUILD_DIR)/PackageFrameworks/onnxruntime.framework/Info.plist",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -e\n\n# Patch the *source* framework that will later be copied/signed into the app.\n# This avoids running codesign inside the user script sandbox.\nFRAMEWORK_PATH=\"${CONFIGURATION_BUILD_DIR}/PackageFrameworks/onnxruntime.framework\"\nPLIST=\"${FRAMEWORK_PATH}/Info.plist\"\n\nif [ ! -d \"${FRAMEWORK_PATH}\" ]; then\n  echo \"[Asobo] onnxruntime.framework not found at: ${FRAMEWORK_PATH} (skip)\"\n  exit 0\nfi\n\n# If the framework has no Info.plist, create a minimal one.\nif [ ! -f \"${PLIST}\" ]; then\n  cat > \"${PLIST}\" <<'EOF'\n<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\">\n<dict>\n</dict>\n</plist>\nEOF\nfi\n\nMIN_OS=\"${IPHONEOS_DEPLOYMENT_TARGET}\"\nif [ -z \"${MIN_OS}\" ]; then\n  echo \"[Asobo] IPHONEOS_DEPLOYMENT_TARGET is empty (skip)\"\n  exit 0\nfi\n\n/usr/libexec/PlistBuddy -c \"Add :MinimumOSVersion string ${MIN_OS}\" \"${PLIST}\" 2>/dev/null || /usr/libexec/PlistBuddy -c \"Set :MinimumOSVersion ${MIN_OS}\" \"${PLIST}\"\n\necho \"[Asobo] Patched PackageFrameworks/onnxruntime.framework MinimumOSVersion => ${MIN_OS}\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		1497CE642E72D88900051217 /* Sources */ = {
@@ -482,7 +504,7 @@
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = NO;
 				CODE_SIGN_ENTITLEMENTS = Asobo/Asobo.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 34;
+				CURRENT_PROJECT_VERSION = 42;
 				DEVELOPMENT_TEAM = XT522XX64M;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -523,7 +545,7 @@
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = NO;
 				CODE_SIGN_ENTITLEMENTS = Asobo/Asobo.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 34;
+				CURRENT_PROJECT_VERSION = 42;
 				DEVELOPMENT_TEAM = XT522XX64M;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -561,7 +583,7 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 34;
+				CURRENT_PROJECT_VERSION = 42;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Asobo/App/Resources/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.5;
@@ -584,7 +606,7 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 34;
+				CURRENT_PROJECT_VERSION = 42;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Asobo/App/Resources/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.5;
@@ -606,7 +628,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 34;
+				CURRENT_PROJECT_VERSION = 42;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Asobo/App/Resources/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.5;
@@ -628,7 +650,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 34;
+				CURRENT_PROJECT_VERSION = 42;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Asobo/App/Resources/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.5;
