@@ -81,3 +81,9 @@ fastlane/report.xml
 fastlane/Preview.html
 fastlane/screenshots/**/*.png
 fastlane/test_output
+
+# Build artifacts (never commit)
+fastlane/build/
+*.xcarchive/
+*.ipa
+*.dSYM.zip
