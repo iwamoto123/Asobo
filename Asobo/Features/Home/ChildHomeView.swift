@@ -1,4 +1,5 @@
 import SwiftUI
+import AVFoundation
 
 // MARK: - Color Palette
 extension Color {
@@ -17,6 +18,15 @@ public struct ChildHomeView: View {
     @StateObject private var controller = ConversationController()
     @State private var isBreathing = false
     @State private var isPressed = false
+    @State private var isTestPressed = false
+    @State private var testLogWindowStartTime: Date?
+    @State private var lastLoggedVADState: ConversationController.VADState?
+    @State private var lastSpeechDetectedStartTime: Date?
+    @State private var rmsLogTimer: Timer?
+    @State private var lastRmsLogTime: Date?
+    
+    // TEST観測ログのサンプリング間隔（RMSの瞬間的な落ち込みも見たいので0.10s）
+    private let testRmsLogInterval: TimeInterval = 0.10
     @State private var hasStartedSession = false
     @State private var initialGreetingText: String = ""
     @State private var lastAIDisplayText: String = ""
@@ -76,6 +86,7 @@ public struct ChildHomeView: View {
                                 size: geometry.size.width * 0.8,
                                 isRecording: controller.isRecording,
                                 isPressed: isPressed,
+                                isTestPressed: isTestPressed,
                                 isBreathing: isBreathing,
                                 isBlinking: isBlinking,
                                 isSquinting: isSquinting,
@@ -85,6 +96,9 @@ public struct ChildHomeView: View {
                                     withAnimation(.spring(response: 0.3, dampingFraction: 0.5)) { // バウンスを強めに
                                         isPressed = pressed
                                     }
+                                },
+                                onTestPressChanged: { pressed in
+                                    handleTestPTTPressChanged(pressed)
                                 }
                             )
                             .opacity((controller.isRealtimeActive || controller.isRealtimeConnecting) ? 1.0 : 0.6)
@@ -150,6 +164,11 @@ public struct ChildHomeView: View {
             // ✅ タブを離れた時にセッションを停止（オプション：必要に応じてコメントアウト）
             // 注意: これを有効にすると、タブを切り替えるたびにセッションが停止・再開される
             // controller.stopRealtimeSession()
+        }
+        .onChange(of: controller.vadState) { _ in
+            // 観測ウィンドウ中だけ、vadState遷移をログ
+            guard isTestPressed else { return }
+            logVADStateTransitionIfNeeded()
         }
         .onChange(of: controller.isRecording) { isRecording in
             // 録音中の頻度調整は、startEyeAnimation内で管理
@@ -357,6 +376,95 @@ public struct ChildHomeView: View {
             }
         }
     }
+
+    // MARK: - VAD Observation Window (TEST 長押し)
+    private func handleTestPTTPressChanged(_ pressed: Bool) {
+        if pressed == isTestPressed { return }
+        isTestPressed = pressed
+        
+        if pressed {
+            let start = Date()
+            testLogWindowStartTime = start
+            lastLoggedVADState = controller.vadState
+            lastSpeechDetectedStartTime = (controller.vadState == .speaking) ? start : nil
+            lastRmsLogTime = nil
+            
+            print("🧪 VAD TEST: window BEGIN at \(start) (handsFree=\(controller.isHandsFreeMode), vadState=\(controller.vadState))")
+            if !controller.isHandsFreeMode {
+                print("🧪 VAD TEST: ⚠️ handsFree=false のため vadState/RMS が更新されない可能性があります")
+            }
+            
+            startRmsLogTimer()
+            logVADStateTransitionIfNeeded(force: true)
+        } else {
+            stopRmsLogTimer()
+            
+            let end = Date()
+            let duration = (testLogWindowStartTime.map { end.timeIntervalSince($0) }) ?? 0
+            if let speechStart = lastSpeechDetectedStartTime {
+                let speechDur = end.timeIntervalSince(speechStart)
+                print("🧪 VAD TEST: speech still speaking at END (dur=\(String(format: "%.2f", speechDur))s)")
+            }
+            print("🧪 VAD TEST: window END at \(end) duration=\(String(format: "%.2f", duration))s (vadState=\(controller.vadState))")
+            
+            testLogWindowStartTime = nil
+            lastLoggedVADState = nil
+            lastSpeechDetectedStartTime = nil
+            lastRmsLogTime = nil
+        }
+    }
+    
+    private func logVADStateTransitionIfNeeded(force: Bool = false) {
+        guard let windowStart = testLogWindowStartTime else { return }
+        let now = Date()
+        let t = now.timeIntervalSince(windowStart)
+        let current = controller.vadState
+        
+        if force || lastLoggedVADState != current {
+            if current == .speaking {
+                lastSpeechDetectedStartTime = now
+                print("🧪 VAD TEST: speech DETECTED START t=+\(String(format: "%.2f", t))s (vadState=speaking)")
+            } else {
+                if let speechStart = lastSpeechDetectedStartTime {
+                    let dur = now.timeIntervalSince(speechStart)
+                    print("🧪 VAD TEST: speech DETECTED END   t=+\(String(format: "%.2f", t))s (dur=\(String(format: "%.2f", dur))s, vadState=idle)")
+                } else {
+                    print("🧪 VAD TEST: vadState=idle t=+\(String(format: "%.2f", t))s")
+                }
+                lastSpeechDetectedStartTime = nil
+            }
+            lastLoggedVADState = current
+        }
+    }
+    
+    private func startRmsLogTimer() {
+        stopRmsLogTimer()
+        let interval = testRmsLogInterval
+        let controllerRef = controller
+        rmsLogTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak controllerRef] _ in
+            guard let controller = controllerRef else { return }
+            guard self.isTestPressed, let windowStart = self.testLogWindowStartTime else { return }
+            let now = Date()
+            let t = now.timeIntervalSince(windowStart)
+            
+            let rmsDb: Double = controller.debugLastInputRmsDb ?? -120.0
+            let startThresh: Double = controller.debugActiveRmsStartThresholdDb
+            let endThresh: Double = controller.debugActiveSpeechEndRmsThresholdDb
+            let session = AVAudioSession.sharedInstance()
+            let input = session.currentRoute.inputs.first
+            let inPort = input?.portType.rawValue ?? "none"
+            let inName = input?.portName ?? "none"
+            print("🧪 VAD TEST: t=+\(String(format: "%.2f", t))s vadState=\(controller.vadState) rmsDb=\(String(format: "%.2f", rmsDb)) | startThresh=\(String(format: "%.1f", startThresh)) endThresh=\(String(format: "%.1f", endThresh)) | input=\(inName)(\(inPort))")
+            
+            self.lastRmsLogTime = now
+        }
+        RunLoop.main.add(rmsLogTimer!, forMode: .common)
+    }
+    
+    private func stopRmsLogTimer() {
+        rmsLogTimer?.invalidate()
+        rmsLogTimer = nil
+    }
 }
 
 // MARK: - Subviews
@@ -366,12 +474,14 @@ struct MocchyBearView: View {
     let size: CGFloat
     let isRecording: Bool
     let isPressed: Bool
+    let isTestPressed: Bool
     let isBreathing: Bool
     let isBlinking: Bool
     let isSquinting: Bool
     let isNodding: Bool
     let onTap: () -> Void
     let onPressChanged: (Bool) -> Void
+    let onTestPressChanged: (Bool) -> Void
     
     var body: some View {
         ZStack {
@@ -435,6 +545,43 @@ struct MocchyBearView: View {
                         onTap()
                     }
             )
+            .zIndex(1000)
+            
+            // 4.5 観測用ボタン（VAD制御とは独立。押下中だけログを出す）
+            // Button + gesture だと環境によってタッチが取りこぼされることがあるため、
+            // contentShape + highPriorityGesture で確実に拾う。
+            VStack(spacing: 2) {
+                Text(isTestPressed ? "TEST\nON" : "TEST\n長押し")
+                    .font(.caption)
+                    .bold()
+                if isTestPressed {
+                    Text("記録中")
+                        .font(.caption2)
+                        .bold()
+                }
+            }
+                .multilineTextAlignment(.center)
+                .foregroundColor(.white)
+                .padding(.vertical, 10)
+                .padding(.horizontal, 12)
+                .background(isTestPressed ? Color.green.opacity(0.90) : Color.purple.opacity(0.85))
+                .cornerRadius(10)
+                .contentShape(Rectangle())
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10)
+                        .stroke(Color.white.opacity(isTestPressed ? 0.9 : 0.5), lineWidth: isTestPressed ? 2 : 1)
+                )
+                .shadow(color: Color.black.opacity(isTestPressed ? 0.25 : 0.12), radius: isTestPressed ? 10 : 6, x: 0, y: 4)
+                .scaleEffect(isTestPressed ? 1.06 : 1.0)
+                .animation(.spring(response: 0.18, dampingFraction: 0.75), value: isTestPressed)
+                .frame(minWidth: 78, minHeight: 60) // ヒット領域を拡大
+            .offset(x: size * 0.36, y: size * 0.32) // ハートの横
+            .highPriorityGesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { _ in onTestPressChanged(true) }
+                    .onEnded { _ in onTestPressChanged(false) }
+            )
+            .zIndex(1001)
             
             // 5. 手 (ハートを抱っこ)
             HStack(spacing: size * 0.52) {

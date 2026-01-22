@@ -64,6 +64,47 @@ public final class PlayerNodeStreamer {
   // ✅ 追加: 再生状態変更通知クロージャ
   public var onPlaybackStateChange: ((Bool) -> Void)?
 
+  // MARK: - Voice FX tuning helpers
+  public struct VoiceFXState: Sendable {
+    public let enabled: Bool
+    public let useVarispeed: Bool
+    public let timePitchPitch: Float
+    public let timePitchRate: Float
+    public let timePitchOverlap: Float
+    public let varispeedRate: Float
+  }
+
+  public func snapshotVoiceFXState() -> VoiceFXState {
+    VoiceFXState(
+      enabled: enableVoiceEffect,
+      useVarispeed: useVarispeed,
+      timePitchPitch: timePitchNode.pitch,
+      timePitchRate: timePitchNode.rate,
+      timePitchOverlap: timePitchNode.overlap,
+      varispeedRate: varispeedNode.rate
+    )
+  }
+
+  public func applyVoiceFXState(_ state: VoiceFXState) {
+    // ノード設定（接続経路に関わらず安全に反映できる）
+    timePitchNode.pitch = state.timePitchPitch
+    timePitchNode.rate = state.timePitchRate
+    timePitchNode.overlap = state.timePitchOverlap
+    varispeedNode.rate = state.varispeedRate
+    // 接続経路/有効化
+    updateVoiceEffect(enabled: state.enabled, useVarispeed: state.useVarispeed)
+  }
+
+  /// フォールバックTTSなど、より「マスコット寄り」にしたいケース用のプリセット。
+  /// - Note: TimePitch方式は速度をあまり変えずにピッチ感を出しやすい。
+  public func applyMascotBoostPreset() {
+    // 経路をTimePitchへ（ピッチを強めに）
+    updateVoiceEffect(enabled: true, useVarispeed: false)
+    timePitchNode.pitch = 900.0   // cents（約+9半音）
+    timePitchNode.rate = 1.20     // ✅ フォールバックTTSはもう少し早口に
+    timePitchNode.overlap = 12.0
+  }
+
   /// ✅ 共通エンジンを使用する場合（AEC有効化のため推奨）
   public init(sharedEngine: AVAudioEngine, sourceSampleRate: Double = 24_000.0, ownsEngine: Bool = false) {
     self.engine = sharedEngine
