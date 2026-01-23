@@ -222,7 +222,7 @@ public final class PlayerNodeStreamer {
       throw error
     }
   }
-  
+
   /// ✅ RMS計算（dBFS）
   private func calculateRMS(from buffer: AVAudioPCMBuffer) -> Double {
     guard let channelData = buffer.floatChannelData else { return -60.0 }

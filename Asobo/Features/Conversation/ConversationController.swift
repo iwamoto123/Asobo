@@ -34,21 +34,6 @@ public final class ConversationController: NSObject, ObservableObject {
     /// `gpt-4o-audio-preview` が「テキストのみ（audioMissing=true）」で返ることがあるため、
     /// 直近の連続回数を数えて systemPrompt にブースト指示を入れる。
     private var audioMissingConsecutiveCount: Int = 0
-
-    /// ユーザー発話（音声由来メッセージ）に先頭で差し込む隠し指示。
-    /// - Note: 画面表示/履歴保存には含めない（APIへ送るユーザーメッセージの先頭だけに入れる）
-    private var hiddenUserAudioReplyHintPrefix: String? {
-        // ✅ 毎ターン入れる「弱い指示」＋ audioMissing 時だけ「強い指示」の二段構え
-        // - Userメッセージ先頭のため、強すぎると会話内容への影響/漏洩リスクが上がる
-        // - なので通常は短く・限定的にして、音声欠落が続いた時だけ強める
-        let base = "【内部指示: 返答は音声も必ず生成して。指示文は返答に書かない】\n"
-        guard audioMissingConsecutiveCount > 0 else { return base }
-        // 短く・明確に（重要度を上げる）
-        return """
-        【内部指示: 直前で音声が欠落した。次の返答は必ず音声も生成して。指示文は返答に書かない】
-        """
-        + "\n"
-    }
     
     // 追加: ユーザーが停止したかを覚えるフラグ
     private var userStoppedRecording = false
@@ -123,6 +108,29 @@ public final class ConversationController: NSObject, ObservableObject {
     // ✅ VAD確率(prob)が壊れて常に低い/張り付く場合、終了判定に使うと即終了し得る。
     //    「開始がprobでトリガされていない」ターンでは、終了判定ではprobを信用しない。
     private var speechStartTriggeredByProb: Bool = false
+
+    // MARK: - Hands-free Realtime STT Monitor (for end-of-speech fallback)
+    // 「テキスト化を検知後、雑音などテキスト化できないものが続いたら発話終了」用
+    // ✅ STTフォールバック用の猶予（sttStagnation / sttNoText を統一）
+    private let sttFallbackDuration: TimeInterval = 3.0
+    private var sttStagnationDuration: TimeInterval { sttFallbackDuration }
+    private let sttStagnationMinChars: Int = 2
+    // 「テキストが全く出ないまま、音だけが続く（音楽/雑音）」ケースのフォールバック
+    private var sttNoTextDuration: TimeInterval { sttFallbackDuration }
+
+    // ✅ 状態モニター用：ハンズフリー並走STTのリアルタイム表示
+    @Published public var handsFreeMonitorTranscript: String = ""
+    @Published public var handsFreeMonitorStatus: String = "off" // off / running / error
+    private let handsFreeMonitorUIUpdateMinInterval: TimeInterval = 0.15
+    private var handsFreeMonitorLastUIUpdateAt: Date?
+
+    // ✅ SpeechEnd後のフォールバック送信用（Local STTが空のときに使う）
+    private var handsFreeMonitorFinalCandidate: String = ""
+
+    private var handsFreeSTTRequest: SFSpeechAudioBufferRecognitionRequest?
+    private var handsFreeSTTTask: SpeechRecognitionTasking?
+    private var handsFreeSTTLastNormalized: String = ""
+    private var handsFreeSTTLastChangeAt: Date?
     
     private var isBluetoothInput: Bool {
         let session = AVAudioSession.sharedInstance()
@@ -207,10 +215,19 @@ public final class ConversationController: NSObject, ObservableObject {
     private var routeChangeObserver: Any?
 
     // MARK: - Fallback TTS tuning (audio-only; UIテキストは変えない)
-    /// フォールバックTTSのテンションを「音声だけ」上げたいので、公式パラメータが使える場合は speed を上げる。
-    /// - Note: サーバ実装/プロキシによっては未対応の可能性があるため、HTTP 4xx 時は speed なしでリトライする。
-    private let fallbackTTSSpeed: Double = 1.25
+    /// フォールバックTTSの音声は、入力テキスト側の軽い整形と再生側のVoice FXでテンションを調整する。
     
+    /// gpt-4o-audio-preview に渡す user メッセージ先頭の共通プレフィックス。
+    /// - Note: systemPrompt とは別に、user 側にも「必ず音声を返す」指示を毎回付与する（音声欠落の再発を抑える目的）。
+    private var audioPreviewUserMessagePrefix: String {
+        """
+        【重要】
+        - 返答は必ず音声（audio）を含めてください。テキストだけの返答は禁止です。
+        - 出力は「audio voice=nova, format=pcm16」で、必ず audio チャンクを送ってください。
+
+        """
+    }
+
     // ✅ 会話文脈（過去のテキスト履歴）をステートレスAPIに渡すために保持
     struct HistoryItem: Codable {
         let role: String    // "user" or "assistant"
@@ -958,6 +975,7 @@ public final class ConversationController: NSObject, ObservableObject {
         vadState = .idle
         speechStartTime = nil
         recordedPCMData.removeAll()
+        stopHandsFreeRealtimeSTTMonitor()
         mic?.stop()
         turnState = .waitingUser
     }
@@ -983,6 +1001,11 @@ public final class ConversationController: NSObject, ObservableObject {
             self.mic = MicrophoneCapture(sharedEngine: self.sharedAudioEngine, onPCM: { [weak self] buf in
                 self?.appendPCMBuffer(buf)
             }, outputMonitor: self.player.outputMonitor)
+
+            // ✅ 監視用リアルタイムSTTに「変換前の入力バッファ」を流す
+            self.mic?.onInputBuffer = { [weak self] buffer in
+                self?.appendHandsFreeSTTInputBuffer(buffer)
+            }
             
             self.mic?.onBargeIn = { [weak self] in
                 self?.interruptAI()
@@ -1084,6 +1107,7 @@ public final class ConversationController: NSObject, ObservableObject {
                 speechStartTriggeredByProb = probTriggered
                 silenceTimer?.invalidate()
                 silenceTimer = nil
+                startHandsFreeRealtimeSTTMonitorIfNeeded()
                 turnMetrics.listenStart = turnMetrics.listenStart ?? speechStartTime
                 let probText = String(format: "%.4f", probability)
                 let rmsText = String(format: "%.2f", rmsDb)
@@ -1110,7 +1134,7 @@ public final class ConversationController: NSObject, ObservableObject {
                     let turnId = listeningTurnId
                     silenceTimer = Timer.scheduledTimer(withTimeInterval: activeMinSilenceDuration, repeats: false) { [weak self] _ in
                         Task { @MainActor [weak self] in
-                            self?.handleSilenceTimeout(for: turnId)
+                            self?.handleSilenceTimeout(for: turnId, reason: "silence")
                         }
                     }
                 }
@@ -1118,13 +1142,29 @@ public final class ConversationController: NSObject, ObservableObject {
                 silenceTimer?.invalidate()
                 silenceTimer = nil
             }
+
+            // ✅ 追加: 「STTが更新されない + 音はしている」状態が2秒続いたら発話終了
+            // - 既存の無音判定が効かない（ノイズフロア張り付き等）場合のフォールバック
+            if let reason = sttFallbackEndReason(now: Date()) {
+                let turnId = listeningTurnId
+                print("🛑 STT fallback detected -> end speech (turnId=\(turnId), reason=\(reason))")
+                handleSilenceTimeout(for: turnId, reason: reason)
+                return
+            }
         }
     }
-    private func handleSilenceTimeout(for turnId: Int) {
+    private func handleSilenceTimeout(for turnId: Int, reason: String) {
         guard turnId == currentTurnId, turnId == listeningTurnId else { return }
         guard vadState == .speaking else { return }
         silenceTimer?.invalidate()
         silenceTimer = nil
+        // commit前に候補を退避（stopで消えるため）
+        handsFreeMonitorFinalCandidate = handsFreeSTTLastNormalized
+        stopHandsFreeRealtimeSTTMonitor()
+
+        // ✅ ここから先は「ターン確定処理」なので、VAD側の新規開始を止める
+        // handleVAD は turnState == .thinking を即returnするため、commit中の二重発話開始を防げる
+        turnState = .thinking
         
         let now = Date()
         let speechBegan = speechStartTime ?? now
@@ -1133,9 +1173,9 @@ public final class ConversationController: NSObject, ObservableObject {
         turnMetrics.speechEnd = now
         if let listenStart = turnMetrics.listenStart {
             let totalListen = now.timeIntervalSince(listenStart)
-            print("⏱️ Latency: speech end (listen->speechEnd=\(String(format: "%.2f", totalListen))s, speechDuration=\(String(format: "%.2f", duration))s)")
+            print("⏱️ Latency: speech end [\(reason)] (listen->speechEnd=\(String(format: "%.2f", totalListen))s, speechDuration=\(String(format: "%.2f", duration))s)")
         } else {
-            print("⏱️ Latency: speech end (duration=\(String(format: "%.2f", duration))s)")
+            print("⏱️ Latency: speech end [\(reason)] (duration=\(String(format: "%.2f", duration))s)")
         }
         
         if duration < minSpeechDuration {
@@ -1151,6 +1191,131 @@ public final class ConversationController: NSObject, ObservableObject {
         vadState = .idle
         speechStartTriggeredByProb = false
         commitUserSpeech()
+    }
+
+    // MARK: - Hands-free realtime STT monitor helpers
+    private func normalizeRealtimeTranscript(_ text: String) -> String {
+        // 日本語想定：余計な改行/空白を潰す（文字数ベースではなく「内容変化」を見る）
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        // 連続空白/改行を1つに
+        let collapsed = trimmed.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+        return collapsed
+    }
+
+    private func startHandsFreeRealtimeSTTMonitorIfNeeded() {
+        guard isHandsFreeMode else { return }
+        // 既に開始済みなら何もしない
+        if handsFreeSTTRequest != nil || handsFreeSTTTask != nil { return }
+
+        // 権限が無い/利用不可ならフォールバックしない（既存VAD/RMSに任せる）
+        guard speech.isAvailable else { return }
+        guard SFSpeechRecognizer.authorizationStatus() == .authorized else { return }
+
+        let req = SFSpeechAudioBufferRecognitionRequest()
+        req.shouldReportPartialResults = true
+        handsFreeSTTRequest = req
+        handsFreeSTTLastNormalized = ""
+        handsFreeSTTLastChangeAt = nil
+        handsFreeMonitorFinalCandidate = ""
+        handsFreeMonitorStatus = "running"
+        handsFreeMonitorTranscript = ""
+        handsFreeMonitorLastUIUpdateAt = nil
+
+        handsFreeSTTTask = speech.startTask(
+            request: req,
+            onResult: { [weak self] text, isFinal in
+                Task { @MainActor in
+                    guard let self else { return }
+                    guard self.isHandsFreeMode else { return }
+                    let normalized = self.normalizeRealtimeTranscript(text)
+                    if !normalized.isEmpty, normalized != self.handsFreeSTTLastNormalized {
+                        self.handsFreeSTTLastNormalized = normalized
+                        self.handsFreeSTTLastChangeAt = Date()
+                    }
+
+                    // ✅ UI表示（更新頻度を抑えて警告を避ける）
+                    let now = Date()
+                    let shouldUIUpdate: Bool = {
+                        if normalized == self.handsFreeMonitorTranscript { return false }
+                        if let last = self.handsFreeMonitorLastUIUpdateAt,
+                           now.timeIntervalSince(last) < self.handsFreeMonitorUIUpdateMinInterval {
+                            return false
+                        }
+                        return true
+                    }()
+                    if shouldUIUpdate {
+                        self.handsFreeMonitorTranscript = normalized
+                        self.handsFreeMonitorLastUIUpdateAt = now
+                        // ログ（必要ならここで見る）
+                        if !normalized.isEmpty {
+                            print("📝 HandsFreeMonitor STT:", normalized)
+                        }
+                    }
+                    if isFinal {
+                        // 監視目的なので、finalでも即停止しない（VAD側が終了を決める）
+                    }
+                }
+            },
+            onError: { [weak self] err in
+                Task { @MainActor in
+                    guard let self else { return }
+                    // 監視用なので基本は握りつぶし（既存VAD/RMS終了に任せる）
+                    // 「cancel/no speech」はよく出るので静かに処理
+                    if Self.isBenignSpeechError(err) {
+                        self.stopHandsFreeRealtimeSTTMonitor()
+                        return
+                    }
+                    let msg = (err as NSError).localizedDescription
+                    self.handsFreeMonitorStatus = "error"
+                    print("⚠️ HandsFreeRealtimeSTTMonitor error: \(msg)")
+                    self.stopHandsFreeRealtimeSTTMonitor()
+                }
+            }
+        )
+    }
+
+    private func stopHandsFreeRealtimeSTTMonitor() {
+        handsFreeSTTRequest?.endAudio()
+        handsFreeSTTTask?.cancel()
+        handsFreeSTTRequest = nil
+        handsFreeSTTTask = nil
+        handsFreeSTTLastNormalized = ""
+        handsFreeSTTLastChangeAt = nil
+        handsFreeMonitorStatus = "off"
+    }
+
+    private func appendHandsFreeSTTInputBuffer(_ buffer: AVAudioPCMBuffer) {
+        // ハンズフリー中のみ、監視用STTへ流す
+        guard isHandsFreeMode else { return }
+        handsFreeSTTRequest?.append(buffer)
+    }
+
+    private func sttFallbackEndReason(now: Date) -> String? {
+        guard isHandsFreeMode else { return nil }
+        guard vadState == .speaking, isUserSpeaking else { return nil }
+        // 既存の無音タイマーが動いているなら、そちらが先に終了させるので二重判定しない
+        guard silenceTimer == nil else { return nil }
+
+        // 「音はしている」の確認（RMSが閾値以上の更新が直近にあること）
+        let activityDelta = now.timeIntervalSince(lastUserVoiceActivityTime)
+        guard activityDelta <= 0.4 else { return nil }
+
+        // 1) 「テキスト化を検知後、更新が止まった」→ 発話終了
+        let current = handsFreeSTTLastNormalized
+        if current.count >= sttStagnationMinChars,
+           let lastChange = handsFreeSTTLastChangeAt,
+           now.timeIntervalSince(lastChange) >= sttStagnationDuration {
+            return "sttStagnation"
+        }
+
+        // 2) 「テキストが一切出ないまま、音だけが続く」→ 発話（誤検知）を打ち切る
+        if current.isEmpty, handsFreeSTTLastChangeAt == nil,
+           let speechStartTime,
+           now.timeIntervalSince(speechStartTime) >= sttNoTextDuration {
+            return "sttNoText"
+        }
+
+        return nil
     }
     
     private func interruptAI() {
@@ -1198,6 +1363,10 @@ public final class ConversationController: NSObject, ObservableObject {
         isUserSpeaking = false
         silenceTimer?.invalidate()
         silenceTimer = nil
+
+        // ✅ フォールバック候補はここでローカルに退避しておく（次ターン開始等で上書きされ得るため）
+        let monitorCandidateAtCommit = handsFreeMonitorFinalCandidate.trimmingCharacters(in: .whitespacesAndNewlines)
+        handsFreeMonitorFinalCandidate = ""
         
         let audioData = recordedPCMData
         recordedPCMData.removeAll()
@@ -1224,6 +1393,7 @@ public final class ConversationController: NSObject, ObservableObject {
             }
             
             await MainActor.run {
+                // handleSilenceTimeout() 側で turnState を thinking にしているが、念のためここでも整合させる
                 self.mic?.stop()
                 self.turnState = .thinking
                 if self.turnMetrics.speechEnd == nil { self.turnMetrics.speechEnd = Date() }
@@ -1232,8 +1402,14 @@ public final class ConversationController: NSObject, ObservableObject {
                 }
             }
             
-            if !cleaned.isEmpty, cleaned != "(voice)" {
-                await self.sendTextPreviewRequest(userText: cleaned)
+            // ✅ Local STT が空なら、並走STTの候補でフォールバック（デバッグにも有用）
+            let userTextToSend: String = (!cleaned.isEmpty && cleaned != "(voice)") ? cleaned : monitorCandidateAtCommit
+
+            if !userTextToSend.isEmpty, userTextToSend != "(voice)" {
+                if cleaned.isEmpty || cleaned == "(voice)" {
+                    print("🟨 Fallback to HandsFreeMonitor transcript: '\(userTextToSend)'")
+                }
+                await self.sendTextPreviewRequest(userText: userTextToSend)
             } else {
                 await self.persistVoiceOnlyTurn()
                 await MainActor.run {
@@ -1433,15 +1609,13 @@ public final class ConversationController: NSObject, ObservableObject {
         print("🧩 ConversationController: systemPrompt audioMissingBoost=\(audioMissingConsecutiveCount > 0) (consecutive=\(audioMissingConsecutiveCount))")
         let promptHead = String(currentSystemPrompt.prefix(140)).replacingOccurrences(of: "\n", with: "\\n")
         print("🧩 ConversationController: systemPrompt head(140)=\(promptHead)")
-        let hiddenPrefix = hiddenUserAudioReplyHintPrefix
-        print("🧩 ConversationController: userMessage hiddenPrefix=\(hiddenPrefix != nil) (len=\(hiddenPrefix?.count ?? 0))")
         
         do {
             let result = try await client.streamResponseText(
                 userText: trimmed,
                 systemPrompt: currentSystemPrompt,
                 history: conversationHistory,
-                userMessagePrefix: hiddenPrefix,
+                userMessagePrefix: audioPreviewUserMessagePrefix,
                 onText: { [weak self] delta in
                     guard let self else { return }
                     Task { @MainActor in
@@ -1615,8 +1789,6 @@ public final class ConversationController: NSObject, ObservableObject {
         print("🧩 ConversationController: systemPrompt audioMissingBoost=\(audioMissingConsecutiveCount > 0) (consecutive=\(audioMissingConsecutiveCount))")
         let promptHead = String(currentSystemPrompt.prefix(140)).replacingOccurrences(of: "\n", with: "\\n")
         print("🧩 ConversationController: systemPrompt head(140)=\(promptHead)")
-        let hiddenPrefix = hiddenUserAudioReplyHintPrefix
-        print("🧩 ConversationController: userMessage hiddenPrefix=\(hiddenPrefix != nil) (len=\(hiddenPrefix?.count ?? 0))")
         print("⏱️ ConversationController: sendAudioPreviewRequest start - pcmBytes=\(captured.count), sampleRate=\(recordedSampleRate)")
         await MainActor.run {
             self.player.prepareForNextStream()
@@ -1627,7 +1799,7 @@ public final class ConversationController: NSObject, ObservableObject {
                 audioData: wav,
                 systemPrompt: currentSystemPrompt,
                 history: conversationHistory,
-                userMessagePrefix: hiddenPrefix,
+                userMessagePrefix: audioPreviewUserMessagePrefix,
                 onText: { [weak self] delta in
                     guard let self else { return }
                     Task { @MainActor in
@@ -1827,11 +1999,10 @@ public final class ConversationController: NSObject, ObservableObject {
             let voice: String
             let input: String
             let format: String
-            let speed: Double?
         }
         // PCM16 で受け取ればデコード不要で確実に再生できる
         let ttsInput = fallbackTTSInput(from: trimmed)
-        var payload = SpeechPayload(model: "gpt-4o-mini-tts", voice: "nova", input: ttsInput, format: "pcm16", speed: fallbackTTSSpeed)
+        let payload = SpeechPayload(model: "gpt-4o-mini-tts", voice: "nova", input: ttsInput, format: "pcm16")
         
         var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
@@ -1840,8 +2011,7 @@ public final class ConversationController: NSObject, ObservableObject {
         request.addValue("audio/pcm, audio/wav, audio/mpeg", forHTTPHeaderField: "Accept")
         request.addValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.httpBody = try? JSONEncoder().encode(payload)
-        let speedText = payload.speed.map { String(format: "%.2f", $0) } ?? "nil"
-        print("🎺 ConversationController: fallback TTS request - len=\(ttsInput.count), model=\(payload.model), voice=\(payload.voice), format=\(payload.format), speed=\(speedText)")
+        print("🎺 ConversationController: fallback TTS request - len=\(ttsInput.count), model=\(payload.model), voice=\(payload.voice), format=\(payload.format)")
         
         var startedPlayback = false
         do {
@@ -1853,24 +2023,7 @@ public final class ConversationController: NSObject, ObservableObject {
             if !(200..<300).contains(http.statusCode) {
                 let body = String(data: data, encoding: .utf8) ?? "(binary)"
                 print("❌ ConversationController: fallback TTS HTTP \(http.statusCode) - body: \(body)")
-                
-                // speed が未対応のサーバ/プロキシだった場合に備えて、speedなしで一度だけリトライする
-                if payload.speed != nil, http.statusCode >= 400, http.statusCode < 500 {
-                    print("🎺 ConversationController: fallback TTS retry without speed (possible unsupported param)")
-                    payload = SpeechPayload(model: payload.model, voice: payload.voice, input: payload.input, format: payload.format, speed: nil)
-                    request.httpBody = try? JSONEncoder().encode(payload)
-                    let retry = try await URLSession.shared.data(for: request)
-                    data = retry.0
-                    response = retry.1
-                    guard let http2 = response as? HTTPURLResponse, (200..<300).contains(http2.statusCode) else {
-                        let body2 = String(data: data, encoding: .utf8) ?? "(binary)"
-                        print("❌ ConversationController: fallback TTS retry failed - body: \(body2)")
-                        return
-                    }
-                    http = http2
-                } else {
-                    return
-                }
+                return
             }
             let contentType = http.value(forHTTPHeaderField: "Content-Type")
             let ctText = contentType ?? "unknown"
@@ -2346,7 +2499,7 @@ private static func humanReadable(_ error: Error) -> String {
         ルール:
         1) 返答は1〜2文・40文字以内。長話は禁止。
         2) 聞き取れない/わからない時は勝手に話を作らず「ん？もういっかい言って？」「え？」などと聞き返す。
-        3) 子どもが話しやすいように、最後に簡単な質問を添える（例:「くるまはすき？」「きょうはなにしたの？」）。
+        3) 子どもが話しやすいように、最後に簡単な質問を添える（同じ質問のくりかえしは避ける）。
         4) むずかしい言葉を避け、ひらがな中心でやさしく。擬音語もOK。
         5) 直前の会話文脈を維持し、話題を飛ばさない。
         """

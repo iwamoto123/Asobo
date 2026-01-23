@@ -220,31 +220,30 @@ public struct ChildHomeView: View {
             stateRow("TurnState", value: turnStateLabel, color: .blue)
             stateRow("VADState", value: vadStateLabel, color: .purple)
             
-            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 6) {
-                ForEach(flagItems, id: \.0) { title, isOn in
-                    flagChip(title: title, isOn: isOn)
+            // フラグタグ（録音/接続…）は見切れやすいので非表示にし、その領域にSTTのリアルタイム表示を出す
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text("あなたの音声（リアルタイム）")
+                        .foregroundColor(.secondary)
+                    Spacer()
                 }
+                
+                ScrollView(.vertical, showsIndicators: false) {
+                    let t = liveUserTranscriptText
+                    Text(t.isEmpty
+                         ? (controller.isRecording ? "（認識中…）" : "（話すとここに文字が出ます）")
+                         : t)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(minHeight: 34, maxHeight: 72)
+                .padding(8)
+                .background(Color.green.opacity(0.10), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
             }
-            
-            Divider()
-                .padding(.vertical, 4)
         }
         .padding(12)
         .background(Color.white.opacity(0.92), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         .shadow(color: Color.black.opacity(0.08), radius: 10, x: 0, y: 4)
         .font(.caption2)
-    }
-    
-    private var flagItems: [(String, Bool)] {
-        [
-            ("録音", controller.isRecording),
-            ("Realtime接続", controller.isRealtimeActive),
-            ("接続中", controller.isRealtimeConnecting),
-            ("ハンズフリー", controller.isHandsFreeMode),
-            ("AI再生中", controller.isAIPlayingAudio),
-            ("思考中", controller.isThinking),
-            ("再生フラグ", controller.isPlayingAudio)
-        ]
     }
     
     private var turnStateLabel: String {
@@ -265,6 +264,13 @@ public struct ChildHomeView: View {
         case .speaking: return "speaking"
         }
     }
+
+    private var liveUserTranscriptText: String {
+        let t = !controller.handsFreeMonitorTranscript.isEmpty
+        ? controller.handsFreeMonitorTranscript
+        : controller.transcript
+        return t.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
     
     private func stateRow(_ title: String, value: String, color: Color = .primary) -> some View {
         HStack {
@@ -274,19 +280,6 @@ public struct ChildHomeView: View {
             Text(value)
                 .foregroundColor(color)
         }
-    }
-    
-    private func flagChip(title: String, isOn: Bool) -> some View {
-        HStack(spacing: 6) {
-            Circle()
-                .fill(isOn ? Color.green : Color.gray.opacity(0.7))
-                .frame(width: 6, height: 6)
-            Text(title)
-        }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
-        .background(isOn ? Color.green.opacity(0.15) : Color.gray.opacity(0.12))
-        .cornerRadius(8)
     }
     
     private func handleMicButtonTap() {
@@ -482,6 +475,9 @@ struct MocchyBearView: View {
     let onTap: () -> Void
     let onPressChanged: (Bool) -> Void
     let onTestPressChanged: (Bool) -> Void
+
+    /// 「TEST 長押し」観測用ボタン。今は使わないので非表示（復活させるときは true に戻す）
+    private let showVADTestButton: Bool = false
     
     var body: some View {
         ZStack {
@@ -547,19 +543,20 @@ struct MocchyBearView: View {
             )
             .zIndex(1000)
             
-            // 4.5 観測用ボタン（VAD制御とは独立。押下中だけログを出す）
-            // Button + gesture だと環境によってタッチが取りこぼされることがあるため、
-            // contentShape + highPriorityGesture で確実に拾う。
-            VStack(spacing: 2) {
-                Text(isTestPressed ? "TEST\nON" : "TEST\n長押し")
-                    .font(.caption)
-                    .bold()
-                if isTestPressed {
-                    Text("記録中")
-                        .font(.caption2)
+            if showVADTestButton {
+                // 4.5 観測用ボタン（VAD制御とは独立。押下中だけログを出す）
+                // Button + gesture だと環境によってタッチが取りこぼされることがあるため、
+                // contentShape + highPriorityGesture で確実に拾う。
+                VStack(spacing: 2) {
+                    Text(isTestPressed ? "TEST\nON" : "TEST\n長押し")
+                        .font(.caption)
                         .bold()
+                    if isTestPressed {
+                        Text("記録中")
+                            .font(.caption2)
+                            .bold()
+                    }
                 }
-            }
                 .multilineTextAlignment(.center)
                 .foregroundColor(.white)
                 .padding(.vertical, 10)
@@ -575,13 +572,14 @@ struct MocchyBearView: View {
                 .scaleEffect(isTestPressed ? 1.06 : 1.0)
                 .animation(.spring(response: 0.18, dampingFraction: 0.75), value: isTestPressed)
                 .frame(minWidth: 78, minHeight: 60) // ヒット領域を拡大
-            .offset(x: size * 0.36, y: size * 0.32) // ハートの横
-            .highPriorityGesture(
-                DragGesture(minimumDistance: 0)
-                    .onChanged { _ in onTestPressChanged(true) }
-                    .onEnded { _ in onTestPressChanged(false) }
-            )
-            .zIndex(1001)
+                .offset(x: size * 0.36, y: size * 0.32) // ハートの横
+                .highPriorityGesture(
+                    DragGesture(minimumDistance: 0)
+                        .onChanged { _ in onTestPressChanged(true) }
+                        .onEnded { _ in onTestPressChanged(false) }
+                )
+                .zIndex(1001)
+            }
             
             // 5. 手 (ハートを抱っこ)
             HStack(spacing: size * 0.52) {

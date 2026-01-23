@@ -25,6 +25,9 @@ public final class MicrophoneCapture {
   private let outFormat: AVAudioFormat
   private var converter: AVAudioConverter?  // ✅ エンジン開始後に再作成する可能性があるため、varに変更
   private let onPCM: (AVAudioPCMBuffer) -> Void
+  /// ✅ 追加: 変換前の入力生バッファ（主にSpeech.framework等のリアルタイムSTT用）
+  /// - note: installTapで受け取った `buffer` をそのまま渡す（通常 Float32 / 48kHz 前後）
+  public var onInputBuffer: ((AVAudioPCMBuffer) -> Void)?
   // ✅ 追加: 音量レベル（dB）を通知するコールバック
   public var onVolume: ((Double) -> Void)?
   // ✅ 追加: VAD確率を通知するコールバック
@@ -298,6 +301,9 @@ public final class MicrophoneCapture {
           return
         }
       }
+
+      // ✅ 変換前の入力バッファを外へ通知（必要な場合のみ）
+      self.onInputBuffer?(buffer)
 
       // ✅ 送る前に24kHz mono PCM16LEへ必ずダウンサンプル＆量子化
       // ✅ AVAudioEngineのタップはFloat32が多い。常にAVAudioConverterで24kHz/mono/Int16に変換

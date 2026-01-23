@@ -63,12 +63,12 @@ public struct ConversationView: View {
                             .font(.caption)
                             .foregroundColor(.green)
                     } else {
-                        Text("🎤 あなたの音声入力（Realtime認識）")
+                        Text("🎤 あなたの音声入力（Realtime並走STT / 状態モニター）")
                             .font(.caption)
                             .foregroundColor(.green)
                     }
                     
-                    if vm.mode == .realtime && vm.isRecording && vm.transcript.isEmpty {
+                    if vm.mode == .realtime && vm.isRecording && vm.handsFreeMonitorTranscript.isEmpty {
                         HStack(spacing: 6) {
                             ProgressView()
                                 .scaleEffect(0.8)
@@ -82,13 +82,20 @@ public struct ConversationView: View {
                         .cornerRadius(8)
                         .frame(minHeight: 60, maxHeight: 80)
                     } else {
-                        Text(vm.transcript.isEmpty ? "（音声を話すとここに文字が流れます）" : vm.transcript)
+                        let t = (vm.mode == .realtime) ? vm.handsFreeMonitorTranscript : vm.transcript
+                        Text(t.isEmpty ? "（音声を話すとここに文字が流れます）" : t)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(8)
                             .background(Color.green.opacity(0.1))
                             .cornerRadius(8)
                             .font(.caption)
                             .frame(minHeight: 60, maxHeight: 80)
+                    }
+
+                    if vm.mode == .realtime {
+                        Text("STT monitor: \(vm.handsFreeMonitorStatus)")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
                     }
                 }
                 
