@@ -101,9 +101,12 @@ public final class ConversationController: NSObject, ObservableObject {
     private let speechEndThreshold: Float = 0.002
     private let defaultRmsStartThresholdDb: Double = -40.0
     private let bluetoothRmsStartThresholdDb: Double = -40.0
-    // ✅ 発話中の一瞬の音量低下/子どもの小声で「無音扱い」になりやすいので、終了側のRMS閾値は少し緩める
-    private let defaultSpeechEndRmsThresholdDb: Double = -55.0
-    private let bluetoothSpeechEndRmsThresholdDb: Double = -55.0
+    // ✅ 発話終了側のRMS閾値（dBFS）
+    // iPhone内蔵マイク + VoiceChat/VoiceProcessing だと静かな環境でもノイズフロアが -45〜-50dB 付近に張り付くことがあり、
+    // -55dBを要求すると「無音にならない」扱いで speaking が終わらないことがあるため、少し高めにする。
+    private let defaultSpeechEndRmsThresholdDb: Double = -50.0
+    // Bluetooth/HFPはノイズフロアが高く、-55dB未満に落ちにくいため終了できずspeaking張り付きになりやすい
+    private let bluetoothSpeechEndRmsThresholdDb: Double = -45.0
     private let defaultMinSilenceDuration: TimeInterval = 1.2
     private let bluetoothMinSilenceDuration: TimeInterval = 1.2
     private let speechStartHoldDuration: TimeInterval = 0.15
@@ -117,6 +120,9 @@ public final class ConversationController: NSObject, ObservableObject {
     private var silenceTimer: Timer?
     private var isUserSpeaking: Bool = false
     private var speechStartCandidateTime: Date?
+    // ✅ VAD確率(prob)が壊れて常に低い/張り付く場合、終了判定に使うと即終了し得る。
+    //    「開始がprobでトリガされていない」ターンでは、終了判定ではprobを信用しない。
+    private var speechStartTriggeredByProb: Bool = false
     
     private var isBluetoothInput: Bool {
         let session = AVAudioSession.sharedInstance()
@@ -1075,6 +1081,7 @@ public final class ConversationController: NSObject, ObservableObject {
                 vadState = .speaking
                 isUserSpeaking = true
                 speechStartTime = Date()
+                speechStartTriggeredByProb = probTriggered
                 silenceTimer?.invalidate()
                 silenceTimer = nil
                 turnMetrics.listenStart = turnMetrics.listenStart ?? speechStartTime
@@ -1091,10 +1098,13 @@ public final class ConversationController: NSObject, ObservableObject {
             }
         case .speaking:
             let rmsDb = lastInputRMS ?? -120.0
-            // ✅ 終了判定をORにすると、VAD確率"または"RMSのどちらかが一瞬でも落ちた時に無音タイマーが走りやすく、
-            //    長文を話している途中で誤って発話終了→AIターンに移行しがち。
-            //    ここは「VADもRMSも静か」= 本当に止まった、と見なしてタイマーを開始する。
-            let isSilent = (probability < speechEndThreshold) && (rmsDb < activeSpeechEndRmsThresholdDb)
+            // ✅ 発話終了判定:
+            //    - probが正常に動いているなら、(probが静か) または (RMSが静か) で無音タイマー開始
+            //    - ただし prob が機能していない/常に低い場合、ORにすると常時 isSilent=true になり即終了するため、
+            //      「開始がprobでトリガされていない」ターンでは終了判定でprobを無視して RMSのみで判定する。
+            let probSaysSilent = (probability < speechEndThreshold)
+            let rmsSaysSilent = (rmsDb < activeSpeechEndRmsThresholdDb)
+            let isSilent = speechStartTriggeredByProb ? (probSaysSilent || rmsSaysSilent) : rmsSaysSilent
             if isSilent {
                 if silenceTimer == nil {
                     let turnId = listeningTurnId
@@ -1131,6 +1141,7 @@ public final class ConversationController: NSObject, ObservableObject {
         if duration < minSpeechDuration {
             vadState = .idle
             isUserSpeaking = false
+            speechStartTriggeredByProb = false
             recordedPCMData.removeAll()
             let formattedDuration = String(format: "%.2f", duration)
             print("🪫 短すぎる発話を破棄 (duration=\(formattedDuration)s)")
@@ -1138,6 +1149,7 @@ public final class ConversationController: NSObject, ObservableObject {
         }
         
         vadState = .idle
+        speechStartTriggeredByProb = false
         commitUserSpeech()
     }
     
