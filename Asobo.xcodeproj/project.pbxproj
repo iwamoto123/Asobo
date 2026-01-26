@@ -164,7 +164,7 @@
 			buildConfigurationList = 1497CE8A2E72D88A00051217 /* Build configuration list for PBXNativeTarget "Asobo" */;
 			buildPhases = (
 				1497CE642E72D88900051217 /* Sources */,
-				14F0A0AA3C0F1A2B3C4D5E6F /* Fix onnxruntime MinimumOSVersion */,
+				14F0A0AA3C0F1A2B3C4D5E6F /* ShellScript */,
 				1497CE652E72D88900051217 /* Frameworks */,
 				1497CE662E72D88900051217 /* Resources */,
 			);
@@ -322,7 +322,7 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
-		14F0A0AA3C0F1A2B3C4D5E6F /* Fix onnxruntime MinimumOSVersion */ = {
+		14F0A0AA3C0F1A2B3C4D5E6F /* ShellScript */ = {
 			isa = PBXShellScriptBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -504,7 +504,7 @@
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = NO;
 				CODE_SIGN_ENTITLEMENTS = Asobo/Asobo.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 42;
+				CURRENT_PROJECT_VERSION = 43;
 				DEVELOPMENT_TEAM = XT522XX64M;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -545,7 +545,7 @@
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = NO;
 				CODE_SIGN_ENTITLEMENTS = Asobo/Asobo.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 42;
+				CURRENT_PROJECT_VERSION = 43;
 				DEVELOPMENT_TEAM = XT522XX64M;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -583,7 +583,7 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 42;
+				CURRENT_PROJECT_VERSION = 43;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Asobo/App/Resources/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.5;
@@ -606,7 +606,7 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 42;
+				CURRENT_PROJECT_VERSION = 43;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Asobo/App/Resources/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.5;
@@ -628,7 +628,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 42;
+				CURRENT_PROJECT_VERSION = 43;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Asobo/App/Resources/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.5;
@@ -650,7 +650,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 42;
+				CURRENT_PROJECT_VERSION = 43;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Asobo/App/Resources/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.5;

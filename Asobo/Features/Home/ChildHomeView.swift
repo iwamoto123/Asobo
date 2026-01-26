@@ -229,7 +229,7 @@ public struct ChildHomeView: View {
                 }
                 
                 ScrollView(.vertical, showsIndicators: false) {
-                    let t = liveUserTranscriptText
+                    let t = monitorUserText
                     Text(t.isEmpty
                          ? (controller.isRecording ? "（認識中…）" : "（話すとここに文字が出ます）")
                          : t)
@@ -270,6 +270,16 @@ public struct ChildHomeView: View {
         ? controller.handsFreeMonitorTranscript
         : controller.transcript
         return t.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var monitorUserText: String {
+        // 発話中は「今しゃべっている内容」が見えないと不安になるので、ライブSTTを優先表示する。
+        if controller.isRecording {
+            return liveUserTranscriptText
+        }
+        // 発話終了後は履歴に積むのと同じ「確定テキスト」を優先表示する。
+        let committed = controller.lastCommittedUserText.trimmingCharacters(in: .whitespacesAndNewlines)
+        return committed.isEmpty ? liveUserTranscriptText : committed
     }
     
     private func stateRow(_ title: String, value: String, color: Color = .primary) -> some View {
