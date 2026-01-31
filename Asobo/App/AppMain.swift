@@ -5,12 +5,11 @@ import FirebaseCore
 import FirebaseAuth
 import GoogleSignIn
 
-
 class AppDelegate: NSObject, UIApplicationDelegate {
   func application(_ application: UIApplication,
-                   didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey : Any]? = nil) -> Bool {
+                   didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
     FirebaseApp.configure()
-    
+
     // Google Sign-In 用のクライアントID設定（Info.plistのGIDClientIDが無い場合の保険）
     if let clientID = FirebaseApp.app()?.options.clientID {
       GIDSignIn.sharedInstance.configuration = GIDConfiguration(clientID: clientID)
@@ -20,8 +19,8 @@ class AppDelegate: NSObject, UIApplicationDelegate {
 
     return true
   }
-  
-  func application(_ app: UIApplication, open url: URL, options: [UIApplication.OpenURLOptionsKey : Any] = [:]) -> Bool {
+
+  func application(_ app: UIApplication, open url: URL, options: [UIApplication.OpenURLOptionsKey: Any] = [:]) -> Bool {
     // Google Sign-In のコールバック処理
     return GIDSignIn.sharedInstance.handle(url)
   }

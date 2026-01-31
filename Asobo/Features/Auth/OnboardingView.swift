@@ -8,7 +8,7 @@ import FirebaseAuth
 struct OnboardingView: View {
     @ObservedObject var authVM: AuthViewModel
     @State private var tabSelection = 0
-    
+
     // 入力データ
     @State private var parentName = ""
     @State private var childName = ""
@@ -18,18 +18,17 @@ struct OnboardingView: View {
     @State private var selectedPhotoItem: PhotosPickerItem?
     @State private var selectedPhotoData: Data?
     @State private var imageForCropping: UIImage?
-    
+
     @State private var isSaving = false
     @State private var errorMessage: String?
-    
+
     // 入力必須エラーフラグ
     @State private var parentError = false
     @State private var childNameError = false
     @State private var childNicknameError = false
     @State private var teddyError = false
     @State private var birthDateError = false
- 
-    
+
     var body: some View {
         ZStack {
             LinearGradient(
@@ -39,7 +38,7 @@ struct OnboardingView: View {
             )
             .ignoresSafeArea()
             .overlay(AmbientCircles())
-            
+
             TabView(selection: $tabSelection) {
                 // Step 1: 親の名前
                 OnboardingStepView(
@@ -62,7 +61,7 @@ struct OnboardingView: View {
                     .padding(.horizontal)
                 }
                 .tag(0)
-                
+
                 // Step 2: 子供の名前と誕生日
                 OnboardingStepView(
                     title: "お子さまについて",
@@ -122,7 +121,7 @@ struct OnboardingView: View {
                 .padding(.top, 100)
                 .padding(.horizontal)
                 .tag(2)
-                
+
                 // Step 4: ぬいぐるみ
                 OnboardingStepView(
                     title: "相棒の名前",
@@ -141,13 +140,13 @@ struct OnboardingView: View {
                     }
                 }
                 .tag(3)
-                
+
                 // Step 5: 写真設定と完了
                 VStack(spacing: 20) {
                     Text("最後にアイコンを設定")
                         .font(.title2.bold())
                         .foregroundColor(Color(hex: "5A4A42"))
-                    
+
                     PhotosPicker(selection: $selectedPhotoItem, matching: .images) {
                         if let data = selectedPhotoData, let uiImage = UIImage(data: data) {
                             Image(uiImage: uiImage)
@@ -193,13 +192,13 @@ struct OnboardingView: View {
                             )
                         }
                     }
-                    
+
                     if let errorMessage = errorMessage {
                         Text(errorMessage)
                             .font(.caption)
                             .foregroundColor(.red)
                     }
-                    
+
                     Button(action: saveData) {
                         if isSaving {
                             ProgressView().tint(.white)
@@ -221,7 +220,7 @@ struct OnboardingView: View {
             }
             .tabViewStyle(.page(indexDisplayMode: .always))
             .indexViewStyle(.page(backgroundDisplayMode: .always))
-            
+
             // 次へボタン (Step 0-2) — キーボード分だけ持ち上げる
             if tabSelection < 4 {
                 VStack {
@@ -254,11 +253,11 @@ struct OnboardingView: View {
             }
         }
     }
-    
+
     var canSubmit: Bool {
         !parentName.isEmpty && !childName.isEmpty && !childNickname.isEmpty && !teddyName.isEmpty
     }
-    
+
     // データ保存処理
     func saveData() {
         guard let uid = Auth.auth().currentUser?.uid else {
@@ -269,11 +268,11 @@ struct OnboardingView: View {
         let childRef = db.collection("users").document(uid).collection("children").document()
         isSaving = true
         errorMessage = nil
-        
+
         Task {
             do {
                 // 1. 画像アップロード (あれば)
-                var photoURL: String? = nil
+                var photoURL: String?
                 if let data = selectedPhotoData {
                     do {
                         // デフォルトバケットを使用し、子ごとのパスに保存
@@ -305,7 +304,7 @@ struct OnboardingView: View {
                     currentChildId: nil, // 後で更新
                     createdAt: Date()
                 )
-                
+
                 // 手動エンコード（FirebaseFirestoreSwiftを使わない方式）
                 var profileData: [String: Any] = [:]
                 profileData["displayName"] = userProfile.displayName
@@ -314,10 +313,10 @@ struct OnboardingView: View {
                     profileData["email"] = email
                 }
                 profileData["createdAt"] = Timestamp(date: userProfile.createdAt)
-                
+
                 try await db.collection("users").document(uid).setData(profileData)
                 print("✅ OnboardingView: 親プロフィール保存成功")
-                
+
                 // 3. 子供プロフィールの保存
                 let childProfile = FirebaseChildProfile(
                     id: childRef.documentID,
@@ -329,7 +328,7 @@ struct OnboardingView: View {
                     interests: [],
                     createdAt: Date()
                 )
-                
+
                 // 手動エンコード
                 var childData: [String: Any] = [:]
                 childData["displayName"] = childProfile.displayName
@@ -345,17 +344,17 @@ struct OnboardingView: View {
                 }
                 childData["interestContext"] = [] // 空配列
                 childData["createdAt"] = Timestamp(date: childProfile.createdAt)
-                
+
                 try await childRef.setData(childData)
                 print("✅ OnboardingView: 子供プロフィール保存成功 - childId: \(childRef.documentID)")
-                
+
                 // 4. 親のcurrentChildIdを更新
                 try await db.collection("users").document(uid).updateData(["currentChildId": childRef.documentID])
                 print("✅ OnboardingView: currentChildId更新成功")
-                
+
                 // 5. ViewModelの状態更新 -> Mainへ遷移
                 await authVM.fetchUserProfile(userId: uid)
-                
+
             } catch {
                 print("❌ OnboardingView: データ保存エラー - \(error)")
                 errorMessage = "データの保存に失敗しました: \(error.localizedDescription)"
@@ -363,13 +362,13 @@ struct OnboardingView: View {
             }
         }
     }
-    
+
     private func validateCurrentStep() -> Bool {
         // トリムして空チェック
         func isEmpty(_ text: String) -> Bool {
             text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
-        
+
         switch tabSelection {
         case 0:
             parentError = isEmpty(parentName)
@@ -396,27 +395,27 @@ struct OnboardingStepView<Content: View>: View {
     let title: String
     let description: String
     let content: Content
-    
+
     init(title: String, description: String, @ViewBuilder content: () -> Content) {
         self.title = title
         self.description = description
         self.content = content()
     }
-    
+
     var body: some View {
         VStack(spacing: 28) {
             Text(title)
                 .font(.title.bold())
                 .foregroundColor(Color(hex: "5A4A42"))
-            
+
             Text(description)
                 .multilineTextAlignment(.center)
                 .foregroundColor(Color(hex: "8A7A72"))
                 .fixedSize(horizontal: false, vertical: true)
                 .fixedSize(horizontal: false, vertical: true)
-            
+
             content
-            
+
             Spacer()
         }
         .padding(.top, 60)

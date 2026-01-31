@@ -62,7 +62,6 @@ extension ConversationController {
         }
 
         let key = AppConfig.openAIKey
-        print("🔑 ConversationController: APIキー確認 - \(key.prefix(10))...")
         guard !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             self.errorMessage = "OPENAI_API_KEY が未設定です（Secrets.xcconfig を確認）"
             return
@@ -314,5 +313,3 @@ extension ConversationController {
         }
     }
 }
-
-

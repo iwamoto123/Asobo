@@ -8,12 +8,12 @@ struct ContentView: View {
                     .font(.largeTitle)
                     .fontWeight(.bold)
                     .padding()
-                
+
                 Text("音声を文字に変換するアプリ")
                     .font(.title2)
                     .foregroundColor(.secondary)
                     .padding(.bottom)
-                
+
                 NavigationLink(destination: MinimalVoiceToTextView()) {
                     HStack {
                         Image(systemName: "mic.circle.fill")
@@ -26,7 +26,7 @@ struct ContentView: View {
                     .background(Color.blue)
                     .cornerRadius(12)
                 }
-                
+
                 NavigationLink(destination: ConversationView()) {
                     HStack {
                         Image(systemName: "bubble.left.and.bubble.right.fill")
@@ -39,7 +39,7 @@ struct ContentView: View {
                     .background(Color.green)
                     .cornerRadius(12)
                 }
-                
+
                 NavigationLink(destination: RealtimeTestView()) {
                     HStack {
                         Image(systemName: "testtube.2")
@@ -52,7 +52,7 @@ struct ContentView: View {
                     .background(Color.orange)
                     .cornerRadius(12)
                 }
-                
+
                 Spacer()
             }
             .padding()

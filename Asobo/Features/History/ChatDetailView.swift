@@ -12,9 +12,9 @@ struct ChatDetailView: View {
     @State private var turns: [FirebaseTurn] = []
     @State private var isLoading = false
     @State private var errorMessage: String?
-    
+
     private let repository = FirebaseConversationsRepository()
-    
+
     @State private var childPhotoURLString: String?
     @State private var childAvatarImage: Image?
     @State private var loadedAvatarURLString: String?
@@ -24,13 +24,13 @@ struct ChatDetailView: View {
         let normalizedURLString = urlString.replacingOccurrences(of: ":443", with: "")
         return URL(string: normalizedURLString)
     }
-    
+
     var body: some View {
         ZStack {
             // 背景色（LINE風の薄いグレー）
             Color(uiColor: .systemGroupedBackground)
                 .ignoresSafeArea()
-            
+
             ScrollViewReader { proxy in
                 ScrollView {
                     VStack(spacing: 0) {
@@ -42,7 +42,7 @@ struct ChatDetailView: View {
                                 .padding(.vertical, 12)
                                 .background(Color(uiColor: .secondarySystemGroupedBackground))
                         }
-                        
+
                         // 会話内容
                         if isLoading {
                             ProgressView("読み込み中...")
@@ -125,18 +125,18 @@ struct ChatDetailView: View {
             }
         }
     }
-    
+
     private func loadTurns() async {
         guard let sessionId = session.id else { return }
         guard let userId = authVM.currentUser?.uid, let childId = authVM.selectedChild?.id else {
             errorMessage = "ユーザー情報が見つかりません。再ログインしてください。"
             return
         }
-        
+
         isLoading = true
         errorMessage = nil
         defer { isLoading = false }
-        
+
         do {
             async let turnsTask: [FirebaseTurn] = repository.fetchTurns(
                 userId: userId,
@@ -147,9 +147,9 @@ struct ChatDetailView: View {
                 .collection("users").document(userId)
                 .collection("children").document(childId)
                 .getDocument()
-            
+
             self.turns = try await turnsTask
-            
+
             // 子プロフィールのphotoURLを更新（選択中の子に反映されていない場合に備える）
             if let doc = try? await childDocTask, doc.exists,
                let urlString = doc.data()?["photoURL"] as? String {
@@ -165,7 +165,7 @@ struct ChatDetailView: View {
             print("❌ ChatDetailView: ターン取得失敗 - \(error)")
         }
     }
-    
+
     private func loadChildImageIfNeeded(forceReload: Bool) async {
         guard let url = childPhotoURL else {
             print("⚠️ ChatDetailView: loadChildImageIfNeeded - photoURLがnil")
@@ -176,25 +176,25 @@ struct ChatDetailView: View {
             print("ℹ️ ChatDetailView: loadChildImageIfNeeded - スキップ（既に読み込み済み）")
             return
         }
-        
+
         print("📸 ChatDetailView: 子画像の読み込み開始 - URL: \(url.absoluteString)")
-        
+
         // Firebase Storage SDKを使用して画像を取得
         guard let userId = authVM.currentUser?.uid,
               let childId = authVM.selectedChild?.id else {
             print("⚠️ ChatDetailView: ユーザー情報が取得できません")
             return
         }
-        
+
         do {
             // Storage参照を取得
             let storage = Storage.storage(url: "gs://asobo-539e5.firebasestorage.app")
             let ref = storage.reference().child("users/\(userId)/children/\(childId)/photo.jpg")
-            
+
             // 最大サイズを10MBに設定してダウンロード
             let data = try await ref.data(maxSize: 10 * 1024 * 1024)
             print("📊 ChatDetailView: データ取得完了 - サイズ: \(data.count) bytes")
-            
+
             if let uiImage = UIImage(data: data) {
                 await MainActor.run {
                     childAvatarImage = Image(uiImage: uiImage)
@@ -211,7 +211,7 @@ struct ChatDetailView: View {
             do {
                 let (data, response) = try await URLSession.shared.data(from: url)
                 print("📊 ChatDetailView: URLSessionリトライ - データ取得完了 - サイズ: \(data.count) bytes, Content-Type: \((response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Content-Type") ?? "unknown")")
-                
+
                 // エラーレスポンス（JSON）かどうかを確認
                 if let jsonString = String(data: data, encoding: .utf8),
                    jsonString.contains("\"error\"") {
@@ -225,7 +225,7 @@ struct ChatDetailView: View {
                     }
                     return
                 }
-                
+
                 if let uiImage = UIImage(data: data) {
                     await MainActor.run {
                         childAvatarImage = Image(uiImage: uiImage)
@@ -246,7 +246,7 @@ struct ChatDetailView: View {
 // セッション情報のヘッダー（簡潔版）
 struct SessionHeaderView: View {
     let session: FirebaseConversationSession
-    
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             // 要約（目立つように表示）
@@ -256,7 +256,7 @@ struct SessionHeaderView: View {
                         .font(.caption2)
                         .foregroundColor(.secondary)
                         .textCase(.uppercase)
-                    
+
                     ForEach(session.summaries, id: \.self) { summary in
                         if !summary.isEmpty {
                             Text(summary)
@@ -271,7 +271,7 @@ struct SessionHeaderView: View {
                     }
                 }
             }
-            
+
             // 興味タグと新出語彙を横並び
             HStack(alignment: .top, spacing: 12) {
                 // 興味タグ
@@ -293,7 +293,7 @@ struct SessionHeaderView: View {
                         }
                     }
                 }
-                
+
                 // 新出語彙
                 if !session.newVocabulary.isEmpty {
                     VStack(alignment: .leading, spacing: 4) {
@@ -316,7 +316,7 @@ struct SessionHeaderView: View {
             }
         }
     }
-    
+
     private func tagDisplayName(_ tag: FirebaseInterestTag) -> String {
         switch tag {
         case .dinosaurs: return "恐竜"
@@ -344,32 +344,32 @@ struct ChatBubbleView: View {
     let turn: FirebaseTurn
     let childAvatarImage: Image?
     let childPhotoURL: URL?
-    
+
     // 子（あるいは親ユーザー）の発言は右側にまとめる。AIのみ左。
     private var isChild: Bool {
         turn.role != .ai
     }
-    
+
     private var timeFormatter: DateFormatter {
         let formatter = DateFormatter()
         formatter.timeStyle = .short
         formatter.locale = Locale(identifier: "ja_JP")
         return formatter
     }
-    
+
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
             if isChild {
                 // 子どもの発言（右側・緑色）
                 Spacer(minLength: 16)
-                
+
                 // ✅ alignment: .bottom にして時刻を下に揃える
                 HStack(alignment: .bottom, spacing: 6) {
                     // タイムスタンプ
                     Text(timeFormatter.string(from: turn.timestamp))
                         .font(.system(size: 11))
                         .foregroundColor(.secondary)
-                    
+
                     // 吹き出し
                     Text(turn.text ?? "")
                         .font(.system(size: 16))
@@ -381,7 +381,7 @@ struct ChatBubbleView: View {
                                 .fill(Color(red: 0.18, green: 0.80, blue: 0.44)) // LINEの緑色
                         )
                         .frame(maxWidth: 240, alignment: .trailing)
-                    
+
                     // 右側アイコン（子の写真があれば表示）
                     childAvatar
                 }
@@ -398,7 +398,7 @@ struct ChatBubbleView: View {
                                 .font(.system(size: 16))
                                 .foregroundColor(.gray)
                         )
-                    
+
                     // ✅ 吹き出しと時刻はBottom揃え
                     HStack(alignment: .bottom, spacing: 4) {
                         // 吹き出し
@@ -412,19 +412,19 @@ struct ChatBubbleView: View {
                                     .fill(Color(uiColor: .systemGray5))
                             )
                             .frame(maxWidth: 280, alignment: .leading)
-                        
+
                         // タイムスタンプ
                         Text(timeFormatter.string(from: turn.timestamp))
                             .font(.system(size: 11))
                             .foregroundColor(.secondary)
                     }
                 }
-                
+
                 Spacer(minLength: 60)
             }
         }
     }
-    
+
     @ViewBuilder
     private var childAvatar: some View {
         if let image = childAvatarImage {
@@ -475,7 +475,7 @@ struct ChatBubbleView: View {
 // タグなどを横に流すレイアウト
 struct FlowLayout: Layout {
     var spacing: CGFloat = 8
-    
+
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         let result = FlowResult(
             in: proposal.width ?? 0,
@@ -484,7 +484,7 @@ struct FlowLayout: Layout {
         )
         return result.size
     }
-    
+
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
         let result = FlowResult(
             in: bounds.width,
@@ -497,30 +497,30 @@ struct FlowLayout: Layout {
                           proposal: .unspecified)
         }
     }
-    
+
     struct FlowResult {
         var size: CGSize = .zero
         var frames: [CGRect] = []
-        
+
         init(in maxWidth: CGFloat, subviews: Subviews, spacing: CGFloat) {
             var currentX: CGFloat = 0
             var currentY: CGFloat = 0
             var lineHeight: CGFloat = 0
-            
+
             for subview in subviews {
                 let size = subview.sizeThatFits(.unspecified)
-                
+
                 if currentX + size.width > maxWidth && currentX > 0 {
                     currentX = 0
                     currentY += lineHeight + spacing
                     lineHeight = 0
                 }
-                
+
                 frames.append(CGRect(x: currentX, y: currentY, width: size.width, height: size.height))
                 lineHeight = max(lineHeight, size.height)
                 currentX += size.width + spacing
             }
-            
+
             self.size = CGSize(width: maxWidth, height: currentY + lineHeight)
         }
     }

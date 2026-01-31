@@ -5,12 +5,12 @@ import Domain
 struct HistoryListView: View {
     @EnvironmentObject var authVM: AuthViewModel
     @StateObject private var viewModel = HistoryViewModel()
-    
+
     // 3回以上のターンのセッションのみをフィルタリング
     private var filteredSessions: [FirebaseConversationSession] {
         viewModel.sessions.filter { $0.turnCount >= 3 }
     }
-    
+
     init() {
         // ナビゲーションバーの背景を透明にして、アプリの背景色を活かす設定
         let appearance = UINavigationBarAppearance()
@@ -26,7 +26,7 @@ struct HistoryListView: View {
         UINavigationBar.appearance().standardAppearance = appearance
         UINavigationBar.appearance().scrollEdgeAppearance = appearance
     }
-    
+
     var body: some View {
         NavigationStack {
             ZStack {
@@ -37,10 +37,10 @@ struct HistoryListView: View {
                     endPoint: .bottomTrailing
                 )
                 .ignoresSafeArea()
-                
+
                 // 背景の浮遊物
                 AmbientCircles()
-                
+
                 // 2. コンテンツ
                 Group {
                     if viewModel.isLoading {
@@ -99,7 +99,7 @@ struct HistoryListView: View {
 struct SessionCardView: View {
     let session: FirebaseConversationSession
     let viewModel: HistoryViewModel
-    
+
     private var timeFormatter: DateFormatter {
         let formatter = DateFormatter()
         formatter.dateStyle = .none
@@ -107,7 +107,7 @@ struct SessionCardView: View {
         formatter.locale = Locale(identifier: "ja_JP")
         return formatter
     }
-    
+
     var body: some View {
         HStack(alignment: .center, spacing: 16) {
             // 左側: 日付バッジ
@@ -117,7 +117,7 @@ struct SessionCardView: View {
                 let day = Calendar.current.component(.day, from: session.startedAt)
                 let weekday = Calendar.current.component(.weekday, from: session.startedAt)
                 let weekdaySymbol = Calendar.current.shortWeekdaySymbols[weekday - 1]
-                
+
                 Text("\(month)月")
                     .font(.system(size: 12, weight: .bold, design: .rounded))
                     .foregroundColor(Color.gray.opacity(0.6))
@@ -129,7 +129,7 @@ struct SessionCardView: View {
                     .foregroundColor(Color.gray.opacity(0.6))
             }
             .frame(width: 50)
-            
+
             // 右側: 内容
             VStack(alignment: .leading, spacing: 8) {
                 // 時間と要約
@@ -137,9 +137,9 @@ struct SessionCardView: View {
                     Text(timeFormatter.string(from: session.startedAt))
                         .font(.system(size: 12, design: .rounded))
                         .foregroundColor(.gray)
-                    
+
                     Spacer()
-                    
+
                     if session.mode == .story {
                         Label("おはなし", systemImage: "book.fill")
                             .font(.system(size: 10, weight: .bold))
@@ -150,14 +150,14 @@ struct SessionCardView: View {
                             .cornerRadius(4)
                     }
                 }
-                
+
                 // メインテキスト（要約）
                 Text(session.summaries.first ?? "たのしい おしゃべり")
                     .font(.system(size: 16, weight: .medium, design: .rounded))
                     .foregroundColor(Color(hex: "5A4A42"))
                     .lineLimit(2)
                     .multilineTextAlignment(.leading)
-                
+
                 // 興味タグ
                 if !session.interestContext.isEmpty {
                     ScrollView(.horizontal, showsIndicators: false) {
@@ -168,7 +168,7 @@ struct SessionCardView: View {
                         }
                     }
                     .padding(.top, 4)
-                    
+
                     // タグがある場合もやり取りの回数を表示
                     Text("\(session.turnCount)回のやり取り")
                         .font(.system(size: 12, design: .rounded))
@@ -195,7 +195,7 @@ struct SessionCardView: View {
 /// 興味タグのチップ
 struct InterestTagView: View {
     let tag: FirebaseInterestTag
-    
+
     var body: some View {
         HStack(spacing: 4) {
             Image(systemName: iconName(for: tag))
@@ -209,7 +209,7 @@ struct InterestTagView: View {
         .foregroundColor(tagColor(for: tag))
         .cornerRadius(12)
     }
-    
+
     // タグごとの色定義
     private func tagColor(for tag: FirebaseInterestTag) -> Color {
         switch tag {
@@ -223,7 +223,7 @@ struct InterestTagView: View {
         default: return .gray
         }
     }
-    
+
     // タグごとのアイコン定義
     private func iconName(for tag: FirebaseInterestTag) -> String {
         switch tag {
@@ -240,7 +240,7 @@ struct InterestTagView: View {
         default: return "tag.fill"
         }
     }
-    
+
     private func tagDisplayName(_ tag: FirebaseInterestTag) -> String {
         switch tag {
         case .dinosaurs: return "きょうりゅう"
@@ -274,11 +274,11 @@ struct EmptyStateView: View {
                     .font(.system(size: 50))
                     .foregroundColor(.anoneButton)
             }
-            
+
             Text("まだ おもいでが ないよ")
                 .font(.system(size: 18, weight: .bold, design: .rounded))
                 .foregroundColor(Color(hex: "5A4A42"))
-            
+
             Text("たくさん おはなしして\nおもいでを つくろう！")
                 .font(.system(size: 14, design: .rounded))
                 .foregroundColor(.gray)
@@ -292,7 +292,7 @@ struct EmptyStateView: View {
 struct ErrorStateView: View {
     let message: String
     let retryAction: () -> Void
-    
+
     var body: some View {
         VStack(spacing: 16) {
             Image(systemName: "exclamationmark.triangle.fill")
@@ -306,7 +306,7 @@ struct ErrorStateView: View {
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal)
-            
+
             Button(action: retryAction) {
                 Text("もういちど")
                     .font(.system(size: 14, weight: .bold, design: .rounded))

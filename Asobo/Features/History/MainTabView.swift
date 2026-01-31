@@ -1,10 +1,10 @@
 // MARK: - Main Tab View
-// アプリのメインタブビュー（ホームと履歴を切り替え）
+// アプリのメインタブビュー（ホーム、履歴、声かけ、プロフィールを切り替え）
 import SwiftUI
 
 struct MainTabView: View {
     @State private var selectedTab = 0
-    
+
     var body: some View {
         TabView(selection: $selectedTab) {
             // ホームタブ（最初の画面 - 会話機能を含む）
@@ -13,14 +13,23 @@ struct MainTabView: View {
                     Label("ホーム", systemImage: "house.fill")
                 }
                 .tag(0)
-            
+
             // 履歴タブ
             HistoryListView()
                 .tabItem {
                     Label("履歴", systemImage: "clock.fill")
                 }
                 .tag(1)
-            
+
+            // 声かけタブ（新機能 - iOS 17以降のみ）
+            if #available(iOS 17.0, *) {
+                ParentPhrasesView()
+                    .tabItem {
+                        Label("声かけ", systemImage: "bubble.left.and.text.bubble.right.fill")
+                    }
+                    .tag(2)
+            }
+
             // プロフィールタブ
             NavigationStack {
                 ProfileView()
@@ -28,7 +37,7 @@ struct MainTabView: View {
             .tabItem {
                 Label("プロフィール", systemImage: "person.crop.circle")
             }
-            .tag(2)
+            .tag(3)
         }
     }
 }

@@ -1,6 +1,5 @@
 import AVFoundation
 
-
 /// ✅ マイク入力キャプチャとフォーマット変換
 /// 
 /// ## 重要な設定ポイント
@@ -31,7 +30,7 @@ public final class MicrophoneCapture {
   // ✅ 追加: 音量レベル（dB）を通知するコールバック
   public var onVolume: ((Double) -> Void)?
   private var running = false
-  
+
   // ✅ バッチ送信用：60msごとにまとめて送信（反応速度重視）
   // 変更前: 200ms (安定重視)
   // 変更後: 60ms (反応速度重視、AECが効いているため短縮可能)
@@ -39,7 +38,7 @@ public final class MicrophoneCapture {
   private let batchDurationMs: Double = 60.0  // 60msバッチ
   private var lastFlushTime: Date = Date()
   private let flushQueue = DispatchQueue(label: "com.asobo.audio.flush")
-  
+
   // ✅ AEC対策：再生中ゲート制御
   private var isAIPlayingAudio: Bool = false
   private var outputMonitor: OutputMonitor?
@@ -48,7 +47,7 @@ public final class MicrophoneCapture {
   //    再生中は送信ゲートでマイクデータをサーバに出さないため、AECを一時停止してもエコーのリスクは低い想定
   // ⚠️ playback中の切替で-10849が頻発しAVAudioEngineが不安定になるため一時的に無効化
   private let disableVoiceProcessingDuringPlayback: Bool = false
-  
+
   // ✅ 初回接続時の音声認識問題対策：マイク開始直後の初期フレームをスキップ
   private var startTime: Date?  // マイク開始時刻
   private let initialSkipDurationMs: Double = 200.0  // 開始後200msは音声データを送信しない（初期ノイズ対策）
@@ -70,29 +69,29 @@ public final class MicrophoneCapture {
     // ✅ converterはstart()で作成（エンジン開始後のフォーマットを使用）
     self.converter = nil
   }
-  
+
   /// ✅ 独自エンジンを使用する場合（後方互換性のため）
   public convenience init?(onPCM: @escaping (AVAudioPCMBuffer) -> Void, outputMonitor: OutputMonitor? = nil) {
     let engine = AVAudioEngine()
     self.init(sharedEngine: engine, onPCM: onPCM, outputMonitor: outputMonitor, ownsEngine: true)
   }
-  
+
   /// ✅ AI再生状態を設定
   public func setAIPlayingAudio(_ isPlaying: Bool) {
     isAIPlayingAudio = isPlaying
-    
+
     // ✅ 再生中はVoiceProcessing（コンフォートノイズ生成源）を一時停止
     if disableVoiceProcessingDuringPlayback {
       setVoiceProcessingEnabled(!isPlaying)
     }
   }
-  
+
   /// ✅ RMS計算（dBFS）
   private func calculateRMS(from buffer: AVAudioPCMBuffer) -> Double {
     guard let channelData = buffer.floatChannelData else { return -60.0 }
     let channelCount = Int(buffer.format.channelCount)
     let frameLength = Int(buffer.frameLength)
-    
+
     var sum: Float = 0.0
     for ch in 0..<channelCount {
       let channel = channelData[ch]
@@ -101,30 +100,30 @@ public final class MicrophoneCapture {
         sum += sample * sample
       }
     }
-    
+
     let mean = sum / Float(frameLength * channelCount)
     let rms = sqrt(mean)
-    
+
     // dBFSに変換
     if rms < 1e-10 {
       return -60.0
     }
     return 20.0 * log10(Double(rms))
   }
-  
+
   public func start() throws {
     guard !running else { return }
     let inputNode = engine.inputNode
-    
+
     // ✅ 追加: 強力なAEC有効化設定 (iOS 13+)
     // VoiceProcessingモードであっても、明示的にバイパス無効（＝処理有効）を設定するのが安全
     if #available(iOS 13.0, *) {
       setVoiceProcessingEnabled(true)
     }
-    
+
     // ✅ 既にタップがインストールされている場合は先に削除（エラー回避）
     inputNode.removeTap(onBus: 0)
-    
+
     // ✅ エンジンの所有権ロジック
     if ownsEngine && !engine.isRunning {
         try engine.start()
@@ -133,14 +132,14 @@ public final class MicrophoneCapture {
         // 共通エンジンの場合、ここでstartできないが、ConversationController側でstart済みのはず
         print("⚠️ MicrophoneCapture: エンジンが停止状態です")
     }
-    
+
     // ------------------------------------------------------------
     // ✅ 修正ポイント: フォーマット決定ロジック (ファイナル)
     // ------------------------------------------------------------
-    
+
     var tapFormat: AVAudioFormat?
     let inputFormat = inputNode.outputFormat(forBus: 0)
-    
+
     if inputFormat.sampleRate > 0 && inputFormat.channelCount > 0 {
         // エンジンがすでに有効なフォーマットを持っているならそれを使う
         print("✅ MicrophoneCapture: 既存フォーマット使用: \(inputFormat.sampleRate)Hz")
@@ -149,7 +148,7 @@ public final class MicrophoneCapture {
         // ⚠️ 0Hzの場合: nilはダメ(クラッシュ)、適当な48kもダメ(クラッシュ)
         // iOSのVoiceProcessingIO入力の「正解」フォーマットを手動構築して渡す
         print("⚠️ MicrophoneCapture: 0Hz検出 -> 48kHz/Float32を手動構築します")
-        
+
         // 【重要】commonFormat: .pcmFormatFloat32, interleaved: false がiOSハードウェアの標準
         tapFormat = AVAudioFormat(
             commonFormat: .pcmFormatFloat32,
@@ -158,7 +157,7 @@ public final class MicrophoneCapture {
             interleaved: false
         )
     }
-    
+
     // 万が一作成失敗したら安全に停止
     guard let safeFormat = tapFormat else {
         throw NSError(domain: "MicrophoneCapture", code: -1, userInfo: [
@@ -178,12 +177,12 @@ public final class MicrophoneCapture {
     // ------------------------------------------------------------
     inputNode.installTap(onBus: 0, bufferSize: framesPer20ms, format: safeFormat) { [weak self] buffer, _ in
         guard let self = self else { return }
-        
+
         // --- Converter作成ロジック ---
         if self.converter == nil || self.isFirstBuffer {
             let actualFormat = buffer.format
             if actualFormat.sampleRate == 0 { return } // ガード
-            
+
             if self.converter == nil {
                 print("✅ MicrophoneCapture: Converter作成 Input:\(actualFormat.sampleRate)Hz -> Output:\(self.outFormat.sampleRate)Hz")
                 let conv = AVAudioConverter(from: actualFormat, to: self.outFormat)
@@ -192,13 +191,13 @@ public final class MicrophoneCapture {
             }
             self.isFirstBuffer = false
         }
-      
+
       guard let converter = self.converter else { return }
-      
+
       // ✅ 変換前の入力バッファを外へ通知（ライブSTT用）
       // - 再生中ゲート/初期フレームスキップより前に流すことで「AI応答中でもSTTでバージイン検知」が可能になる
       self.onInputBuffer?(buffer)
-      
+
       // ✅ 初回接続時の音声認識問題対策：マイク開始直後の初期フレームをスキップ
       if let startTime = self.startTime {
         let elapsed = Date().timeIntervalSince(startTime) * 1000.0  // ミリ秒
@@ -211,10 +210,10 @@ public final class MicrophoneCapture {
           print("✅ MicrophoneCapture: 初期フレームスキップ期間終了（\(String(format: "%.1f", elapsed))ms経過）")
         }
       }
-      
+
       // ✅ AEC対策：再生中ゲート制御
       let inputRMS = self.calculateRMS(from: buffer)
-      
+
       // -------------------------------------------------------
       // ✅ 追加: 計算したRMS音量を外部へ通知
       // -------------------------------------------------------
@@ -236,22 +235,22 @@ public final class MicrophoneCapture {
       outBuf.frameLength = framesOut
 
       var error: NSError?
-      let status = converter.convert(to: outBuf, error: &error) { inCount, outStatus in
+      let status = converter.convert(to: outBuf, error: &error) { _, outStatus in
         outStatus.pointee = .haveData
         return buffer
       }
 
-      if (status == .haveData || status == .endOfStream), outBuf.frameLength > 0 {
+      if status == .haveData || status == .endOfStream, outBuf.frameLength > 0 {
         // ✅ バッファに蓄積（20msごとに追加）
         // ✅ 必ずint16ChannelDataから取得（PCM16LE形式）
         guard let ch0 = outBuf.int16ChannelData else { return }
         let byteCount = Int(outBuf.frameLength) * MemoryLayout<Int16>.size
         let ptr = ch0.pointee
-        
+
         self.flushQueue.async {
           // ✅ 音声データをバッファに追加（PCM16LE形式のData）
           self.audioBuffer.append(Data(bytes: ptr, count: byteCount))
-          
+
           // ✅ 60ms経過したらバッチ送信（反応速度重視）
           let now = Date()
           let elapsed = now.timeIntervalSince(self.lastFlushTime) * 1000.0  // ミリ秒
@@ -259,7 +258,7 @@ public final class MicrophoneCapture {
             let batchData = self.audioBuffer
             self.audioBuffer.removeAll()
             self.lastFlushTime = now
-            
+
             // ✅ バッチデータをAVAudioPCMBufferとして再構築
             let batchFrames = batchData.count / MemoryLayout<Int16>.size
             guard batchFrames > 0,
@@ -267,7 +266,7 @@ public final class MicrophoneCapture {
               return
             }
             batchBuf.frameLength = AVAudioFrameCount(batchFrames)
-            
+
             if let batchCh0 = batchBuf.int16ChannelData {
               batchData.withUnsafeBytes { rawPtr in
                 guard let basePtr = rawPtr.baseAddress?.assumingMemoryBound(to: Int16.self) else { return }
@@ -298,7 +297,7 @@ public final class MicrophoneCapture {
       if !audioBuffer.isEmpty {
         let batchData = audioBuffer
         audioBuffer.removeAll()
-        
+
         let batchFrames = batchData.count / MemoryLayout<Int16>.size
         if batchFrames > 0, let batchBuf = AVAudioPCMBuffer(pcmFormat: outFormat, frameCapacity: AVAudioFrameCount(batchFrames)) {
           batchBuf.frameLength = AVAudioFrameCount(batchFrames)
@@ -318,11 +317,11 @@ public final class MicrophoneCapture {
       engine.stop()
       engine.reset()  // ← 個別エンジンの場合、完全にリセット
     }
-    
+
     // ★ 再開に備えて初期化
     converter = nil
     isFirstBuffer = true
-    
+
     running = false
   }
 }

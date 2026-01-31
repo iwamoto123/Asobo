@@ -24,7 +24,7 @@ public struct ChildHomeView: View {
     @State private var lastSpeechDetectedStartTime: Date?
     @State private var rmsLogTimer: Timer?
     @State private var lastRmsLogTime: Date?
-    
+
     // TEST観測ログのサンプリング間隔（RMSの瞬間的な落ち込みも見たいので0.10s）
     private let testRmsLogInterval: TimeInterval = 0.10
     @State private var hasStartedSession = false
@@ -33,7 +33,7 @@ public struct ChildHomeView: View {
     @State private var isBlinking = false
     @State private var isSquinting = false
     @State private var isNodding = false
-    
+
     // 最初の質問パターン
     private let greetingPatterns = [
         "ねえねえ、\nきょうは なにが たのしかった？",
@@ -47,9 +47,9 @@ public struct ChildHomeView: View {
         "やあ！\nきょうは どんな ことした？",
         "こんにちは！\nきょうは なにが たのしかった？"
     ]
-    
+
     public init() {}
-    
+
     public var body: some View {
         GeometryReader { geometry in
             ZStack {
@@ -60,17 +60,17 @@ public struct ChildHomeView: View {
                     endPoint: .bottomTrailing
                 )
                 .ignoresSafeArea()
-                
+
                 // 背景の浮遊物
                 AmbientCircles()
-                
+
                 // 2. Main Character & Interface
                 VStack(spacing: 12) {
                     Spacer()
-                    
+
                     VStack(spacing: 12) {
                         ZStack(alignment: .center) {
-                            
+
                             // A. 吹き出し
                             SpeechBubbleView(
                                 text: currentDisplayText,
@@ -80,7 +80,7 @@ public struct ChildHomeView: View {
                             .frame(width: geometry.size.width * 0.85)
                             .offset(y: -geometry.size.width * 0.55) // 画面内に収まるよう少し下げる
                             .animation(.spring(response: 0.5, dampingFraction: 0.7), value: currentDisplayText)
-                            
+
                             // B. キャラクター with ハートボタン
                             MocchyBearView(
                                 size: geometry.size.width * 0.8,
@@ -104,14 +104,14 @@ public struct ChildHomeView: View {
                             .opacity((controller.isRealtimeActive || controller.isRealtimeConnecting) ? 1.0 : 0.6)
                             .disabled(!controller.isRealtimeActive && !controller.isRealtimeConnecting)
                         }
-                        
+
                         stateMonitorView
                             .padding(.horizontal, 24)
                             .padding(.top, 16)
                             .padding(.bottom, 4)
                     }
                 }
-                
+
                 // エラー表示
                 if let errorMessage = controller.errorMessage {
                     VStack {
@@ -137,14 +137,14 @@ public struct ChildHomeView: View {
                     childNickname: child.nickName
                 )
             }
-            
+
             withAnimation(.easeInOut(duration: 3.0).repeatForever(autoreverses: true)) {
                 isBreathing = true
             }
             if initialGreetingText.isEmpty {
                 initialGreetingText = greetingPatterns.randomElement() ?? greetingPatterns[0]
             }
-            
+
             // ✅ セッションが停止している場合は再開する（タブ切り替え後の復帰対応）
             if !controller.isRealtimeActive && !controller.isRealtimeConnecting {
                 if !hasStartedSession {
@@ -156,7 +156,7 @@ public struct ChildHomeView: View {
                     controller.startRealtimeSession()
                 }
             }
-            
+
             startEyeAnimation()
             startNoddingAnimation()
         }
@@ -170,7 +170,7 @@ public struct ChildHomeView: View {
             guard isTestPressed else { return }
             logVADStateTransitionIfNeeded()
         }
-        .onChange(of: controller.isRecording) { isRecording in
+        .onChange(of: controller.isRecording) { _ in
             // 録音中の頻度調整は、startEyeAnimation内で管理
         }
         .onChange(of: controller.aiResponseText) { newValue in
@@ -183,17 +183,17 @@ public struct ChildHomeView: View {
             lastAIDisplayText = controller.aiResponseText
         }
     }
-    
+
     private var currentDisplayText: String {
         if controller.isRealtimeConnecting {
             return "つながっています..."
         }
-        
+
         // 返答テキストが届いたら思考中でも即表示する
         if controller.isThinking && controller.aiResponseText.isEmpty {
             return "かんがえちゅう..."
         }
-        
+
         if !controller.aiResponseText.isEmpty {
             return controller.aiResponseText
         } else if controller.isRecording {
@@ -204,7 +204,7 @@ public struct ChildHomeView: View {
                 return initialGreetingText
             }
         }
-        
+
         if !lastAIDisplayText.isEmpty {
             return lastAIDisplayText
         }
@@ -216,10 +216,10 @@ public struct ChildHomeView: View {
             Text("状態モニター")
                 .font(.caption)
                 .foregroundColor(.secondary)
-            
+
             stateRow("TurnState", value: turnStateLabel, color: .blue)
             stateRow("VADState", value: vadStateLabel, color: .purple)
-            
+
             // フラグタグ（録音/接続…）は見切れやすいので非表示にし、その領域にSTTのリアルタイム表示を出す
             VStack(alignment: .leading, spacing: 6) {
                 HStack {
@@ -227,7 +227,7 @@ public struct ChildHomeView: View {
                         .foregroundColor(.secondary)
                     Spacer()
                 }
-                
+
                 ScrollView(.vertical, showsIndicators: false) {
                     let t = monitorUserText
                     Text(t.isEmpty
@@ -245,7 +245,7 @@ public struct ChildHomeView: View {
         .shadow(color: Color.black.opacity(0.08), radius: 10, x: 0, y: 4)
         .font(.caption2)
     }
-    
+
     private var turnStateLabel: String {
         switch controller.turnState {
         case .idle: return "idle"
@@ -257,7 +257,7 @@ public struct ChildHomeView: View {
         case .clarifying: return "clarifying"
         }
     }
-    
+
     private var vadStateLabel: String {
         switch controller.vadState {
         case .idle: return "idle"
@@ -281,7 +281,7 @@ public struct ChildHomeView: View {
         let committed = controller.lastCommittedUserText.trimmingCharacters(in: .whitespacesAndNewlines)
         return committed.isEmpty ? liveUserTranscriptText : committed
     }
-    
+
     private func stateRow(_ title: String, value: String, color: Color = .primary) -> some View {
         HStack {
             Text(title)
@@ -291,7 +291,7 @@ public struct ChildHomeView: View {
                 .foregroundColor(color)
         }
     }
-    
+
     private func handleMicButtonTap() {
         guard controller.isRealtimeActive else { return }
         if controller.isHandsFreeMode {
@@ -300,7 +300,7 @@ public struct ChildHomeView: View {
             controller.startHandsFreeConversation()
         }
     }
-    
+
     // アニメーションロジック（既存のゆっくりしたアニメーションを維持）
     // まばたきとsquintingを1つのタスクで管理し、同時に起こらないようにする
     private func startEyeAnimation() {
@@ -308,13 +308,13 @@ public struct ChildHomeView: View {
             while true {
                 // まばたきかsquintingかをランダムに選ぶ
                 let isBlink = Bool.random()
-                
+
                 if isBlink {
                     // まばたき（頻度を減らす）
                     let baseInterval: TimeInterval = controller.isRecording ? 3.0 : 6.0
                     let randomInterval = baseInterval + Double.random(in: 0...6.0)
                     try? await Task.sleep(nanoseconds: UInt64(randomInterval * 1_000_000_000))
-                    
+
                     await MainActor.run {
                         // squintingが有効な場合は待機
                         if isSquinting {
@@ -335,7 +335,7 @@ public struct ChildHomeView: View {
                     // squinting
                     let randomInterval = Double.random(in: 6.0...15.0)
                     try? await Task.sleep(nanoseconds: UInt64(randomInterval * 1_000_000_000))
-                    
+
                     await MainActor.run {
                         // まばたきが有効な場合は待機
                         if isBlinking {
@@ -356,7 +356,7 @@ public struct ChildHomeView: View {
             }
         }
     }
-    
+
     private func startNoddingAnimation() {
         Task {
             while true {
@@ -384,24 +384,24 @@ public struct ChildHomeView: View {
     private func handleTestPTTPressChanged(_ pressed: Bool) {
         if pressed == isTestPressed { return }
         isTestPressed = pressed
-        
+
         if pressed {
             let start = Date()
             testLogWindowStartTime = start
             lastLoggedVADState = controller.vadState
             lastSpeechDetectedStartTime = (controller.vadState == .speaking) ? start : nil
             lastRmsLogTime = nil
-            
+
             print("🧪 VAD TEST: window BEGIN at \(start) (handsFree=\(controller.isHandsFreeMode), vadState=\(controller.vadState))")
             if !controller.isHandsFreeMode {
                 print("🧪 VAD TEST: ⚠️ handsFree=false のため vadState/RMS が更新されない可能性があります")
             }
-            
+
             startRmsLogTimer()
             logVADStateTransitionIfNeeded(force: true)
         } else {
             stopRmsLogTimer()
-            
+
             let end = Date()
             let duration = (testLogWindowStartTime.map { end.timeIntervalSince($0) }) ?? 0
             if let speechStart = lastSpeechDetectedStartTime {
@@ -409,20 +409,20 @@ public struct ChildHomeView: View {
                 print("🧪 VAD TEST: speech still speaking at END (dur=\(String(format: "%.2f", speechDur))s)")
             }
             print("🧪 VAD TEST: window END at \(end) duration=\(String(format: "%.2f", duration))s (vadState=\(controller.vadState))")
-            
+
             testLogWindowStartTime = nil
             lastLoggedVADState = nil
             lastSpeechDetectedStartTime = nil
             lastRmsLogTime = nil
         }
     }
-    
+
     private func logVADStateTransitionIfNeeded(force: Bool = false) {
         guard let windowStart = testLogWindowStartTime else { return }
         let now = Date()
         let t = now.timeIntervalSince(windowStart)
         let current = controller.vadState
-        
+
         if force || lastLoggedVADState != current {
             if current == .speaking {
                 lastSpeechDetectedStartTime = now
@@ -439,7 +439,7 @@ public struct ChildHomeView: View {
             lastLoggedVADState = current
         }
     }
-    
+
     private func startRmsLogTimer() {
         stopRmsLogTimer()
         let interval = testRmsLogInterval
@@ -449,7 +449,7 @@ public struct ChildHomeView: View {
             guard self.isTestPressed, let windowStart = self.testLogWindowStartTime else { return }
             let now = Date()
             let t = now.timeIntervalSince(windowStart)
-            
+
             let rmsDb: Double = controller.debugLastInputRmsDb ?? -120.0
             let startThresh: Double = controller.debugActiveRmsStartThresholdDb
             let endThresh: Double = controller.debugActiveSpeechEndRmsThresholdDb
@@ -458,12 +458,12 @@ public struct ChildHomeView: View {
             let inPort = input?.portType.rawValue ?? "none"
             let inName = input?.portName ?? "none"
             print("🧪 VAD TEST: t=+\(String(format: "%.2f", t))s vadState=\(controller.vadState) rmsDb=\(String(format: "%.2f", rmsDb)) | startThresh=\(String(format: "%.1f", startThresh)) endThresh=\(String(format: "%.1f", endThresh)) | input=\(inName)(\(inPort))")
-            
+
             self.lastRmsLogTime = now
         }
         RunLoop.main.add(rmsLogTimer!, forMode: .common)
     }
-    
+
     private func stopRmsLogTimer() {
         rmsLogTimer?.invalidate()
         rmsLogTimer = nil
@@ -488,7 +488,7 @@ struct MocchyBearView: View {
 
     /// 「TEST 長押し」観測用ボタン。今は使わないので非表示（復活させるときは true に戻す）
     private let showVADTestButton: Bool = false
-    
+
     var body: some View {
         ZStack {
             // 1. 耳
@@ -499,7 +499,7 @@ struct MocchyBearView: View {
             .offset(y: -size * 0.32)
             .scaleEffect(isBreathing ? 1.02 : 0.98)
             .offset(y: isNodding ? size * 0.03 : 0)
-            
+
             // 2. 体 (顔と胴体の一体型)
             // 押されたときに「むにゅっ」と潰れるアニメーション
             Circle()
@@ -510,7 +510,7 @@ struct MocchyBearView: View {
                 .scaleEffect(isBreathing ? 1.02 : 0.98)
                 .scaleEffect(x: isPressed ? 1.05 : 1.0, y: isPressed ? 0.92 : 1.0) // 潰れる
                 .offset(y: isPressed ? size * 0.02 : 0) // 少し下がる
-            
+
             // 3. 顔パーツ (中心より下に配置してベビーフェイス化)
             VStack(spacing: size * 0.015) {
                 // 目
@@ -518,7 +518,7 @@ struct MocchyBearView: View {
                     EyeView(size: size, isBlinking: isBlinking, isSquinting: isSquinting)
                     EyeView(size: size, isBlinking: isBlinking, isSquinting: isSquinting)
                 }
-                
+
                 // 鼻
                 Ellipse()
                     .fill(Color(hex: "4A3A32"))
@@ -528,7 +528,7 @@ struct MocchyBearView: View {
             .scaleEffect(isBreathing ? 1.02 : 0.98)
             .offset(y: isNodding ? size * 0.03 : 0)
             .scaleEffect(x: isPressed ? 1.02 : 1.0, y: isPressed ? 0.98 : 1.0) // 顔も一緒に潰れる
-            
+
             // ほっぺ (チーク) - 鼻と同じ高さに配置
             HStack(spacing: size * 0.32) {
                 CheekView(size: size)
@@ -538,7 +538,7 @@ struct MocchyBearView: View {
             .scaleEffect(isBreathing ? 1.02 : 0.98)
             .offset(y: isNodding ? size * 0.03 : 0)
             .scaleEffect(x: isPressed ? 1.02 : 1.0, y: isPressed ? 0.98 : 1.0) // 顔も一緒に潰れる
-            
+
             // 4. ハートのボタン
             HeartButtonBody(size: size, isRecording: isRecording, isPressed: isPressed)
             .offset(y: size * 0.32) // 少し上に配置
@@ -552,7 +552,7 @@ struct MocchyBearView: View {
                     }
             )
             .zIndex(1000)
-            
+
             if showVADTestButton {
                 // 4.5 観測用ボタン（VAD制御とは独立。押下中だけログを出す）
                 // Button + gesture だと環境によってタッチが取りこぼされることがあるため、
@@ -590,7 +590,7 @@ struct MocchyBearView: View {
                 )
                 .zIndex(1001)
             }
-            
+
             // 5. 手 (ハートを抱っこ)
             HStack(spacing: size * 0.52) {
                 BearHand(size: size)
@@ -656,7 +656,7 @@ struct EyeView: View {
     let size: CGFloat
     let isBlinking: Bool
     let isSquinting: Bool
-    
+
     var body: some View {
         Group {
             if isBlinking {
@@ -692,7 +692,7 @@ struct HeartButtonBody: View {
     let size: CGFloat
     let isRecording: Bool
     let isPressed: Bool
-    
+
     var body: some View {
         ZStack {
             // 影
@@ -701,7 +701,7 @@ struct HeartButtonBody: View {
                 .frame(width: size * 0.55, height: size * 0.50)
                 .blur(radius: 10)
                 .offset(y: 8)
-            
+
             // 本体
             PuffyHeartShape()
                 .fill(
@@ -731,7 +731,7 @@ struct HeartButtonBody: View {
                         .offset(x: size * 0.14, y: -size * 0.12)
                 )
                 .shadow(color: .anoneButton.opacity(0.3), radius: 10, x: 0, y: 5)
-            
+
             // アイコン
             Image(systemName: isRecording ? "stop.fill" : "mic.fill")
                 .font(.system(size: size * 0.18, weight: .bold))
@@ -745,7 +745,7 @@ struct HeartButtonBody: View {
 struct ParticleEffectView: View {
     let size: CGFloat
     @State private var animate = false
-    
+
     var body: some View {
         ZStack {
             ForEach(0..<6, id: \.self) { i in
@@ -766,11 +766,11 @@ private struct ParticleHeart: View {
     let index: Int
     let targetAngle: Double
     let animate: Bool
-    
+
     private var radians: Double {
         targetAngle * .pi / 180
     }
-    
+
     var body: some View {
         PuffyHeartShape()
             .fill(
@@ -802,38 +802,38 @@ struct PuffyHeartShape: Shape {
         var path = Path()
         let width = rect.width
         let height = rect.height
-        
+
         // より丸みを帯びたハートを描く
         path.move(to: CGPoint(x: width / 2, y: height * 0.85))
-        
+
         // 左下のカーブ
         path.addCurve(
             to: CGPoint(x: 0, y: height * 0.35),
             control1: CGPoint(x: width * 0.1, y: height * 0.75),
             control2: CGPoint(x: -width * 0.1, y: height * 0.5)
         )
-        
+
         // 左上の山
         path.addCurve(
             to: CGPoint(x: width / 2, y: height * 0.25),
             control1: CGPoint(x: width * 0.05, y: 0),
             control2: CGPoint(x: width * 0.45, y: 0)
         )
-        
+
         // 右上の山
         path.addCurve(
             to: CGPoint(x: width, y: height * 0.35),
             control1: CGPoint(x: width * 0.55, y: 0),
             control2: CGPoint(x: width * 0.95, y: 0)
         )
-        
+
         // 右下のカーブ
         path.addCurve(
             to: CGPoint(x: width / 2, y: height * 0.85),
             control1: CGPoint(x: width * 1.1, y: height * 0.5),
             control2: CGPoint(x: width * 0.9, y: height * 0.75)
         )
-        
+
         path.closeSubpath()
         return path
     }
@@ -844,21 +844,21 @@ struct SpeechBubbleView: View {
     let text: String
     let isThinking: Bool
     let isConnecting: Bool
-    
+
     var body: some View {
         ZStack {
             // 吹き出し本体
             RoundedRectangle(cornerRadius: 30)
                 .fill(Color.white.opacity(0.95))
                 .shadow(color: .anoneShadowDark.opacity(0.15), radius: 10, x: 0, y: 5)
-            
+
             // しっぽ (逆三角形)
             Image(systemName: "arrowtriangle.down.fill")
                 .font(.system(size: 24))
                 .foregroundColor(.white.opacity(0.95))
                 .offset(y: 50) // 下へ
                 .shadow(color: .anoneShadowDark.opacity(0.1), radius: 2, x: 0, y: 2)
-            
+
             // テキスト表示エリア（インジケーターなしで常に同じスタイル）
             VStack {
                 if !text.isEmpty {
@@ -887,12 +887,12 @@ struct AmbientCircles: View {
                 .fill(Color.blue.opacity(0.05))
                 .frame(width: 300, height: 300)
                 .offset(x: -100, y: -300)
-            
+
             Circle()
                 .fill(Color.yellow.opacity(0.1))
                 .frame(width: 200, height: 200)
                 .offset(x: 150, y: 100)
-            
+
             Circle()
                 .fill(Color.green.opacity(0.05))
                 .frame(width: 150, height: 150)
@@ -922,7 +922,7 @@ extension Color {
             .sRGB,
             red: Double(r) / 255,
             green: Double(g) / 255,
-            blue:  Double(b) / 255,
+            blue: Double(b) / 255,
             opacity: Double(a) / 255
         )
     }

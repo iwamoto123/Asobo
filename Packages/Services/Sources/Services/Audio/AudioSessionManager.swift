@@ -29,13 +29,13 @@ import UIKit
 /// - 近接センサを無効化して、受話口への自動切り替えを防ぐ
 public final class AudioSessionManager {
     public init() {}
-    
+
     public func configure() throws {
         let s = AVAudioSession.sharedInstance()
-        
+
         // 既存のセッションを非アクティブにする（競合を防ぐ）
         try? s.setActive(false)
-        
+
         // ✅ AEC（エコーキャンセレーション）を有効化するための設定
         // .defaultToSpeaker: スピーカーに強制出力（重要！）
         // .allowBluetooth: Bluetoothデバイスを許可
@@ -46,7 +46,7 @@ public final class AudioSessionManager {
         // ✅ Voice Processing I/Oが有効になり、AIのTTSがマイクに拾われないようになる
         // ✅ 48kHzで動作し、AGC/AECが適切に機能する
         try s.setMode(.voiceChat)
-        
+
         // ✅ 48kHz/10msに設定（iOSのVoiceProcessingは48kHzが安定）
         // ✅ 48kHzに上げると入力振幅とVADの反応が良くなる
         try s.setPreferredSampleRate(48_000)
@@ -55,7 +55,7 @@ public final class AudioSessionManager {
 
         // AudioSessionをアクティブにする
         try s.setActive(true, options: .notifyOthersOnDeactivation)
-        
+
         // ✅ Bluetoothデバイスが接続されているかチェック
         let hasBluetoothOutput = s.currentRoute.outputs.contains(where: { output in
             let portType = output.portType
@@ -63,7 +63,7 @@ public final class AudioSessionManager {
                    portType == .bluetoothA2DP ||
                    portType == .bluetoothLE
         })
-        
+
         // ✅ Bluetoothデバイスが接続されていない時だけスピーカー固定
         // Bluetooth接続時は`overrideOutputAudioPort`を呼ばない（イヤホンに出力される）
         if !hasBluetoothOutput {
@@ -76,7 +76,7 @@ public final class AudioSessionManager {
             try? s.overrideOutputAudioPort(.none)
             print("🎧 AudioSessionManager: Bluetoothデバイス検出 - イヤホン出力")
         }
-        
+
         // ✅ ルート変更通知を監視（Bluetooth接続/切断時に適切に対応）
         NotificationCenter.default.addObserver(
             forName: AVAudioSession.routeChangeNotification,
@@ -85,13 +85,13 @@ public final class AudioSessionManager {
         ) { [weak self] notification in
             self?.handleRouteChange(notification)
         }
-        
+
         // ✅ 近接センサが勝手にONになるのを避ける
         // VoIP通話アプリで"受話口"運用したい時だけ有効にする
         #if canImport(UIKit)
         UIDevice.current.isProximityMonitoringEnabled = false
         #endif
-        
+
         // 設定確認のログ出力（デバッグ用）
         print("✅ AudioSessionManager: 設定完了")
         print("   - Category: \(s.category.rawValue)")
@@ -105,7 +105,7 @@ public final class AudioSessionManager {
         print("   - ProximityMonitoring: \(UIDevice.current.isProximityMonitoringEnabled ? "enabled" : "disabled")")
         #endif
     }
-    
+
     /// ✅ ルート変更時の処理（Bluetooth接続/切断時に呼ばれる）
     private func handleRouteChange(_ notification: Notification) {
         guard let userInfo = notification.userInfo,
@@ -113,7 +113,7 @@ public final class AudioSessionManager {
               let reason = AVAudioSession.RouteChangeReason(rawValue: reasonValue) else {
             return
         }
-        
+
         let session = AVAudioSession.sharedInstance()
         let hasBluetoothOutput = session.currentRoute.outputs.contains(where: { output in
             let portType = output.portType
@@ -121,9 +121,9 @@ public final class AudioSessionManager {
                    portType == .bluetoothA2DP ||
                    portType == .bluetoothLE
         })
-        
+
         print("🔄 AudioSessionManager: ルート変更検出 - reason: \(reason), hasBluetooth: \(hasBluetoothOutput)")
-        
+
         switch reason {
         case .newDeviceAvailable, .oldDeviceUnavailable:
             // Bluetooth接続/切断時に出力先を調整
@@ -140,7 +140,7 @@ public final class AudioSessionManager {
             break
         }
     }
-    
+
     public func deactivate() throws {
         // ルート変更通知の監視を解除
         NotificationCenter.default.removeObserver(

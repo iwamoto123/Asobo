@@ -9,27 +9,27 @@ import Domain
 class ImageCache {
     static let shared = ImageCache()
     private let cache = NSCache<NSString, UIImage>()
-    
+
     private init() {
         // メモリ制限を設定（最大50MB）
         cache.totalCostLimit = 50 * 1024 * 1024
         cache.countLimit = 100
     }
-    
+
     func get(for key: String) -> UIImage? {
         return cache.object(forKey: key as NSString)
     }
-    
+
     func set(_ image: UIImage, for key: String) {
         // 画像のサイズをコストとして使用（バイト単位）
         let cost = Int(image.size.width * image.size.height * 4) // RGBA = 4 bytes per pixel
         cache.setObject(image, forKey: key as NSString, cost: cost)
     }
-    
+
     func remove(for key: String) {
         cache.removeObject(forKey: key as NSString)
     }
-    
+
     func clear() {
         cache.removeAllObjects()
     }
@@ -37,7 +37,7 @@ class ImageCache {
 
 struct ProfileView: View {
     @EnvironmentObject var authVM: AuthViewModel
-    
+
     @State private var childName = ""
     @State private var childNickName = ""
     @State private var teddyName = ""
@@ -45,26 +45,26 @@ struct ProfileView: View {
     @State private var loginMethod = ""
     @State private var birthDate: Date?
     @State private var birthDatePickerDate = Date()
-    
+
     @State private var selectedPhotoItem: PhotosPickerItem?
     @State private var selectedPhotoData: Data?
     @State private var currentPhotoURLString: String?
     @State private var profileImage: Image?
     @State private var loadedImageURLString: String?
     @State private var imageForCropping: UIImage?
-    
+
     @State private var isSaving = false
     @State private var message: String?
-    
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
-                
+
                 Text("子どものプロフィール")
                     .font(.title3.weight(.semibold))
                     .foregroundColor(Color(hex: "5A4A42"))
                     .frame(maxWidth: .infinity, alignment: .leading)
-                
+
                 HStack(alignment: .top, spacing: 16) {
                     VStack(spacing: 12) {
                         PhotosPicker(selection: $selectedPhotoItem, matching: .images) {
@@ -98,7 +98,7 @@ struct ProfileView: View {
                             .font(.caption)
                             .foregroundColor(.gray)
                     }
-                    
+
                     VStack(alignment: .leading, spacing: 12) {
                         VStack(alignment: .leading, spacing: 6) {
                             Text("子どもの名前")
@@ -132,7 +132,7 @@ struct ProfileView: View {
                         }
                     }
                 }
-                
+
                 VStack(alignment: .leading, spacing: 12) {
                     Text("ぬいぐるみの呼び方")
                         .font(.caption)
@@ -140,7 +140,7 @@ struct ProfileView: View {
                     TextField("例：くまちゃん", text: $teddyName)
                         .textFieldStyle(.roundedBorder)
                 }
-                
+
                 VStack(alignment: .leading, spacing: 12) {
                     Text("保護者の名前")
                         .font(.caption)
@@ -148,7 +148,7 @@ struct ProfileView: View {
                     TextField("保護者のお名前", text: $parentName)
                         .textFieldStyle(.roundedBorder)
                 }
-                
+
                 VStack(alignment: .leading, spacing: 12) {
                     Text("ログイン方法")
                         .font(.caption)
@@ -157,13 +157,13 @@ struct ProfileView: View {
                         .font(.body)
                         .foregroundColor(Color(hex: "5A4A42"))
                 }
-                
+
                 if let message = message {
                     Text(message)
                         .font(.caption)
                         .foregroundColor(.red)
                 }
-                
+
                 Button(action: saveProfile) {
                     if isSaving {
                         ProgressView().tint(.white)
@@ -178,7 +178,7 @@ struct ProfileView: View {
                 .foregroundColor(.white)
                 .cornerRadius(14)
                 .disabled(isSaving) // 保存中は連打防止
-                
+
                 Button(role: .destructive) {
                     authVM.signOut()
                 } label: {
@@ -252,7 +252,7 @@ struct ProfileView: View {
             }
         }
     }
-    
+
     private func loadInitialValues() {
         // データがまだロードされていない場合は何もしない（既存入力を消さないため）
         // ただし、画像URLだけは、selectedChildがnilでも、isLoadingがfalseなら設定を試みる（初回立ち上げ時の問題を解決）
@@ -266,21 +266,21 @@ struct ProfileView: View {
             }
             return
         }
-        
+
         // テキストフィールドが空の場合のみセット（入力中を邪魔しない）
         // または、常に最新データを正とするなら強制上書きする。今回は強制上書きパターン。
-        
+
         childName = child.displayName
         childNickName = child.nickName ?? ""
         teddyName = child.teddyName ?? ""
-        
+
         if let user = authVM.userProfile {
             parentName = user.parentName ?? user.displayName ?? ""
         }
-        
+
         birthDate = child.birthDate
         birthDatePickerDate = child.birthDate
-        
+
         // 画像の更新: selectedPhotoDataがnilの時だけURLを更新（ユーザーが選択中の画像を優先）
         if selectedPhotoData == nil {
             if let urlString = child.photoURL {
@@ -300,7 +300,7 @@ struct ProfileView: View {
         } else {
             print("ℹ️ ProfileView: loadInitialValues - selectedPhotoDataがあるため、URLは更新しません")
         }
-        
+
         loginMethod = authVM.currentUser?.providerData.first.map { provider in
             switch provider.providerID {
             case "apple.com": return "Apple ID"
@@ -310,7 +310,7 @@ struct ProfileView: View {
             }
         } ?? "不明"
     }
-    
+
     private func saveProfile() {
         guard let uid = authVM.currentUser?.uid else {
             message = "ログイン情報が見つかりません"
@@ -320,14 +320,14 @@ struct ProfileView: View {
             message = "子どもの情報が取得できません"
             return
         }
-        
+
         isSaving = true
         message = nil
-        
+
         Task {
             do {
                 var photoURL: String? = authVM.selectedChild?.photoURL
-                
+
                 if let data = selectedPhotoData {
                     // ★ 画像圧縮処理 (JPEG 0.7)
                     guard let uiImage = UIImage(data: data),
@@ -336,27 +336,27 @@ struct ProfileView: View {
                         isSaving = false
                         return
                     }
-                    
+
                     let storage = Storage.storage(url: "gs://asobo-539e5.firebasestorage.app")
                     let ref = storage.reference().child("users/\(uid)/children/\(childId)/photo.jpg")
-                    
+
                     let metadata = StorageMetadata()
                     metadata.contentType = "image/jpeg"
-                    
+
                     _ = try await ref.putData(compressedData, metadata: metadata)
                     let url = try await ref.downloadURL()
                     photoURL = url.absoluteString
                     print("📸 ProfileView: 画像アップロード成功 - URL: \(photoURL ?? "nil")")
                 }
-                
+
                 let db = Firestore.firestore()
-                
+
                 // 親プロフィール更新
                 var parentData: [String: Any] = [:]
                 parentData["displayName"] = parentName
                 parentData["parentName"] = parentName
                 try await db.collection("users").document(uid).setData(parentData, merge: true)
-                
+
                 // 子プロフィール更新
                 var childData: [String: Any] = [:]
                 childData["displayName"] = childName
@@ -371,10 +371,10 @@ struct ProfileView: View {
                 } else {
                     print("⚠️ ProfileView: photoURLがnilのため、Firestoreには保存しません")
                 }
-                
+
                 try await db.collection("users").document(uid).collection("children").document(childId).setData(childData, merge: true)
                 print("✅ ProfileView: Firestoreへの保存完了")
-                
+
                 // 選択画像データを先にクリア（URL表示に戻す）
                 await MainActor.run {
                     selectedPhotoData = nil
@@ -385,23 +385,23 @@ struct ProfileView: View {
                         currentPhotoURLString = newURL
                     }
                 }
-                
+
                 // 新しい画像をすぐに読み込む
                 await loadProfileImageIfNeeded(forceReload: true)
-                
+
                 // ★ 保存後にデータを再取得してViewModelを更新
                 await authVM.fetchUserProfile(userId: uid)
-                
+
                 // 画面再読み込み（selectedPhotoDataがnilになった後なので、URLが更新される）
                 await MainActor.run {
                     loadInitialValues()
                 }
-                
+
                 // 再度画像を読み込む（authVM.fetchUserProfile完了後）
                 await loadProfileImageIfNeeded(forceReload: true)
-                
+
                 message = "保存しました"
-                
+
             } catch {
                 print("❌ ProfileView: 保存失敗 - \(error)")
                 message = "保存に失敗しました: \(error.localizedDescription)"
@@ -409,14 +409,14 @@ struct ProfileView: View {
             isSaving = false
         }
     }
-    
+
     /// 画像を表示サイズに合わせてダウンサンプリング（メモリ使用量と処理速度を最適化）
     private func downsampleImage(data: Data, to pointSize: CGSize, scale: CGFloat = UIScreen.main.scale) -> UIImage? {
         let imageSourceOptions = [kCGImageSourceShouldCache: false] as CFDictionary
         guard let imageSource = CGImageSourceCreateWithData(data as CFData, imageSourceOptions) else {
             return nil
         }
-        
+
         let maxDimensionInPixels = max(pointSize.width, pointSize.height) * scale
         let downsampleOptions = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
@@ -424,21 +424,21 @@ struct ProfileView: View {
             kCGImageSourceCreateThumbnailWithTransform: true,
             kCGImageSourceThumbnailMaxPixelSize: maxDimensionInPixels
         ] as CFDictionary
-        
+
         guard let downsampledImage = CGImageSourceCreateThumbnailAtIndex(imageSource, 0, downsampleOptions) else {
             return nil
         }
-        
+
         return UIImage(cgImage: downsampledImage)
     }
-    
+
     private func loadProfileImageIfNeeded(forceReload: Bool) async {
         // selectedPhotoDataがある場合は、URLから画像を読み込まない（ユーザーが選択中の画像を優先）
         guard selectedPhotoData == nil else {
             print("ℹ️ ProfileView: loadProfileImageIfNeeded - selectedPhotoDataがあるためスキップ")
             return
         }
-        
+
         guard let urlString = currentPhotoURLString ?? authVM.selectedChild?.photoURL else {
             print("⚠️ ProfileView: loadProfileImageIfNeeded - photoURLがnil")
             await MainActor.run {
@@ -447,16 +447,16 @@ struct ProfileView: View {
             }
             return
         }
-        
+
         // URLから:443を削除（Firebase StorageのURLに含まれることがある）
         let normalizedURLString = urlString.replacingOccurrences(of: ":443", with: "")
         guard let url = URL(string: normalizedURLString) else {
             print("⚠️ ProfileView: loadProfileImageIfNeeded - URL変換失敗: \(normalizedURLString)")
             return
         }
-        
+
         let cacheKey = url.absoluteString
-        
+
         // キャッシュから取得を試みる（forceReloadがfalseの場合のみ）
         if !forceReload, let cachedImage = ImageCache.shared.get(for: cacheKey) {
             print("✅ ProfileView: キャッシュから画像を取得 - URL: \(cacheKey)")
@@ -466,37 +466,37 @@ struct ProfileView: View {
             }
             return
         }
-        
+
         let shouldReload = forceReload || loadedImageURLString != url.absoluteString || profileImage == nil
         if !shouldReload {
             print("ℹ️ ProfileView: loadProfileImageIfNeeded - スキップ（既に読み込み済み）")
             return
         }
-        
+
         print("📸 ProfileView: プロフィール画像の読み込み開始 - URL: \(url.absoluteString)")
-        
+
         // Firebase Storage SDKを使用して画像を取得
         guard let userId = authVM.currentUser?.uid,
               let childId = authVM.selectedChild?.id else {
             print("⚠️ ProfileView: ユーザー情報が取得できません")
             return
         }
-        
+
         do {
             // Storage参照を取得
             let storage = Storage.storage(url: "gs://asobo-539e5.firebasestorage.app")
             let ref = storage.reference().child("users/\(userId)/children/\(childId)/photo.jpg")
-            
+
             // 最大サイズを10MBに設定してダウンロード
             let data = try await ref.data(maxSize: 10 * 1024 * 1024)
             print("📊 ProfileView: データ取得完了 - サイズ: \(data.count) bytes")
-            
+
             // 表示サイズ（90x90）に合わせてダウンサンプリング（メモリ使用量と処理速度を最適化）
             let displaySize = CGSize(width: 90, height: 90)
             if let downsampledImage = downsampleImage(data: data, to: displaySize) {
                 // キャッシュに保存
                 ImageCache.shared.set(downsampledImage, for: cacheKey)
-                
+
                 await MainActor.run {
                     profileImage = Image(uiImage: downsampledImage)
                     loadedImageURLString = url.absoluteString
@@ -508,7 +508,7 @@ struct ProfileView: View {
                 if let uiImage = UIImage(data: data) {
                     // キャッシュに保存
                     ImageCache.shared.set(uiImage, for: cacheKey)
-                    
+
                     await MainActor.run {
                         profileImage = Image(uiImage: uiImage)
                         loadedImageURLString = url.absoluteString
@@ -525,7 +525,7 @@ struct ProfileView: View {
             do {
                 let (data, response) = try await URLSession.shared.data(from: url)
                 print("📊 ProfileView: URLSessionリトライ - データ取得完了 - サイズ: \(data.count) bytes, Content-Type: \((response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Content-Type") ?? "unknown")")
-                
+
                 // エラーレスポンス（JSON）かどうかを確認
                 if let jsonString = String(data: data, encoding: .utf8),
                    jsonString.contains("\"error\"") {
@@ -539,13 +539,13 @@ struct ProfileView: View {
                     }
                     return
                 }
-                
+
                 // 表示サイズに合わせてダウンサンプリング
                 let displaySize = CGSize(width: 90, height: 90)
                 if let downsampledImage = downsampleImage(data: data, to: displaySize) {
                     // キャッシュに保存
                     ImageCache.shared.set(downsampledImage, for: cacheKey)
-                    
+
                     await MainActor.run {
                         profileImage = Image(uiImage: downsampledImage)
                         loadedImageURLString = url.absoluteString
@@ -554,7 +554,7 @@ struct ProfileView: View {
                 } else if let uiImage = UIImage(data: data) {
                     // ダウンサンプリングに失敗した場合は通常の方法で読み込む
                     ImageCache.shared.set(uiImage, for: cacheKey)
-                    
+
                     await MainActor.run {
                         profileImage = Image(uiImage: uiImage)
                         loadedImageURLString = url.absoluteString
@@ -568,7 +568,7 @@ struct ProfileView: View {
             }
         }
     }
-    
+
     private func ageString(from birthDate: Date) -> String {
         let calendar = Calendar.current
         let now = Date()

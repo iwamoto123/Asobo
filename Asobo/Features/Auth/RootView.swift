@@ -2,7 +2,7 @@ import SwiftUI
 
 struct RootView: View {
     @StateObject private var authVM = AuthViewModel()
-    
+
     var body: some View {
         Group {
             switch authVM.authState {
@@ -30,6 +30,3 @@ struct RootView: View {
         .animation(.easeInOut, value: authVM.authState)
     }
 }
-
-
-

@@ -39,16 +39,16 @@ public final class ConversationController: NSObject, ObservableObject {
     /// 直近の連続回数を数えて systemPrompt にブースト指示を入れる。
     // NOTE: extensionファイルから参照するため internal（モジュール内限定）にしている
     var audioMissingConsecutiveCount: Int = 0
-    
+
     // 追加: ユーザーが停止したかを覚えるフラグ
     private var userStoppedRecording = false
-    
+
     // ✅ AI音声再生中フラグ（onAudioDeltaReceivedで設定、sendMicrophonePCMの早期returnを一元化）
     // NOTE: 別ファイルのextensionから更新するため internal（モジュール内限定）
     @Published var isAIPlayingAudio: Bool = false
     // ✅ ハンズフリーモードの有効化フラグ
     @Published public var isHandsFreeMode: Bool = false
-    
+
     // ✅ ターン状態（拡張版）
     enum TurnState: Equatable {
         case idle               // セッション前 or 終了後
@@ -61,14 +61,14 @@ public final class ConversationController: NSObject, ObservableObject {
     }
     // NOTE: 別ファイルのextensionから状態更新するため internal(set) 相当（=制限なし）にする
     @Published var turnState: TurnState = .idle
-    
+
     // ✅ 「待つ→促す」タイマー
     private var nudgeTimer: Timer?
     // ✅ 促し回数の上限とカウンター
     private let maxNudgeCount = AppConfig.nudgeMaxCount
     // NOTE: 別ファイルのextensionから参照/更新するため internal（モジュール内限定）
     var nudgeCount = 0
-    
+
     // ✅ 追加: 最後に「ユーザーの声（環境音含む）」が閾値を超えた時刻
     // NOTE: 別ファイルのextensionから参照/更新するため internal（モジュール内限定）
     var lastUserVoiceActivityTime: Date = Date()
@@ -79,15 +79,15 @@ public final class ConversationController: NSObject, ObservableObject {
     /// デバッグ用：開始/終了のRMS閾値（入力ルートで変化し得るのでログ用に公開）
     public var debugActiveRmsStartThresholdDb: Double { activeRmsStartThresholdDb }
     public var debugActiveSpeechEndRmsThresholdDb: Double { activeSpeechEndRmsThresholdDb }
-    
+
     // ✅ 追加: 無音判定の閾値（-50dBより大きければ「何か音がしている」とみなす）
     // 調整目安: -40dB(普通) 〜 -60dB(静寂)。-50dBは「ささやき声や環境音」レベル
     // NOTE: 別ファイルのextensionから参照するため internal（モジュール内限定）
     let silenceThresholdDb: Double = -50.0
-    
+
     // ✅ 追加: speech_startedが来ていない警告のカウンター
     private var speechStartedMissingCount: Int = 0
-    
+
     // MARK: - VAD (Hands-free Conversation)
     enum VADState { case idle, speaking }
     // 🔧 Temporarily extremely low thresholds to force VAD triggering
@@ -123,12 +123,12 @@ public final class ConversationController: NSObject, ObservableObject {
     //    「開始がprobでトリガされていない」ターンでは、終了判定ではprobを信用しない。
     // NOTE: 別ファイルのextensionから参照/更新するため internal（モジュール内限定）にしている
     var speechStartTriggeredByProb: Bool = false
-    
+
     // MARK: - STT-based VAD (New policy)
     // SileroVAD/RMSは測定・可視化用途として残すが、発話開始/終了の判定はライブSTTで行う
     // NOTE: 別ファイルのextensionから参照/更新するため internal（モジュール内限定）にしている
     let sttVADSpeechStartMinChars: Int = 1
-    let sttVADEndSilenceDuration: TimeInterval = 0.9
+    let sttVADEndSilenceDuration: TimeInterval = 1.5
     var sttVADEndTimer: Timer?
 
     // MARK: - Hands-free Realtime STT Monitor (for end-of-speech fallback)
@@ -165,7 +165,7 @@ public final class ConversationController: NSObject, ObservableObject {
     var handsFreeBargeInLastNormalized: String = ""
     var handsFreeSTTAppendCount: UInt64 = 0
     var handsFreeSTTLastAppendLogAt: Date?
-    
+
     // MARK: - STT-based Barge-in (while AI speaking)
     // NOTE: 別ファイルのextensionから参照/更新するため internal（モジュール内限定）にしている
     var aiPlaybackStartedAt: Date?
@@ -173,7 +173,7 @@ public final class ConversationController: NSObject, ObservableObject {
     let sttBargeInIgnoreWindowAfterPlaybackStart: TimeInterval = 0.2
     let sttBargeInMinInterval: TimeInterval = 0.8
     let sttBargeInMinChars: Int = 2
-    
+
     // NOTE: 別ファイルのextensionから参照するため internal（モジュール内限定）
     var isBluetoothInput: Bool {
         let session = AVAudioSession.sharedInstance()
@@ -188,7 +188,7 @@ public final class ConversationController: NSObject, ObservableObject {
     var activeMinSilenceDuration: TimeInterval {
         isBluetoothInput ? bluetoothMinSilenceDuration : defaultMinSilenceDuration
     }
-    
+
     // ✅ 各ターンのレイテンシ計測用
     // NOTE: 別ファイルのextensionから参照するため internal（モジュール内限定）にしている
     struct TurnMetrics {
@@ -203,7 +203,7 @@ public final class ConversationController: NSObject, ObservableObject {
     }
     // NOTE: 別ファイルのextensionから参照/更新するため internal（モジュール内限定）にしている
     var turnMetrics = TurnMetrics()
-    
+
     // デバッグ用プロパティ
     @Published public var aiResponseText: String = ""
     @Published public var isPlayingAudio: Bool = false
@@ -217,7 +217,7 @@ public final class ConversationController: NSObject, ObservableObject {
     var currentTurnId: Int = 0         // ターンの世代ID（単一の真実）
     var listeningTurnId: Int = 0       // VAD/録音用の世代ID
     var playbackTurnId: Int?           // 再生状態通知の世代ID
-    
+
     // AI呼び出し用フィールド
     @Published public var isThinking: Bool = false   // ぐるぐる表示用
     private var lastAskedText: String = ""           // 同文の連投防止
@@ -280,7 +280,7 @@ public final class ConversationController: NSObject, ObservableObject {
 
     // MARK: - Fallback TTS tuning (audio-only; UIテキストは変えない)
     /// フォールバックTTSの音声は、入力テキスト側の軽い整形と再生側のVoice FXでテンションを調整する。
-    
+
     /// gpt-4o-audio-preview に渡す user メッセージ先頭の共通プレフィックス。
     /// - Note: systemPrompt とは別に、user 側にも「必ず音声を返す」指示を毎回付与する（音声欠落の再発を抑える目的）。
     var audioPreviewUserMessagePrefix: String {
@@ -299,7 +299,7 @@ public final class ConversationController: NSObject, ObservableObject {
     }
     // NOTE: 別ファイルのextensionから参照/更新するため internal（モジュール内限定）
     var conversationHistory: [HistoryItem] = []
-    
+
     // MARK: - Firebase保存
     // NOTE: 別ファイルのextensionから参照/更新するため internal（モジュール内限定）にしている
     let firebaseRepository = FirebaseConversationsRepository()
@@ -312,7 +312,7 @@ public final class ConversationController: NSObject, ObservableObject {
     private var currentChildNickname: String?
     // NOTE: 別ファイルのextensionから参照/更新するため internal（モジュール内限定）
     var turnCount: Int = 0
-    
+
     // 会話で呼ぶ名前（ニックネーム優先）
     // NOTE: extensionファイルから参照するため internal（モジュール内限定）にしている
     var childCallName: String? {
@@ -324,7 +324,7 @@ public final class ConversationController: NSObject, ObservableObject {
         }
         return nil
     }
-    
+
     // ✅ ユーザー情報を設定するメソッド
     public func setupUser(userId: String, childId: String, childName: String? = nil, childNickname: String? = nil) {
         self.currentUserId = userId
@@ -335,7 +335,7 @@ public final class ConversationController: NSObject, ObservableObject {
         self.currentChildNickname = trimmedNickname?.isEmpty == true ? nil : trimmedNickname
         print("✅ ConversationController: ユーザー情報を設定 - Parent=\(userId), Child=\(childId), Name=\(childCallName ?? "n/a")")
     }
-    
+
     private static func pcmFromWavIfPossible(_ data: Data) -> Data? {
         // RIFF/WAVEヘッダチェック
         guard data.count >= 12,
@@ -343,12 +343,12 @@ public final class ConversationController: NSObject, ObservableObject {
               String(data: data[8..<12], encoding: .ascii) == "WAVE" else {
             return nil
         }
-        
+
         var offset = 12 // RIFFヘッダの後からチャンクを走査
         var fmtFound = false
         var audioFormat: UInt16 = 0
         var bitsPerSample: UInt16 = 0
-        
+
         while offset + 8 <= data.count {
             let chunkIDData = data[offset..<offset+4]
             let chunkSize = data[offset+4..<offset+8].withUnsafeBytes { $0.load(as: UInt32.self) }
@@ -356,7 +356,7 @@ public final class ConversationController: NSObject, ObservableObject {
             let chunkStart = offset + 8
             let chunkEnd = chunkStart + Int(chunkSize)
             guard chunkEnd <= data.count else { return nil }
-            
+
             if chunkID == "fmt " {
                 // PCM16フォーマット確認
                 guard chunkSize >= 16 else { return nil }
@@ -368,7 +368,7 @@ public final class ConversationController: NSObject, ObservableObject {
                 let pcmRange = chunkStart..<chunkEnd
                 return data.subdata(in: pcmRange)
             }
-            
+
             // チャンクサイズは偶数境界に揃うためパディング考慮
             offset = chunkEnd + (chunkSize % 2 == 1 ? 1 : 0)
         }
@@ -380,13 +380,13 @@ public final class ConversationController: NSObject, ObservableObject {
     func logFirebaseError(_ error: Error, operation: String) {
         let errorString = String(describing: error)
         print("❌ ConversationController: \(operation)失敗 - \(errorString)")
-        
+
         // Permission deniedエラーの場合、セキュリティルールの設定方法を案内
         if errorString.contains("Permission denied") || errorString.contains("Missing or insufficient permissions") {
             print("""
             ⚠️ セキュリティルールエラーが発生しました。
             開発環境では、Firebaseコンソールで以下のルールを設定してください:
-            
+
             rules_version = '2';
             service cloud.firestore {
               match /databases/{database}/documents {
@@ -395,7 +395,7 @@ public final class ConversationController: NSObject, ObservableObject {
                 }
               }
             }
-            
+
             詳細は FIREBASE_SUMMARY.md を参照してください。
             """)
         }
@@ -418,7 +418,7 @@ public final class ConversationController: NSObject, ObservableObject {
     deinit {
         // ✅ deinitは同期的に実行される必要があるため、非同期処理は行わない
         // 同期的に実行可能なクリーンアップのみを行う
-        
+
         // セッション開始タスクをキャンセル
         sessionStartTask?.cancel()
         sessionStartTask = nil
@@ -428,7 +428,7 @@ public final class ConversationController: NSObject, ObservableObject {
         }
         liveSummaryTask?.cancel()
         liveSummaryTask = nil
-        
+
         // 受信タスクをキャンセル
         receiveTextTask?.cancel()
         receiveTextTask = nil
@@ -436,22 +436,22 @@ public final class ConversationController: NSObject, ObservableObject {
         receiveAudioTask = nil
         receiveInputTextTask?.cancel()
         receiveInputTextTask = nil
-        
+
         // マイクとプレイヤーを停止（deinitは非isolatedなので直接停止）
         mic?.stop()
         mic = nil
         player.stop()
-        
+
         // 共通エンジンを停止
         if sharedAudioEngine.isRunning {
             sharedAudioEngine.stop()
         }
-        
+
         // 促しタイマーを停止（deinit内では直接無効化）
         // ✅ cancelNudge()は@MainActorで分離されているため、deinit内では直接タイマーを無効化
         nudgeTimer?.invalidate()
         nudgeTimer = nil
-        
+
         // Local STTのクリーンアップ
         // ✅ removeTapはタップが存在しない場合でもエラーを投げないため、安全に呼び出せる
         audioEngine.inputNode.removeTap(onBus: 0)
@@ -462,7 +462,7 @@ public final class ConversationController: NSObject, ObservableObject {
         sttTask?.cancel()
         sttRequest = nil
         sttTask = nil
-        
+
         // realtimeClientのクリーンアップ（非同期処理は実行しない）
         // finishSession()は非同期処理のため、deinit内では実行しない
         // 代わりに、realtimeClientの参照をnilにして、deinit時に自動的にクリーンアップされるようにする
@@ -471,7 +471,7 @@ public final class ConversationController: NSObject, ObservableObject {
             NotificationCenter.default.removeObserver(observer)
             routeChangeObserver = nil
         }
-        
+
         print("✅ ConversationController: deinit - リソースクリーンアップ完了")
     }
 
@@ -497,8 +497,7 @@ public final class ConversationController: NSObject, ObservableObject {
         }
 
         // 1) AudioSession を先に構成（DI経由）
-        do { try audioSession.configure() }
-        catch {
+        do { try audioSession.configure() } catch {
             self.errorMessage = "AudioSession開始に失敗: \(error.localizedDescription)"
             return
         }
@@ -539,13 +538,13 @@ public final class ConversationController: NSObject, ObservableObject {
             },
             onError: { [weak self] err in
                 guard let self else { return }
-                
+
                 // キャンセル/無音などの"正常終了扱い"は UI に出さない
                 if self.userStoppedRecording || Self.isBenignSpeechError(err) {
                     Task { @MainActor in self.finishSTTCleanup() }
                     return
                 }
-                
+
                 // それ以外のみエラー表示
                 Task { @MainActor in
                     self.errorMessage = err.localizedDescription
@@ -570,10 +569,10 @@ public final class ConversationController: NSObject, ObservableObject {
 
     // NOTE: Realtime session lifecycle was moved to:
     // - ConversationController/ConversationController+RealtimeSession.swift
-    
+
     // NOTE: PTT was moved to:
     // - ConversationController/ConversationController+PTT.swift
-    
+
     // NOTE: HandsFree VAD was moved to:
     // - ConversationController/ConversationController+HandsFreeVAD.swift
     //
@@ -581,13 +580,13 @@ public final class ConversationController: NSObject, ObservableObject {
     // - ConversationController/ConversationController+AudioPreviewRequests.swift
     // NOTE: fallbackTTSInput was moved to:
     // - ConversationController/ConversationController+Prompts.swift
-    
+
     // NOTE: fallback TTS was moved to:
     // - ConversationController/ConversationController+FallbackTTS.swift
-    
+
     // NOTE: Diagnostics helpers were moved to:
     // - ConversationController/ConversationController+Diagnostics.swift
-    
+
     private func finishSTTCleanup() {
         sttRequest = nil
         sttTask = nil
@@ -601,7 +600,7 @@ public final class ConversationController: NSObject, ObservableObject {
             askAI(with: finalText)
         }
     }
-    
+
     static func isBenignSpeechError(_ error: Error) -> Bool {
         let e = error as NSError
         let msg = e.localizedDescription.lowercased()
@@ -618,7 +617,7 @@ public final class ConversationController: NSObject, ObservableObject {
         // 必要ならコードで分岐（環境で異なるが 203/216 を見ることが多い）
         // || e.code == 203 || e.code == 216
     }
-    
+
     // MARK: - AI呼び出し
     public func askAI(with userText: String) {
         // 同じテキストを連投しない
@@ -631,27 +630,27 @@ public final class ConversationController: NSObject, ObservableObject {
         errorMessage = nil
 
         Task {
-            defer { 
+            defer {
                 Task { @MainActor in
-                    self.isThinking = false 
+                    self.isThinking = false
                 }
             }
 
             // OpenAI Chat Completions
             struct Payload: Encodable {
                 let model: String
-                let messages: [[String:String]]
+                let messages: [[String: String]]
                 let max_tokens: Int?
                 let temperature: Double?
             }
-            
+
             let nameNote: String
             if let callName = childCallName {
                 nameNote = "こどものなまえは「\(callName)」。あいさつやこたえの中で、ようすにあわせてやさしく名前を入れてね（れんこは禁止）。"
             } else {
                 nameNote = ""
             }
-            
+
             let payload = Payload(
                 model: "gpt-4o-mini",
                 messages: [
@@ -730,16 +729,16 @@ public final class ConversationController: NSObject, ObservableObject {
             }
         }
     }
-    
+
     private static func readable429Message(from data: Data) -> String {
         // OpenAI エラー形式に対応
-        struct OpenAIError: Decodable { 
-            struct Inner: Decodable { 
+        struct OpenAIError: Decodable {
+            struct Inner: Decodable {
                 let message: String
                 let type: String?
                 let code: String?
             }
-            let error: Inner 
+            let error: Inner
         }
         if let e = try? JSONDecoder().decode(OpenAIError.self, from: data) {
             if let code = e.error.code?.lowercased(), code.contains("insufficient_quota") {
@@ -764,47 +763,47 @@ private static func humanReadable(_ error: Error) -> String {
         }
         return error.localizedDescription
     }
-    
+
     /// 日本語以外や余計なフッタを取り除く軽いサニタイズ
     // NOTE: prompt/sanitize helpers were moved to:
     // - ConversationController/ConversationController+Prompts.swift
-    
+
     // NOTE: Live analysis was moved to:
     // - ConversationController/ConversationController+Analysis.swift
-    
+
     // MARK: - 促しタイマー機能
-    
+
     // ✅ 修正: タイマー開始ロジック（10.0秒に延長、デバッグログ強化）
     func startWaitingForResponse() {
         print("⏹ ConversationController: 促し機能は無効化中（タイマーをセットしません）")
         cancelNudge()
     }
-    
+
     // ✅ 修正: サーバーの状態に関わらず、実際の無音時間が長ければ促す
     private func sendNudgeIfNoResponse() async {
         // 促し機能を停止中
         print("⏹ ConversationController: 促し機能は無効化中（nudge送信も行いません）")
         cancelNudge()
         return
-        
+
         guard isRealtimeActive else {
             print("⚠️ ConversationController: セッションがアクティブでないため nudge スキップ")
             return
         }
-        
+
         // 最後に音がしてから何秒経過したか
         let silenceDuration = Date().timeIntervalSince(lastUserVoiceActivityTime)
         print("🧐 ConversationController: Nudge判定 - State: \(turnState), 実際の無音経過時間: \(String(format: "%.1f", silenceDuration))秒")
-        
+
         // ---------------------------------------------------------
         // 判定ロジック:
         // 1. ユーザーが話している(.listening)ことになっているが、
         // 2. 実はここ4秒以上、マイク入力が静か(-50dB以下)である場合
         //    → 「VADの誤検知（または張り付き）」とみなして、強制的に促しを実行する
         // ---------------------------------------------------------
-        
+
         let isActuallySilent = silenceDuration > 4.0 // 少し余裕を見て4.0秒以上静かなら無音とする
-        
+
         if case .listening = turnState {
             if isActuallySilent {
                 print("🚀 ConversationController: Stateはlisteningですが、実際には無音(\(String(format: "%.1f", silenceDuration))s)のため、促しを強制実行します")
@@ -815,7 +814,7 @@ private static func humanReadable(_ error: Error) -> String {
                 return
             }
         }
-        
+
         // 他の状態（AIが考えている、話している）の場合は従来どおりスキップ
         if case .thinking = turnState {
             print("⚠️ ConversationController: 応答生成中(thinking)のため nudge をスキップ")
@@ -827,7 +826,7 @@ private static func humanReadable(_ error: Error) -> String {
             cancelNudge()
             return
         }
-        
+
         // ここまで来たら送信
         guard nudgeCount < maxNudgeCount else {
             print("⏹ ConversationController: 促し送信を\(maxNudgeCount)回で停止します")
@@ -838,26 +837,26 @@ private static func humanReadable(_ error: Error) -> String {
         print("ℹ️ ConversationController: Realtime API無効化中のため nudge はスキップ（gpt-4o-audio-previewに合わせて後続で実装検討）")
         nudgeCount += 1
     }
-    
+
     // NOTE: 別ファイルのextensionから呼ぶため internal（モジュール内限定）
     func cancelNudge() {
         nudgeTimer?.invalidate()
         nudgeTimer = nil
     }
-    
+
     // ✅ セッション開始時に最初の質問を生成する
     public func requestInitialGreeting() {
         guard isRealtimeActive else {
             print("⚠️ ConversationController: セッションがアクティブでないため initial greeting スキップ")
             return
         }
-        
+
         Task {
             print("🚀 ConversationController: 最初の質問を生成中...")
             print("ℹ️ ConversationController: Realtime API無効化中のため nudge はスキップ（gpt-4o-audio-previewに合わせて後続で実装検討）")
         }
     }
-    
+
     // NOTE: Session analysis was moved to:
     // - ConversationController/ConversationController+Analysis.swift
 }

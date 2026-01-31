@@ -30,6 +30,30 @@ public final class OutputMonitor {
 }
 
 public final class PlayerNodeStreamer {
+  public struct VoiceFXState {
+    public let enabled: Bool
+    public let useVarispeed: Bool
+    public let timePitchPitch: Float
+    public let timePitchRate: Float
+    public let timePitchOverlap: Float
+    public let varispeedRate: Float
+    
+    public init(
+      enabled: Bool,
+      useVarispeed: Bool,
+      timePitchPitch: Float,
+      timePitchRate: Float,
+      timePitchOverlap: Float,
+      varispeedRate: Float
+    ) {
+      self.enabled = enabled
+      self.useVarispeed = useVarispeed
+      self.timePitchPitch = timePitchPitch
+      self.timePitchRate = timePitchRate
+      self.timePitchOverlap = timePitchOverlap
+      self.varispeedRate = varispeedRate
+    }
+  }
   private let engine: AVAudioEngine
   private var ownsEngine: Bool  // エンジンの所有権を持つかどうか
   private let player = AVAudioPlayerNode()
@@ -64,46 +88,15 @@ public final class PlayerNodeStreamer {
   // ✅ 追加: 再生状態変更通知クロージャ
   public var onPlaybackStateChange: ((Bool) -> Void)?
 
-  // MARK: - Voice FX tuning helpers
-  public struct VoiceFXState: Sendable {
-    public let enabled: Bool
-    public let useVarispeed: Bool
-    public let timePitchPitch: Float
-    public let timePitchRate: Float
-    public let timePitchOverlap: Float
-    public let varispeedRate: Float
+  // ✅ 追加: 再生開始待ち（UI同期用）
+  private struct PlaybackStartWaiter {
+    let id: UUID
+    let expectedEvent: Int
+    let continuation: CheckedContinuation<Bool, Never>
   }
-
-  public func snapshotVoiceFXState() -> VoiceFXState {
-    VoiceFXState(
-      enabled: enableVoiceEffect,
-      useVarispeed: useVarispeed,
-      timePitchPitch: timePitchNode.pitch,
-      timePitchRate: timePitchNode.rate,
-      timePitchOverlap: timePitchNode.overlap,
-      varispeedRate: varispeedNode.rate
-    )
-  }
-
-  public func applyVoiceFXState(_ state: VoiceFXState) {
-    // ノード設定（接続経路に関わらず安全に反映できる）
-    timePitchNode.pitch = state.timePitchPitch
-    timePitchNode.rate = state.timePitchRate
-    timePitchNode.overlap = state.timePitchOverlap
-    varispeedNode.rate = state.varispeedRate
-    // 接続経路/有効化
-    updateVoiceEffect(enabled: state.enabled, useVarispeed: state.useVarispeed)
-  }
-
-  /// フォールバックTTSなど、より「マスコット寄り」にしたいケース用のプリセット。
-  /// - Note: TimePitch方式は速度をあまり変えずにピッチ感を出しやすい。
-  public func applyMascotBoostPreset() {
-    // 経路をTimePitchへ（ピッチを強めに）
-    updateVoiceEffect(enabled: true, useVarispeed: false)
-    timePitchNode.pitch = 900.0   // cents（約+9半音）
-    timePitchNode.rate = 1.20     // ✅ フォールバックTTSはもう少し早口に
-    timePitchNode.overlap = 12.0
-  }
+  private let playbackStartWaitersLock = NSLock()
+  private var playbackStartWaiters: [PlaybackStartWaiter] = []
+  private var playbackStartEventCounter: Int = 0
 
   /// ✅ 共通エンジンを使用する場合（AEC有効化のため推奨）
   public init(sharedEngine: AVAudioEngine, sourceSampleRate: Double = 24_000.0, ownsEngine: Bool = false) {
@@ -222,7 +215,7 @@ public final class PlayerNodeStreamer {
       throw error
     }
   }
-
+  
   /// ✅ RMS計算（dBFS）
   private func calculateRMS(from buffer: AVAudioPCMBuffer) -> Double {
     guard let channelData = buffer.floatChannelData else { return -60.0 }
@@ -250,6 +243,11 @@ public final class PlayerNodeStreamer {
 
   /// 受信した Int16/mono（24kHz）のPCMチャンクを再生
   public func playChunk(_ data: Data) {
+    playChunk(data, forceStart: false)
+  }
+
+  /// 受信した Int16/mono（24kHz）のPCMチャンクを再生（forceStart=trueでプリバッファを無視）
+  public func playChunk(_ data: Data, forceStart: Bool) {
     stateLock.lock()
     let shouldStop = stopRequested
     stateLock.unlock()
@@ -322,12 +320,15 @@ public final class PlayerNodeStreamer {
     // まだプリロール未達なら貯めるだけ
     // 実機では十分なデータが蓄積されるまで待つことが重要
     let targetFrames = AVAudioFrameCount(format.sampleRate * prebufferSec)
-    if !player.isPlaying, queuedFrames < targetFrames {
+    if !player.isPlaying, queuedFrames < targetFrames, !forceStart {
       // デバッグログ（最初の数回のみ）
       if queue.count == 1 {
         print("📦 PlayerNodeStreamer: バッファリング中... \(queuedFrames)/\(targetFrames) frames")
       }
       return
+    }
+    if forceStart, !player.isPlaying, queuedFrames < targetFrames {
+      print("⚡️ PlayerNodeStreamer: forceStart=true のためプリバッファを無視して再生開始")
     }
     
     // 十分なデータが蓄積された（または既に再生中）
@@ -378,6 +379,8 @@ public final class PlayerNodeStreamer {
       DispatchQueue.main.async {
         self.onPlaybackStateChange?(true)
       }
+      // ✅ 再生開始イベント（最初のバッファを積んだ）で待機を解放
+      notifyPlaybackStarted()
     }
 
     // 2. バッファをスケジュール（completionHandlerで消化を追跡）
@@ -425,6 +428,7 @@ public final class PlayerNodeStreamer {
     outputMonitor.reset()
     // ✅ タップを削除
     engine.mainMixerNode.removeTap(onBus: 0)
+    notifyPlaybackStartCancelledAll()
   }
   
   /// ✅ エンジンを再開（response.audio.delta受信時に呼ぶ）
@@ -522,6 +526,58 @@ public final class PlayerNodeStreamer {
     let modeText = (!enabled || bypassVoiceEffectForFillerPrep) ? "bypass" : (targetUseVarispeed ? "Varispeed" : "TimePitch")
     print("🎛️ PlayerNodeStreamer: Voice FX updated -> enabled=\(enabled && !bypassVoiceEffectForFillerPrep), mode=\(modeText)")
   }
+  
+  /// ✅ 現在のボイスFX設定を退避
+  public func snapshotVoiceFXState() -> VoiceFXState {
+    VoiceFXState(
+      enabled: enableVoiceEffect,
+      useVarispeed: useVarispeed,
+      timePitchPitch: timePitchNode.pitch,
+      timePitchRate: timePitchNode.rate,
+      timePitchOverlap: timePitchNode.overlap,
+      varispeedRate: varispeedNode.rate
+    )
+  }
+  
+  /// ✅ 退避しておいたボイスFX設定を復元
+  public func applyVoiceFXState(_ state: VoiceFXState) {
+    timePitchNode.pitch = state.timePitchPitch
+    timePitchNode.rate = state.timePitchRate
+    timePitchNode.overlap = state.timePitchOverlap
+    varispeedNode.rate = state.varispeedRate
+    updateVoiceEffect(enabled: state.enabled, useVarispeed: state.useVarispeed)
+  }
+  
+  /// ✅ フォールバックTTS用のマスコット寄りプリセット
+  public func applyMascotBoostPreset() {
+    timePitchNode.pitch = 650.0
+    timePitchNode.rate = 1.2
+    timePitchNode.overlap = 12.0
+    varispeedNode.rate = 1.45
+    updateVoiceEffect(enabled: true, useVarispeed: true)
+  }
+
+  /// ✅ 保護者フレーズ用のプリセット（早口・高め）
+  public func applyParentPhrasePreset() {
+    timePitchNode.pitch = 750.0
+    timePitchNode.rate = 1.35
+    timePitchNode.overlap = 12.0
+    varispeedNode.rate = 1.55
+    updateVoiceEffect(enabled: true, useVarispeed: true)
+  }
+
+  /// ✅ 再生終了を待つ（簡易ポーリング）
+  public func waitForPlaybackToEnd(pollIntervalMs: UInt64 = 50) async {
+    while true {
+      stateLock.lock()
+      let pending = pendingBufferCount
+      stateLock.unlock()
+      if pending == 0 && !player.isPlaying {
+        break
+      }
+      try? await Task.sleep(nanoseconds: pollIntervalMs * 1_000_000)
+    }
+  }
 
   /// ✅ 次のストリーム開始前に呼び出して停止要求やミュート状態を解除
   public func prepareForNextStream() {
@@ -547,6 +603,92 @@ public final class PlayerNodeStreamer {
     stateLock.unlock()
     let prefix = wasStopping ? "🟢" : "ℹ️"
     print("\(prefix) PlayerNodeStreamer: stopRequested cleared for turn \(playbackTurnId) (\(reason)), wasStopping=\(wasStopping)")
+  }
+
+  // MARK: - Playback start wait (UI sync)
+
+  /// ✅ 再生開始（= 最初のバッファを積んだ）を待つ
+  /// - Returns: true=開始, false=タイムアウト/キャンセル
+  public func waitForPlaybackToStart(timeout: TimeInterval? = nil) async -> Bool {
+    let expected: Int
+    stateLock.lock()
+    expected = playbackStartEventCounter + 1
+    stateLock.unlock()
+
+    let wait = { [weak self] () async -> Bool in
+      guard let self else { return false }
+      return await self.waitForPlaybackStartEvent(expectedEvent: expected)
+    }
+
+    if let timeout = timeout {
+      return await withTaskGroup(of: Bool.self) { group in
+        group.addTask { await wait() }
+        group.addTask {
+          try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+          return false
+        }
+        let result = await group.next() ?? false
+        group.cancelAll()
+        return result
+      }
+    } else {
+      return await wait()
+    }
+  }
+
+  private func waitForPlaybackStartEvent(expectedEvent: Int) async -> Bool {
+    stateLock.lock()
+    let already = playbackStartEventCounter >= expectedEvent
+    stateLock.unlock()
+    if already { return true }
+
+    let id = UUID()
+    return await withTaskCancellationHandler {
+      await withCheckedContinuation { cont in
+        playbackStartWaitersLock.lock()
+        playbackStartWaiters.append(.init(id: id, expectedEvent: expectedEvent, continuation: cont))
+        playbackStartWaitersLock.unlock()
+      }
+    } onCancel: {
+      playbackStartWaitersLock.lock()
+      var removed: PlaybackStartWaiter?
+      playbackStartWaiters.removeAll { w in
+        if w.id == id { removed = w; return true }
+        return false
+      }
+      playbackStartWaitersLock.unlock()
+      removed?.continuation.resume(returning: false)
+    }
+  }
+
+  private func notifyPlaybackStarted() {
+    stateLock.lock()
+    playbackStartEventCounter += 1
+    let current = playbackStartEventCounter
+    stateLock.unlock()
+
+    playbackStartWaitersLock.lock()
+    if playbackStartWaiters.isEmpty {
+      playbackStartWaitersLock.unlock()
+      return
+    }
+    var toResume: [PlaybackStartWaiter] = []
+    var toKeep: [PlaybackStartWaiter] = []
+    toKeep.reserveCapacity(playbackStartWaiters.count)
+    for w in playbackStartWaiters {
+      if w.expectedEvent <= current { toResume.append(w) } else { toKeep.append(w) }
+    }
+    playbackStartWaiters = toKeep
+    playbackStartWaitersLock.unlock()
+    toResume.forEach { $0.continuation.resume(returning: true) }
+  }
+
+  private func notifyPlaybackStartCancelledAll() {
+    playbackStartWaitersLock.lock()
+    let toResume = playbackStartWaiters
+    playbackStartWaiters.removeAll()
+    playbackStartWaitersLock.unlock()
+    toResume.forEach { $0.continuation.resume(returning: false) }
   }
 
   @discardableResult

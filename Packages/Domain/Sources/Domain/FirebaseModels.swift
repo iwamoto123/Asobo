@@ -58,7 +58,7 @@ public struct FirebaseParentProfile: Codable, Identifiable {
     public var email: String? // メールアドレス（Apple Sign Inから取得）
     public var currentChildId: String? // 現在選択中の子どものID
     public var createdAt: Date
-    
+
     public init(id: String? = nil, displayName: String = "", parentName: String? = nil, email: String? = nil, currentChildId: String? = nil, createdAt: Date = Date()) {
         self.id = id
         self.displayName = displayName
@@ -79,14 +79,14 @@ public struct FirebaseChildProfile: Codable, Identifiable {
     public var teddyName: String? // ぬいぐるみの名前
     public var interests: [FirebaseInterestTag]
     public var createdAt: Date
-    
+
     // 計算プロパティ: 現在の年齢を返す
     public var currentAge: Int {
         let calendar = Calendar.current
         let ageComponents = calendar.dateComponents([.year], from: birthDate, to: Date())
         return ageComponents.year ?? 0
     }
-    
+
     // イニシャライザ: 年齢(Int)から生年月日を逆算して生成する便利init
     public init(id: String? = nil, displayName: String, nickName: String? = nil, birthDate: Date? = nil, age: Int? = nil, photoURL: String? = nil, teddyName: String? = nil, interests: [FirebaseInterestTag] = [], createdAt: Date = Date()) {
         self.id = id
@@ -96,7 +96,7 @@ public struct FirebaseChildProfile: Codable, Identifiable {
         self.teddyName = teddyName
         self.interests = interests
         self.createdAt = createdAt
-        
+
         // 生年月日が指定されていればそれを使用、なければ年齢から逆算
         if let birthDate = birthDate {
             self.birthDate = birthDate
@@ -121,7 +121,7 @@ public struct FirebaseConversationSession: Codable, Identifiable {
     public var summaries: [String]            // 会話の短い要約（履歴一覧表示用）
     public var newVocabulary: [String]        // 新しく使った言葉
     public var turnCount: Int                 // ターンの総数
-    
+
     public init(id: String? = nil, mode: FirebaseSessionMode, startedAt: Date = Date(), interestContext: [FirebaseInterestTag] = [], summaries: [String] = [], newVocabulary: [String] = [], turnCount: Int = 0) {
         self.id = id
         self.mode = mode
@@ -143,7 +143,7 @@ public struct FirebaseTurn: Codable, Identifiable {
     public var duration: TimeInterval? // 音声の長さ(秒)
     public var safety: [FirebaseSafetyFlag]    // 安全性フラグ
     public var timestamp: Date         // 発話時刻
-    
+
     public init(id: String? = nil, role: FirebaseRole, text: String?, audioPath: String? = nil, duration: TimeInterval? = nil, safety: [FirebaseSafetyFlag] = [], timestamp: Date = Date()) {
         self.id = id
         self.role = role
@@ -166,7 +166,7 @@ public struct FirebaseVoiceStamp: Codable, Identifiable {
     public var ttsText: String?        // TTSの場合のテキスト
     public var createdAt: Date
     public var lastPlayedAt: Date?
-    
+
     public init(id: String? = nil, title: String, payloadKind: FirebaseVoicePayloadKind, trigger: FirebaseTriggerType, isEnabled: Bool = true, audioPath: String? = nil, ttsText: String? = nil, createdAt: Date = Date()) {
         self.id = id
         self.title = title
@@ -188,7 +188,7 @@ public struct FirebaseWeeklyReport: Codable, Identifiable {
     public var newVocabulary: [String]     // 新しく使った言葉
     public var adviceForParent: String?    // 親へのアドバイス（AI生成）
     public var createdAt: Date
-    
+
     public init(id: String? = nil, summary: String, topInterests: [FirebaseInterestTag], newVocabulary: [String], adviceForParent: String? = nil, createdAt: Date = Date()) {
         self.id = id
         self.summary = summary
@@ -203,7 +203,7 @@ public struct FirebaseWeeklyReport: Codable, Identifiable {
 public struct FirebaseQuietHours: Codable {
     public var start: String // "21:00"
     public var end: String   // "07:00"
-    
+
     public init(start: String, end: String) {
         self.start = start
         self.end = end
@@ -217,7 +217,7 @@ public struct FirebaseAppSettings: Codable, Identifiable {
     public var quietHours: FirebaseQuietHours?
     public var languageCode: String
     public var enableEnglishMode: Bool
-    
+
     public init(id: String? = "config", sharingLevel: FirebaseSharingLevel = .summaryOnly, quietHours: FirebaseQuietHours? = nil, languageCode: String = "ja-JP", enableEnglishMode: Bool = false) {
         self.id = id
         self.sharingLevel = sharingLevel
@@ -226,4 +226,3 @@ public struct FirebaseAppSettings: Codable, Identifiable {
         self.enableEnglishMode = enableEnglishMode
     }
 }
-

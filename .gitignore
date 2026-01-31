@@ -28,6 +28,7 @@ Asobo.git/
 
 
 .swift-module-cache/
+.derivedData/
 
 ## App packaging
 *.ipa

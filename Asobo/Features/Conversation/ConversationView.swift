@@ -33,7 +33,7 @@ public struct ConversationView: View {
                     Text("🔍 デバッグ情報")
                         .font(.caption)
                         .foregroundColor(.blue)
-                    
+
                     LazyVGrid(columns: [
                         GridItem(.flexible()),
                         GridItem(.flexible())
@@ -45,7 +45,7 @@ public struct ConversationView: View {
                     }
                     .font(.caption2)
                     .foregroundColor(.secondary)
-                    
+
                     if let error = vm.errorMessage {
                         Text("❌ \(error)")
                             .foregroundColor(.red)
@@ -55,7 +55,7 @@ public struct ConversationView: View {
                 .padding(6)
                 .background(Color.gray.opacity(0.1))
                 .cornerRadius(6)
-                
+
                 // 音声入力テキスト表示
                 VStack(alignment: .leading, spacing: 2) {
                     if vm.mode == .localSTT {
@@ -67,7 +67,7 @@ public struct ConversationView: View {
                             .font(.caption)
                             .foregroundColor(.green)
                     }
-                    
+
                     if vm.mode == .realtime && vm.isRecording && vm.handsFreeMonitorTranscript.isEmpty {
                         HStack(spacing: 6) {
                             ProgressView()
@@ -98,19 +98,19 @@ public struct ConversationView: View {
                             .foregroundColor(.secondary)
                     }
                 }
-                
+
                 // AI応答テキスト表示
                 VStack(alignment: .leading, spacing: 2) {
                     Text("🤖 AI応答")
                         .font(.caption)
                         .foregroundColor(.blue)
-                    
+
                     ScrollViewReader { proxy in
                         ScrollView(.vertical, showsIndicators: false) {
                             let displayText = vm.aiResponseText.isEmpty
                             ? (vm.isThinking ? "かんがえちゅう..." : "（AIの応答がここに表示されます）")
                             : vm.aiResponseText
-                            
+
                             Text(displayText)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .padding(8)
@@ -132,7 +132,7 @@ public struct ConversationView: View {
                         .font(.caption)
                     }
                 }
-                
+
                 // ライブ要約と興味/新語のハイライト
                 if !vm.liveSummary.isEmpty || !vm.liveInterests.isEmpty || !vm.liveNewVocabulary.isEmpty {
                     VStack(alignment: .leading, spacing: 8) {
@@ -150,7 +150,7 @@ public struct ConversationView: View {
                                     .cornerRadius(8)
                             }
                         }
-                        
+
                         if !vm.liveInterests.isEmpty || !vm.liveNewVocabulary.isEmpty {
                             VStack(alignment: .leading, spacing: 6) {
                                 if !vm.liveInterests.isEmpty {
@@ -175,7 +175,7 @@ public struct ConversationView: View {
                                         }
                                     }
                                 }
-                                
+
                                 if !vm.liveNewVocabulary.isEmpty {
                                     VStack(alignment: .leading, spacing: 4) {
                                         Text("新しく覚えたことば")
