@@ -110,11 +110,13 @@ public final class ParentPhrasesController: ObservableObject {
 
     // 再生時間を推定（文字数ベース）
     private func estimatePlaybackDuration(text: String) async -> Double {
-        // 推定はズレやすいので少し長めに見積もる（止まって見えにくくする）
-        let baseSpeed = 4.3  // 文字/秒（少し遅め）
-        let adjustedSpeed = baseSpeed * 1.25
-        let duration = Double(text.count) / adjustedSpeed
-        return max(duration + 0.9, 1.2)
+        // ✅ 体感に合わせて「短め」に寄せる（遅すぎる問題の改善）
+        // 親フレーズは早口プリセットなので、文字/秒を高めに設定する
+        // まだ「後半で加速」して見える場合は、この値が低すぎて音声より進捗が遅いのが原因なので上げる
+        let charsPerSecond = 10.5
+        let base = Double(text.count) / charsPerSecond
+        // 先頭/末尾の余白 + 末尾無音(0.12s)を加味
+        return max(base + 0.20 + 0.12, 0.65)
     }
 
     private func playCard(_ card: PhraseCard, requestId: String) async {
@@ -131,13 +133,30 @@ public final class ParentPhrasesController: ObservableObject {
         playingCardId = nil
         playbackProgress = 0.0
 
+        var shouldDelayFinalizeUI = false
+
         defer {
             if self.currentPlayRequestId == requestId {
-                self.isPlaying = false
-                self.playingCardId = nil
-                self.preparingCardId = nil
-                self.playbackProgress = 0.0
-                self.currentPlayRequestId = nil
+                if shouldDelayFinalizeUI {
+                    // ✅ 1.0が描画される前にバーが消える問題を防ぐ（体感で「99%で止まる」原因）
+                    Task { @MainActor [weak self] in
+                        guard let self else { return }
+                        try? await Task.sleep(nanoseconds: 250_000_000) // 0.25s
+                        // ✅ playingCardId は途中で変化しうるので、requestId一致だけで確実に解放する（固まり防止）
+                        guard self.currentPlayRequestId == requestId else { return }
+                        self.isPlaying = false
+                        self.playingCardId = nil
+                        self.preparingCardId = nil
+                        self.playbackProgress = 0.0
+                        self.currentPlayRequestId = nil
+                    }
+                } else {
+                    self.isPlaying = false
+                    self.playingCardId = nil
+                    self.preparingCardId = nil
+                    self.playbackProgress = 0.0
+                    self.currentPlayRequestId = nil
+                }
             }
         }
 
@@ -160,14 +179,19 @@ public final class ParentPhrasesController: ObservableObject {
                     let startTime = Date()
                     while !Task.isCancelled && self.playingCardId == card.id {
                         let elapsed = Date().timeIntervalSince(startTime)
-                        self.playbackProgress = min(elapsed / estimatedDuration, 0.985)
+                        // 再生中は「ほぼ最後」まで進め、完了時に1.0へ到達させる
+                        self.playbackProgress = min(elapsed / estimatedDuration, 0.999)
                         try? await Task.sleep(nanoseconds: 50_000_000)
                     }
                 }
 
                 _ = try await speakTask.value
                 progressTask.cancel()
-                playbackProgress = 1.0
+                // ✅ ここが一気に飛ぶと「後半で加速」に見えるので、線形で1.0へ到達させる
+                withAnimation(.linear(duration: 0.12)) {
+                    playbackProgress = 1.0
+                }
+                shouldDelayFinalizeUI = true
             } else {
                 _ = try await speakTask.value
             }

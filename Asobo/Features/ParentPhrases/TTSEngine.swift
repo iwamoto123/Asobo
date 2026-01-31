@@ -13,6 +13,8 @@ public final class TTSEngine: TTSEngineProtocol {
 
     public init(player: PlayerNodeStreamer) {
         self.player = player
+        // ✅ 声かけ（単発TTS）では「前の音が混ざる」問題が致命的なので、prepare時にPlayerNodeを作り直して確実にクリーン化
+        self.player.setHardResetPlayerOnPrepare(true)
         self.apiKey = AppConfig.openAIKey.trimmingCharacters(in: .whitespacesAndNewlines)
         let base = URL(string: AppConfig.apiBase) ?? URL(string: "https://api.openai.com")!
         if base.path.contains("/v1") {
@@ -118,15 +120,22 @@ public final class TTSEngine: TTSEngineProtocol {
             return
         }
 
-        print("🎛️ TTSEngine[\(requestId)]: applyParentPhrasePreset()呼び出し")
-        player.applyParentPhrasePreset()  // 保護者フレーズ用：早口で高い声
+        print("🎛️ TTSEngine[\(requestId)]: applyParentPhrasesMascotPreset()呼び出し")
+        // ✅ 声かけタブ専用：ハンズフリーに影響させず「声だけ」マスコット寄りにする
+        player.applyParentPhrasesMascotPreset()
 
         print("▶️ TTSEngine[\(requestId)]: playChunk()呼び出し - dataSize=\(pcmWithTail.count)")
         // ✅ 単発TTSは必ず即時再生（プリバッファで止まるのを防ぐ）
         player.playChunk(pcmWithTail, forceStart: true)
 
         print("🎺 TTSEngine[\(requestId)]: 再生開始 - 再生終了待機")
-        await player.waitForPlaybackToEnd()
+        // ✅ 終了判定が遅延するとUIが「99%で固まる」ので、短めのタイムアウトで安全に復帰させる
+        let ended = await player.waitForPlaybackToEnd(timeout: 3.0)
+        if !ended {
+            // ✅ ここで固まるのを防ぐ（完了通知が来ないケースがある）
+            print("⚠️ TTSEngine[\(requestId)]: 再生終了待機がタイムアウト -> stop()で解放")
+            player.stop()
+        }
         print("✅ TTSEngine[\(requestId)]: 再生完了 - 終了通知")
     }
 

@@ -56,7 +56,7 @@ public final class PlayerNodeStreamer {
   }
   private let engine: AVAudioEngine
   private var ownsEngine: Bool  // エンジンの所有権を持つかどうか
-  private let player = AVAudioPlayerNode()
+  private var player = AVAudioPlayerNode()
   // 🎛️ 声質を加工するかどうか（オフにするとAI音声を素のまま再生）
   private var enableVoiceEffect = true
   // ⚙️ ボイスチェンジ方式（true: Varispeed、false: TimePitch）
@@ -68,6 +68,9 @@ public final class PlayerNodeStreamer {
   private var outFormat: AVAudioFormat?  // start()で設定される
   private let inFormat: AVAudioFormat
   private var converter: AVAudioConverter?  // start()で設定される
+  
+  // ✅ prepareForNextStreamでPlayerNodeを作り直す（前の音が混ざる/再度鳴る問題の根本対策）
+  private var hardResetPlayerOnPrepare: Bool = false
   
   // ✅ 出力RMSモニタリング
   public let outputMonitor = OutputMonitor()
@@ -146,6 +149,11 @@ public final class PlayerNodeStreamer {
     
     // エンジンを準備（開始はstart()メソッドで行う）
     engine.prepare()
+  }
+  
+  /// ✅ prepareForNextStream() で PlayerNode を作り直すかどうか
+  public func setHardResetPlayerOnPrepare(_ enabled: Bool) {
+    hardResetPlayerOnPrepare = enabled
   }
   
   /// ✅ 独自エンジンを使用する場合（後方互換性のため）
@@ -383,23 +391,41 @@ public final class PlayerNodeStreamer {
       notifyPlaybackStarted()
     }
 
-    // 2. バッファをスケジュール（completionHandlerで消化を追跡）
-    player.scheduleBuffer(outBuf, completionHandler: { [weak self] in
+    // 2. バッファをスケジュール（完了で消化を追跡）
+    // ⚠️ Bluetooth(HFP)+VoiceChat では player.isPlaying が「音が鳴り終わった後もしばらくtrue」になりやすいので、
+    //    可能なら .dataPlayedBack を使って「実際に鳴り終わった」をトリガーにする
+    let onBufferDone: () -> Void = { [weak self] in
       guard let self = self else { return }
       self.stateLock.lock()
       self.pendingBufferCount -= 1
       let isNowEmpty = (self.pendingBufferCount <= 0)
-      // カウンタが負にならないように補正
       if self.pendingBufferCount < 0 { self.pendingBufferCount = 0 }
       self.stateLock.unlock()
-      
+
       if isNowEmpty {
-        // ✅ 全バッファ再生終了＝本当に音が止まった
-        DispatchQueue.main.async {
+        // ✅ ここで明示的にstopして isPlaying を確実に false に寄せる（終了判定の遅延/固まり防止）
+        DispatchQueue.main.async { [weak self] in
+          guard let self else { return }
+          self.player.stop()
           self.onPlaybackStateChange?(false)
         }
       }
-    })
+    }
+
+    if #available(iOS 11.0, *) {
+      player.scheduleBuffer(
+        outBuf,
+        at: nil,
+        options: [],
+        completionCallbackType: .dataPlayedBack
+      ) { _ in
+        onBufferDone()
+      }
+    } else {
+      player.scheduleBuffer(outBuf) {
+        onBufferDone()
+      }
+    }
     
     if !player.isPlaying {
       player.play()
@@ -414,6 +440,10 @@ public final class PlayerNodeStreamer {
     let newlyRequested = requestStop(muteWhileDraining: true)
     queue.removeAll()
     queuedFrames = 0
+    // ✅ ハング防止：完了通知が来ないケースでも待機が抜けられるようにする
+    stateLock.lock()
+    pendingBufferCount = 0
+    stateLock.unlock()
     stateLock.lock()
     firstChunkLogged = false
     stateLock.unlock()
@@ -562,30 +592,116 @@ public final class PlayerNodeStreamer {
     timePitchNode.pitch = 750.0
     timePitchNode.rate = 1.35
     timePitchNode.overlap = 12.0
-    varispeedNode.rate = 1.55
+    varispeedNode.rate = 1.2
     updateVoiceEffect(enabled: true, useVarispeed: true)
+  }
+
+  /// ✅ 「声かけ」タブ専用：マスコット寄り（高め）プリセット
+  /// - Note: ハンズフリー等の既存挙動に影響を出さないため、呼び出し側（TTSEngine）でのみ使用する
+  /// - Note: pitch を効かせるため、TimePitch → Varispeed の直列で接続する
+  public func applyParentPhrasesMascotPreset() {
+    // スピードは今の体感を維持（Varispeedはそのまま）
+    varispeedNode.rate = 1.1
+    // 声だけ高く（TimePitch）
+    timePitchNode.pitch = 700
+    timePitchNode.rate = 1.0
+    timePitchNode.overlap = 8.0
+
+    guard let mono48k = AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1) else {
+      print("⚠️ PlayerNodeStreamer: フォーマット作成失敗（applyParentPhrasesMascotPreset）")
+      return
+    }
+
+    let wasPlaying = player.isPlaying
+    if wasPlaying { player.pause() }
+
+    engine.disconnectNodeOutput(player)
+    engine.disconnectNodeOutput(varispeedNode)
+    engine.disconnectNodeOutput(timePitchNode)
+
+    // player -> timePitch -> varispeed -> mixer
+    engine.connect(player, to: timePitchNode, format: mono48k)
+    engine.connect(timePitchNode, to: varispeedNode, format: mono48k)
+    engine.connect(varispeedNode, to: engine.mainMixerNode, format: mono48k)
+
+    enableVoiceEffect = true
+    useVarispeed = true
+
+    if wasPlaying { player.play() }
+    print("🎛️ PlayerNodeStreamer: ParentPhrases Mascot FX applied -> pitch=\(timePitchNode.pitch), varispeed=\(varispeedNode.rate)")
   }
 
   /// ✅ 再生終了を待つ（簡易ポーリング）
   public func waitForPlaybackToEnd(pollIntervalMs: UInt64 = 50) async {
     while true {
+      if Task.isCancelled { break }
       stateLock.lock()
       let pending = pendingBufferCount
       stateLock.unlock()
-      if pending == 0 && !player.isPlaying {
+      // ✅ 完了通知ベース（isPlayingは経路次第で遅延するため信用しない）
+      if pending == 0 {
         break
       }
       try? await Task.sleep(nanoseconds: pollIntervalMs * 1_000_000)
     }
   }
 
+  /// ✅ 再生終了を待つ（タイムアウト付き）
+  /// - Returns: true=終了検知, false=タイムアウト
+  public func waitForPlaybackToEnd(timeout: TimeInterval, pollIntervalMs: UInt64 = 50) async -> Bool {
+    await withTaskGroup(of: Bool.self) { group in
+      group.addTask { [weak self] in
+        guard let self else { return false }
+        await self.waitForPlaybackToEnd(pollIntervalMs: pollIntervalMs)
+        return true
+      }
+      group.addTask {
+        try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+        return false
+      }
+      let result = await group.next() ?? false
+      group.cancelAll()
+      return result
+    }
+  }
+
   /// ✅ 次のストリーム開始前に呼び出して停止要求やミュート状態を解除
   public func prepareForNextStream() {
+    let wasPlaying = player.isPlaying
+    if wasPlaying {
+      print("🔧 PlayerNodeStreamer: prepareForNextStream（wasPlaying=true）")
+    }
+    
+    // ✅ まず確実に停止・バッファ破棄
+    player.stop()
+    player.reset()
+    
+    // ✅ 変換器/フォーマット/エフェクトの内部状態を捨てる（ストリーム間の混線対策）
+    converter = nil
+    outFormat = nil
+    timePitchNode.reset()
+    varispeedNode.reset()
+    
+    // ✅ 最強対策：PlayerNode自体を作り直す（内部バッファの残留を根絶）
+    if hardResetPlayerOnPrepare {
+      engine.disconnectNodeOutput(player)
+      engine.detach(player)
+      player = AVAudioPlayerNode()
+      engine.attach(player)
+      // 既存設定で再接続（必須）
+      updateVoiceEffect(enabled: enableVoiceEffect, useVarispeed: useVarispeed)
+      print("🧼 PlayerNodeStreamer: hard reset PlayerNode on prepare")
+    }
+    
     stateLock.lock()
     stopRequested = false
     stateLock.unlock()
     queue.removeAll()
     queuedFrames = 0
+    // ✅ ハング防止：前回の未完了カウントをリセット
+    stateLock.lock()
+    pendingBufferCount = 0
+    stateLock.unlock()
     if player.volume < 0.9 {
       player.volume = 1.0
     }
