@@ -4,12 +4,23 @@ import Support
 
 @available(iOS 17.0, *)
 extension ParentPhrasesController {
+    func startNewVoiceInput() {
+        startVoiceInput(clearExistingText: true)
+    }
+
+    func resumeVoiceInput() {
+        startVoiceInput(clearExistingText: false)
+    }
+
+    func dismissVoiceInputPanel() {
+        stopVoiceInput(keepPanel: false)
+    }
+
     func toggleVoiceInput() {
         if isRecording {
             stopVoiceInput(keepPanel: true)
         } else {
-            cancelVoiceInput()
-            startVoiceInput()
+            resumeVoiceInput()
         }
     }
 

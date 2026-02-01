@@ -19,6 +19,10 @@ import AVFoundation
 /// - **再生中のマイク送信ゲート**: AI再生中はマイク入力をサーバに送信しない（ハーフデュプレックス）
 /// - **バージイン検出**: バージイン検出時のみ送信を再開
 public final class MicrophoneCapture {
+  public enum Notifications {
+    public static let inputBuffer = Notification.Name("com.asobo.microphone.inputBuffer")
+    public static let rms = Notification.Name("com.asobo.microphone.rms")
+  }
   private let engine: AVAudioEngine
   private var ownsEngine: Bool  // エンジンの所有権を持つかどうか
   private let outFormat: AVAudioFormat
@@ -188,6 +192,8 @@ public final class MicrophoneCapture {
       // ✅ 変換前の入力バッファを外へ通知（ライブSTT用）
       // - 再生中ゲート/初期フレームスキップより前に流すことで「AI応答中でもSTTでバージイン検知」が可能になる
       self.onInputBuffer?(buffer)
+      // ✅ 追加: どの画面からでも“同じマイク入力”を購読できるようにブロードキャスト
+      NotificationCenter.default.post(name: Notifications.inputBuffer, object: buffer)
 
       // ✅ 初回接続時の音声認識問題対策：マイク開始直後の初期フレームをスキップ
       if let startTime = self.startTime {
@@ -209,6 +215,7 @@ public final class MicrophoneCapture {
       // ✅ 追加: 計算したRMS音量を外部へ通知
       // -------------------------------------------------------
       self.onVolume?(inputRMS)
+      NotificationCenter.default.post(name: Notifications.rms, object: inputRMS)
 
       if self.isAIPlayingAudio {
         // ✅ 再生中はサーバ送信用のマイクデータを遮断（AI音声混入を防ぐ）

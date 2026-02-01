@@ -75,7 +75,7 @@ struct ParentPhrasesContentView: View {
             ) {
                 sheet = .add(category: selectedCategory, initialText: nil)
             } onVoiceInput: {
-                controller.startVoiceInput()
+                controller.startNewVoiceInput()
             }
         }
         .sheet(item: $sheet) { sheet in
@@ -98,8 +98,14 @@ struct ParentPhrasesContentView: View {
                     errorText: controller.voiceInputError,
                     rms: controller.voiceInputRMS
                 ) {
-                    controller.toggleVoiceInput()
-                } onCancel: {
+                    if controller.isRecording {
+                        controller.stopVoiceInput(keepPanel: true)
+                    } else {
+                        controller.resumeVoiceInput()
+                    }
+                } onClose: {
+                    controller.dismissVoiceInputPanel()
+                } onDiscard: {
                     controller.cancelVoiceInput()
                 } onAdd: {
                     let t = controller.voiceInputText.trimmingCharacters(in: .whitespacesAndNewlines)

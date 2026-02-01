@@ -42,6 +42,7 @@ public final class ParentPhrasesController: ObservableObject {
     var micRMSObserver: NSObjectProtocol?
     var voiceInputFallbackTask: Task<Void, Never>?
     var voiceInputLastBufferAt: Date?
+    private var voiceInputPrefixText: String = ""
 
     public init(userId: String?) {
         // リポジトリの選択
@@ -101,7 +102,7 @@ public final class ParentPhrasesController: ObservableObject {
             audioEngine.prepare()
             if !audioEngine.isRunning {
                 // ✅ AudioSessionは触らない（ハンズフリーへの影響をゼロにする）
-                try audioEngine.start()
+            try audioEngine.start()
                 print("✅ ParentPhrasesController: AudioEngine started (\(reason))")
             }
             return true
@@ -232,10 +233,10 @@ public final class ParentPhrasesController: ObservableObject {
                         self.currentPlayRequestId = nil
                     }
                 } else {
-                    self.isPlaying = false
-                    self.playingCardId = nil
+                self.isPlaying = false
+                self.playingCardId = nil
                     self.preparingCardId = nil
-                    self.playbackProgress = 0.0
+                self.playbackProgress = 0.0
                     self.currentPlayRequestId = nil
                 }
             }
@@ -256,21 +257,21 @@ public final class ParentPhrasesController: ObservableObject {
                 isPlaying = true
                 playingCardId = card.id
 
-                let progressTask = Task { @MainActor in
-                    let startTime = Date()
-                    while !Task.isCancelled && self.playingCardId == card.id {
-                        let elapsed = Date().timeIntervalSince(startTime)
+            let progressTask = Task { @MainActor in
+                let startTime = Date()
+                while !Task.isCancelled && self.playingCardId == card.id {
+                    let elapsed = Date().timeIntervalSince(startTime)
                         // 再生中は「ほぼ最後」まで進め、完了時に1.0へ到達させる
                         self.playbackProgress = min(elapsed / estimatedDuration, 0.999)
-                        try? await Task.sleep(nanoseconds: 50_000_000)
-                    }
+                    try? await Task.sleep(nanoseconds: 50_000_000)
                 }
+            }
 
                 _ = try await speakTask.value
-                progressTask.cancel()
+            progressTask.cancel()
                 // ✅ ここが一気に飛ぶと「後半で加速」に見えるので、線形で1.0へ到達させる
                 withAnimation(.linear(duration: 0.12)) {
-                    playbackProgress = 1.0
+            playbackProgress = 1.0
                 }
                 shouldDelayFinalizeUI = true
             } else {
@@ -282,8 +283,8 @@ public final class ParentPhrasesController: ObservableObject {
     }
 
     // 音声入力（即時テキスト表示 → 追加へ）
-    func startVoiceInput() {
-        if isVoiceInputPresented { return }
+    func startVoiceInput(clearExistingText: Bool) {
+        if isRecording { return }
         Task { @MainActor in
             self.voiceInputError = nil
             print("🎤 ParentPhrasesController: startVoiceInput()")
@@ -313,9 +314,14 @@ public final class ParentPhrasesController: ObservableObject {
                 self.playbackProgress = 0.0
             }
 
-            self.voiceInputText = ""
             self.isVoiceInputPresented = true
             self.voiceInputLastBufferAt = nil
+            if clearExistingText {
+                self.voiceInputText = ""
+                self.voiceInputPrefixText = ""
+            } else {
+                self.voiceInputPrefixText = self.voiceInputText.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
 
             // requestは使い回ししない（タスク跨ぎで壊れやすい）
             self.speechRequest?.endAudio()
@@ -337,22 +343,24 @@ public final class ParentPhrasesController: ObservableObject {
                 object: nil,
                 queue: nil
             ) { [weak self] note in
-                guard let self else { return }
-                guard self.isVoiceInputPresented else { return }
                 guard let buffer = note.object as? AVAudioPCMBuffer else { return }
-                self.voiceInputLastBufferAt = Date()
-                self.speechRequest?.append(buffer)
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    guard self.isVoiceInputPresented else { return }
+                    self.voiceInputLastBufferAt = Date()
+                    self.speechRequest?.append(buffer)
+                }
             }
             self.micRMSObserver = NotificationCenter.default.addObserver(
                 forName: MicrophoneCapture.Notifications.rms,
                 object: nil,
                 queue: nil
             ) { [weak self] note in
-                guard let self else { return }
-                guard self.isVoiceInputPresented else { return }
                 guard let rms = note.object as? Double else { return }
-                self.voiceInputLastBufferAt = Date()
-                Task { @MainActor in
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    guard self.isVoiceInputPresented else { return }
+                    self.voiceInputLastBufferAt = Date()
                     self.voiceInputRMS = rms
                 }
             }
@@ -387,7 +395,15 @@ public final class ParentPhrasesController: ObservableObject {
                     Task { @MainActor in
                         guard let self else { return }
                         guard self.isVoiceInputPresented else { return }
-                        self.voiceInputText = text
+                        let base = self.voiceInputPrefixText
+                        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if base.isEmpty {
+                            self.voiceInputText = t
+                        } else if t.isEmpty {
+                            self.voiceInputText = base
+                        } else {
+                            self.voiceInputText = base + " " + t
+                        }
                         if isFinal {
                             self.stopVoiceInput(keepPanel: true)
                         }

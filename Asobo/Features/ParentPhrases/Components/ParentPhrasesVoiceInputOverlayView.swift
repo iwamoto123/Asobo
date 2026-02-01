@@ -7,7 +7,8 @@ struct ParentPhrasesVoiceInputOverlayView: View {
     let errorText: String?
     let rms: Double
     let onStop: () -> Void
-    let onCancel: () -> Void
+    let onClose: () -> Void
+    let onDiscard: () -> Void
     let onAdd: () -> Void
 
     var body: some View {
@@ -15,7 +16,7 @@ struct ParentPhrasesVoiceInputOverlayView: View {
         ZStack {
             Color.black.opacity(0.22)
                 .ignoresSafeArea()
-                .onTapGesture { onCancel() }
+                .onTapGesture { onClose() }
 
             VStack(spacing: 12) {
                 HStack {
@@ -37,9 +38,17 @@ struct ParentPhrasesVoiceInputOverlayView: View {
                         .font(.system(size: 16, weight: .bold, design: .rounded))
                         .foregroundColor(Color(hex: "5A4A42"))
                     Spacer()
-                    Button("閉じる") { onCancel() }
+                    Button("閉じる") { onClose() }
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundColor(.gray)
+                }
+                .overlay(alignment: .trailing) {
+                    Button("破棄") { onDiscard() }
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(.red)
+                        .padding(.trailing, 72)
+                        .opacity((isRecording || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) ? 0.0 : 1.0)
+                        .disabled(isRecording || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
 
                 ScrollView {
@@ -62,7 +71,7 @@ struct ParentPhrasesVoiceInputOverlayView: View {
 
                 HStack(spacing: 12) {
                     Button(action: onStop) {
-                        Label(isRecording ? "停止" : "もう一度", systemImage: isRecording ? "stop.fill" : "arrow.clockwise")
+                        Label(isRecording ? "停止" : "再開", systemImage: isRecording ? "stop.fill" : "mic.fill")
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 12)
                             .background(Color.white.opacity(0.85))
