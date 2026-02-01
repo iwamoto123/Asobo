@@ -4,12 +4,18 @@ import AVFoundation
 import Domain
 import DataStores
 import Services
+import Support
+import Speech
 
 @available(iOS 17.0, *)
 @MainActor
 public final class ParentPhrasesController: ObservableObject {
     @Published var cards: [PhraseCard] = []
     @Published var isRecording: Bool = false
+    @Published var isVoiceInputPresented: Bool = false
+    @Published var voiceInputText: String = ""
+    @Published var voiceInputError: String?
+    @Published var voiceInputRMS: Double = -60.0
     @Published var isPlaying: Bool = false
     @Published var preparingCardId: UUID?
     @Published var editCard: PhraseCard?
@@ -17,11 +23,17 @@ public final class ParentPhrasesController: ObservableObject {
     @Published var playbackProgress: Double = 0.0  // 再生進捗 (0.0〜1.0)
 
     private let repository: ParentPhrasesRepository
-    private let audioEngine: AVAudioEngine
+    // extension（別ファイル）から音声入力タップに使うため internal にしている
+    let audioEngine: AVAudioEngine
     private let player: PlayerNodeStreamer
     private let ttsEngine: TTSEngineProtocol  // ✅ プロトコルで宣言（切り替え可能）
     private var playQueueTask: Task<Void, Never>?
     private var currentPlayRequestId: String?
+    private let speech: SpeechRecognizing
+    var speechTask: SpeechRecognitionTasking?
+    var speechRequest: SFSpeechAudioBufferRecognitionRequest?
+    // extension（別ファイル）から停止処理に使うため internal にしている
+    var micCapture: MicrophoneCapture?
 
     public init(userId: String?) {
         // リポジトリの選択
@@ -38,6 +50,7 @@ public final class ParentPhrasesController: ObservableObject {
         // AudioEngine と PlayerNodeStreamer の初期化
         self.audioEngine = AVAudioEngine()
         self.player = PlayerNodeStreamer(sharedEngine: audioEngine)
+        self.speech = SystemSpeechRecognizer(locale: "ja-JP")
 
         // TTS エンジンの選択（どちらかをコメントアウト）
         // 1. OpenAI TTS（高品質、ネットワーク必須、有料）
@@ -48,18 +61,44 @@ public final class ParentPhrasesController: ObservableObject {
 
         Task {
             await loadCards()
-            await startAudioEngine()
         }
     }
 
-    private func startAudioEngine() async {
+    private func ensureVoiceInputPermissions() async -> Bool {
+        let micOK: Bool = await withCheckedContinuation { cont in
+            AVAudioSession.sharedInstance().requestRecordPermission { granted in
+                cont.resume(returning: granted)
+            }
+        }
+        if !micOK {
+            voiceInputError = "マイクの許可が必要です（設定 > Asobo > マイク）"
+            return false
+        }
+
+        let speechOK: Bool = await withCheckedContinuation { cont in
+            SFSpeechRecognizer.requestAuthorization { status in
+                cont.resume(returning: status == .authorized)
+            }
+        }
+        if !speechOK {
+            voiceInputError = "音声認識の許可が必要です（設定 > Asobo > 音声認識）"
+            return false
+        }
+        return true
+    }
+
+    private func ensureAudioEngineRunning(reason: String) -> Bool {
         do {
-            // ❌ AudioSessionは設定しない（ConversationControllerが既に設定済み）
-            // ConversationControllerと同じAudioSessionを共有するため、ここでは設定しない
-            try audioEngine.start()
-            print("✅ ParentPhrasesController: AudioEngine started")
+            audioEngine.prepare()
+            if !audioEngine.isRunning {
+                // ✅ AudioSessionは触らない（ハンズフリーへの影響をゼロにする）
+                try audioEngine.start()
+                print("✅ ParentPhrasesController: AudioEngine started (\(reason))")
+            }
+            return true
         } catch {
-            print("❌ ParentPhrasesController: AudioEngine start failed - \(error.localizedDescription)")
+            print("❌ ParentPhrasesController: AudioEngine start failed (\(reason)) - \(error.localizedDescription)")
+            return false
         }
     }
 
@@ -122,6 +161,8 @@ public final class ParentPhrasesController: ObservableObject {
     private func playCard(_ card: PhraseCard, requestId: String) async {
         currentPlayRequestId = requestId
         ttsEngine.beginRequest(requestId)
+
+        guard ensureAudioEngineRunning(reason: "playCard") else { return }
 
         // 使用回数をインクリメント
         try? await repository.incrementUsage(id: card.id)
@@ -200,18 +241,118 @@ public final class ParentPhrasesController: ObservableObject {
         }
     }
 
-    // 音声入力（Phase 5で実装）
+    // 音声入力（即時テキスト表示 → 追加へ）
     func startVoiceInput() {
-        Task {
-            isRecording = true
-            // TODO: Phase 5で STT実装
-            print("🎤 音声入力開始")
-            // ダミーの録音
-            try? await Task.sleep(nanoseconds: 2_000_000_000)
-            isRecording = false
-            print("🎤 音声入力終了")
+        if isVoiceInputPresented { return }
+        Task { @MainActor in
+            self.voiceInputError = nil
+            print("🎤 ParentPhrasesController: startVoiceInput()")
+
+            guard await self.ensureVoiceInputPermissions() else {
+                self.isVoiceInputPresented = true
+                self.isRecording = false
+                return
+            }
+            guard self.speech.isAvailable else {
+                self.voiceInputError = "音声認識が現在利用できません。"
+                print("⚠️ ParentPhrasesController: SpeechRecognizer not available")
+                self.isVoiceInputPresented = true
+                self.isRecording = false
+                return
+            }
+
+            // 再生中なら止める（マイク入力と干渉しやすい）
+            if self.isPlaying || self.preparingCardId != nil {
+                self.currentPlayRequestId = nil
+                self.playQueueTask?.cancel()
+                self.playQueueTask = nil
+                self.ttsEngine.cancelCurrentPlayback(reason: "voice_input_started")
+                self.isPlaying = false
+                self.playingCardId = nil
+                self.preparingCardId = nil
+                self.playbackProgress = 0.0
+            }
+
+            self.voiceInputText = ""
+            self.isVoiceInputPresented = true
+
+            // requestは使い回ししない（タスク跨ぎで壊れやすい）
+            self.speechRequest?.endAudio()
+            self.speechRequest = nil
+            let request = SFSpeechAudioBufferRecognitionRequest()
+            request.shouldReportPartialResults = true
+            self.speechRequest = request
+
+            // ✅ ハンズフリーに絶対影響を出さないため、ここでは AudioSession を触らない。
+            // エンジン起動ができない場合は「ハンズフリー/会話が音声系を占有中」等が濃厚なので、
+            // 声かけ側は安全に諦めてユーザーへ案内する。
+            guard ensureAudioEngineRunning(reason: "voiceInput") else {
+                self.voiceInputError = "音声入力を開始できませんでした。ハンズフリー/会話を停止してから、もう一度お試しください。"
+                self.isRecording = false
+                return
+            }
+
+            // ✅ ハンズフリーと同じ：MicrophoneCapture 経由で入力バッファ＋RMSを受け取る
+            self.voiceInputRMS = -60.0
+            self.micCapture?.stop()
+            self.micCapture = MicrophoneCapture(
+                sharedEngine: self.audioEngine,
+                onPCM: { _ in },
+                outputMonitor: self.player.outputMonitor
+            )
+            self.micCapture?.onInputBuffer = { [weak self] buffer in
+                // Speech.frameworkへ入力を流す
+                self?.speechRequest?.append(buffer)
+            }
+            self.micCapture?.onVolume = { [weak self] rms in
+                Task { @MainActor in
+                    self?.voiceInputRMS = rms
+                }
+            }
+            do {
+                try self.micCapture?.start()
+            } catch {
+                self.voiceInputError = "マイク開始に失敗: \(error.localizedDescription)"
+                print("⚠️ ParentPhrasesController: mic start failed - \(error.localizedDescription)")
+                self.isRecording = false
+                return
+            }
+
+            self.speechTask?.cancel()
+            self.speechTask = self.speech.startTask(
+                request: request,
+                onResult: { [weak self] text, isFinal in
+                    Task { @MainActor in
+                        guard let self else { return }
+                        guard self.isVoiceInputPresented else { return }
+                        self.voiceInputText = text
+                        if isFinal {
+                            self.stopVoiceInput(keepPanel: true)
+                        }
+                    }
+                },
+                onError: { [weak self] error in
+                    Task { @MainActor in
+                        guard let self else { return }
+                        // キャンセル/無音系は黙って止める
+                        let ns = error as NSError
+                        let msg = ns.localizedDescription.lowercased()
+                        let benign = msg.contains("canceled") || msg.contains("no speech")
+                        if !benign {
+                            self.voiceInputError = error.localizedDescription
+                            print("⚠️ ParentPhrasesController: voice input error - \(error.localizedDescription)")
+                        }
+                        self.stopVoiceInput(keepPanel: true)
+                    }
+                }
+            )
+
+            self.isRecording = true
+            print("🎤 ParentPhrasesController: voice input running")
         }
     }
+
+    // toggle/cancel/stop/tap helpers are implemented in ParentPhrasesController+VoiceInput.swift
 
     func saveCard(_ card: PhraseCard) {
         Task {

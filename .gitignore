@@ -1,5 +1,7 @@
 
 tmp
+.tmp/
+.tmp
 
 fastlane/*.p8
 fastlane/AppStoreConnectApiKey.json
