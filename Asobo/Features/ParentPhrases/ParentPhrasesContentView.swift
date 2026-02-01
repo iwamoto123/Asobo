@@ -71,11 +71,8 @@ struct ParentPhrasesContentView: View {
         .searchable(text: $searchText, prompt: "フレーズを検索")
         .safeAreaInset(edge: .bottom) {
             ParentPhrasesBottomBarView(
-                isRecording: controller.isRecording
             ) {
                 sheet = .add(category: selectedCategory, initialText: nil)
-            } onVoiceInput: {
-                controller.startNewVoiceInput()
             }
         }
         .sheet(item: $sheet) { sheet in
@@ -90,34 +87,7 @@ struct ParentPhrasesContentView: View {
                 }
             }
         }
-        .overlay {
-            if controller.isVoiceInputPresented {
-                ParentPhrasesVoiceInputOverlayView(
-                    isRecording: controller.isRecording,
-                    text: controller.voiceInputText,
-                    errorText: controller.voiceInputError,
-                    rms: controller.voiceInputRMS,
-                    selectedCategory: $selectedCategory
-                ) {
-                    if controller.isRecording {
-                        controller.stopVoiceInput(keepPanel: true)
-                    } else {
-                        controller.resumeVoiceInput()
-                    }
-                } onClose: {
-                    controller.dismissVoiceInputPanel()
-                } onDiscard: {
-                    controller.cancelVoiceInput()
-                } onAdd: {
-                    if controller.isRecording {
-                        controller.stopVoiceInput(keepPanel: true)
-                    }
-                    let t = controller.voiceInputText.trimmingCharacters(in: .whitespacesAndNewlines)
-                    controller.dismissVoiceInputPanel()
-                    sheet = .add(category: selectedCategory, initialText: t)
-                }
-            }
-        }
+        // NOTE: 音声入力UIは一旦オフ（将来また有効化できるよう関連実装は残している）
     }
 
     private var visibleCards: [PhraseCard] {
