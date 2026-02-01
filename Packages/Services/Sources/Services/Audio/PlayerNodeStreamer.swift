@@ -603,9 +603,9 @@ public final class PlayerNodeStreamer {
     // スピードは今の体感を維持（Varispeedはそのまま）
     varispeedNode.rate = 1.1
     // 声だけ高く（TimePitch）
-    timePitchNode.pitch = 700
+    timePitchNode.pitch = 600
     timePitchNode.rate = 1.0
-    timePitchNode.overlap = 8.0
+    timePitchNode.overlap = 4.0
 
     guard let mono48k = AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1) else {
       print("⚠️ PlayerNodeStreamer: フォーマット作成失敗（applyParentPhrasesMascotPreset）")
