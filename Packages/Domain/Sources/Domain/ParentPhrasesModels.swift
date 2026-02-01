@@ -1,48 +1,83 @@
 import Foundation
 
 // MARK: - カテゴリ定義
-public enum PhraseCategory: String, Codable, CaseIterable, Identifiable, Sendable {
-    case morning = "朝の準備"
-    case meals = "食事"
-    case bedtime = "就寝"
-    case hygiene = "身支度"
-    case play = "遊び"
-    case praise = "ほめる"
-    case outing = "おでかけ"
-    case returnHome = "帰宅後"
-    case cleanup = "お片付け"
-    case custom = "その他"
+/// ✅ ユーザーが自由に追加できるカテゴリ
+/// - note: 既存データ互換のため、Codableは「単一の文字列」としてエンコード/デコードします
+public struct PhraseCategory: Codable, Hashable, Identifiable, Sendable {
+    public let name: String
 
-    public var id: String { rawValue }
+    public init(_ name: String) {
+        self.name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    public var id: String { name }
+
+    // 既存コード互換（旧rawValue参照を徐々に置換するまでのブリッジ）
+    public var rawValue: String { name }
+    public init(rawValue: String) { self.init(rawValue) }
+
+    // MARK: - Built-in categories
+    public static let morning = PhraseCategory("朝の準備")
+    public static let meals = PhraseCategory("食事")
+    public static let bedtime = PhraseCategory("就寝")
+    public static let hygiene = PhraseCategory("身支度")
+    public static let play = PhraseCategory("遊び")
+    public static let praise = PhraseCategory("ほめる")
+    public static let outing = PhraseCategory("おでかけ")
+    public static let returnHome = PhraseCategory("帰宅後")
+    public static let cleanup = PhraseCategory("お片付け")
+    public static let other = PhraseCategory("その他")
+
+    public static var builtinAllCases: [PhraseCategory] {
+        [.morning, .meals, .bedtime, .hygiene, .play, .praise, .outing, .returnHome, .cleanup, .other]
+    }
+
+    public var isBuiltin: Bool {
+        Self.builtinAllCases.contains(self)
+    }
 
     public var icon: String {
-        switch self {
-        case .morning: return "alarm.fill"
-        case .meals: return "fork.knife"
-        case .bedtime: return "moon.stars.fill"
-        case .hygiene: return "hands.sparkles.fill"
-        case .play: return "sportscourt.fill"
-        case .praise: return "hand.thumbsup.fill"
-        case .outing: return "figure.walk"
-        case .returnHome: return "house.fill"
-        case .cleanup: return "tray.full.fill"
-        case .custom: return "square.grid.2x2"
+        switch name {
+        case Self.morning.name: return "alarm.fill"
+        case Self.meals.name: return "fork.knife"
+        case Self.bedtime.name: return "moon.stars.fill"
+        case Self.hygiene.name: return "hands.sparkles.fill"
+        case Self.play.name: return "sportscourt.fill"
+        case Self.praise.name: return "hand.thumbsup.fill"
+        case Self.outing.name: return "figure.walk"
+        case Self.returnHome.name: return "house.fill"
+        case Self.cleanup.name: return "tray.full.fill"
+        case Self.other.name: return "square.grid.2x2"
+        default: return "tag.fill"
         }
     }
 
     public var color: String {
-        switch self {
-        case .morning: return "orange"
-        case .meals: return "green"
-        case .bedtime: return "purple"
-        case .hygiene: return "blue"
-        case .play: return "pink"
-        case .praise: return "yellow"
-        case .outing: return "teal"
-        case .returnHome: return "indigo"
-        case .cleanup: return "brown"
-        case .custom: return "gray"
+        switch name {
+        case Self.morning.name: return "orange"
+        case Self.meals.name: return "green"
+        case Self.bedtime.name: return "purple"
+        case Self.hygiene.name: return "blue"
+        case Self.play.name: return "pink"
+        case Self.praise.name: return "yellow"
+        case Self.outing.name: return "teal"
+        case Self.returnHome.name: return "indigo"
+        case Self.cleanup.name: return "brown"
+        case Self.other.name: return "gray"
+        default: return "gray"
         }
+    }
+
+    // MARK: - Codable (single-value for backward compatibility)
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.singleValueContainer()
+        let s = try c.decode(String.self)
+        self.name = s.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.singleValueContainer()
+        try c.encode(name)
     }
 }
 

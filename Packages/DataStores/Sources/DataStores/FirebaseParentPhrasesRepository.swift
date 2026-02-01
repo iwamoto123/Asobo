@@ -107,7 +107,7 @@ private struct PhraseCardDTO: Codable {
         PhraseCard(
             id: UUID(uuidString: id) ?? UUID(),
             text: text,
-            category: PhraseCategory(rawValue: category) ?? .custom,
+            category: PhraseCategory(rawValue: category.isEmpty ? PhraseCategory.other.rawValue : category),
             isPreset: isPreset,
             priority: priority,
             usageCount: usageCount,

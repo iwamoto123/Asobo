@@ -31,7 +31,7 @@ final class PhraseCardEntity {
         PhraseCard(
             id: id,
             text: text,
-            category: PhraseCategory(rawValue: categoryRawValue) ?? .custom,
+            category: PhraseCategory(rawValue: categoryRawValue.isEmpty ? PhraseCategory.other.rawValue : categoryRawValue),
             isPreset: isPreset,
             priority: priority,
             usageCount: usageCount,

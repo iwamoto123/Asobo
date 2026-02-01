@@ -3,17 +3,17 @@ import Domain
 
 extension PhraseCategory {
     var tintColor: Color {
-        switch self {
-        case .morning: return .orange
-        case .meals: return .green
-        case .bedtime: return .purple
-        case .hygiene: return .blue
-        case .play: return .pink
-        case .praise: return .yellow
-        case .outing: return .teal
-        case .returnHome: return .indigo
-        case .cleanup: return .brown
-        case .custom: return .gray
+        switch color {
+        case "orange": return .orange
+        case "green": return .green
+        case "purple": return .purple
+        case "blue": return .blue
+        case "pink": return .pink
+        case "yellow": return .yellow
+        case "teal": return .teal
+        case "indigo": return .indigo
+        case "brown": return .brown
+        default: return .gray
         }
     }
 }

@@ -6,15 +6,27 @@ struct PhraseInputSheet: View {
     let card: PhraseCard?
     let category: PhraseCategory
     let initialText: String?
+    let availableCategories: [PhraseCategory]
+    let onCreateCategory: ((String) -> Void)?
     let onSave: (PhraseCard) -> Void
 
     @State private var text: String
     @State private var selectedCategory: PhraseCategory
+    @State private var newCategoryName: String = ""
 
-    init(card: PhraseCard?, category: PhraseCategory, initialText: String? = nil, onSave: @escaping (PhraseCard) -> Void) {
+    init(
+        card: PhraseCard?,
+        category: PhraseCategory,
+        initialText: String? = nil,
+        availableCategories: [PhraseCategory] = PhraseCategory.builtinAllCases,
+        onCreateCategory: ((String) -> Void)? = nil,
+        onSave: @escaping (PhraseCard) -> Void
+    ) {
         self.card = card
         self.category = category
         self.initialText = initialText
+        self.availableCategories = availableCategories
+        self.onCreateCategory = onCreateCategory
         self.onSave = onSave
         _text = State(initialValue: card?.text ?? initialText ?? "")
         _selectedCategory = State(initialValue: card?.category ?? category)
@@ -30,7 +42,7 @@ struct PhraseInputSheet: View {
 
                 Section("カテゴリ") {
                     Picker("カテゴリ", selection: $selectedCategory) {
-                        ForEach(PhraseCategory.allCases) { category in
+                        ForEach(availableCategories) { category in
                             HStack {
                                 Image(systemName: category.icon)
                                 Text(category.rawValue)
@@ -39,6 +51,9 @@ struct PhraseInputSheet: View {
                         }
                     }
                     .pickerStyle(.inline)
+
+                    TextField("新しいカテゴリ名（任意）", text: $newCategoryName)
+                        .textInputAutocapitalization(.never)
                 }
             }
             .navigationTitle(card == nil ? "新しいフレーズ" : "フレーズを編集")
@@ -64,10 +79,19 @@ struct PhraseInputSheet: View {
         let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedText.isEmpty else { return }
 
+        let newCatName = newCategoryName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let finalCategory: PhraseCategory
+        if !newCatName.isEmpty {
+            finalCategory = PhraseCategory(newCatName)
+            onCreateCategory?(newCatName)
+        } else {
+            finalCategory = selectedCategory
+        }
+
         let newCard = PhraseCard(
             id: card?.id ?? UUID(),
             text: trimmedText,
-            category: selectedCategory,
+            category: finalCategory,
             isPreset: false,
             priority: card?.priority ?? 999,
             usageCount: card?.usageCount ?? 0,
@@ -83,7 +107,9 @@ struct PhraseInputSheet: View {
 #Preview {
     PhraseInputSheet(
         card: nil,
-        category: .morning
+        category: .morning,
+        availableCategories: PhraseCategory.builtinAllCases,
+        onCreateCategory: { _ in }
     ) { card in
         print("Saved: \(card.text)")
     }

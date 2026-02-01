@@ -11,6 +11,7 @@ import Speech
 @MainActor
 public final class ParentPhrasesController: ObservableObject {
     @Published var cards: [PhraseCard] = []
+    @Published var customCategories: [PhraseCategory] = []
     @Published var isRecording: Bool = false
     @Published var isVoiceInputPresented: Bool = false
     @Published var voiceInputText: String = ""
@@ -23,6 +24,7 @@ public final class ParentPhrasesController: ObservableObject {
     @Published var playbackProgress: Double = 0.0  // 再生進捗 (0.0〜1.0)
 
     private let repository: ParentPhrasesRepository
+    private let customCategoriesKey: String
     // extension（別ファイル）から音声入力タップに使うため internal にしている
     // ✅ 再生系（TTS/PlayerNodeStreamer）専用
     let audioEngine: AVAudioEngine
@@ -61,6 +63,7 @@ public final class ParentPhrasesController: ObservableObject {
         self.sttEngine = AVAudioEngine()
         self.player = PlayerNodeStreamer(sharedEngine: audioEngine)
         self.speech = SystemSpeechRecognizer(locale: "ja-JP")
+        self.customCategoriesKey = "ParentPhrases.customCategories.\(userId ?? "local")"
 
         // TTS エンジンの選択（どちらかをコメントアウト）
         // 1. OpenAI TTS（高品質、ネットワーク必須、有料）
@@ -70,8 +73,39 @@ public final class ParentPhrasesController: ObservableObject {
         // self.ttsEngine = AVSpeechTTSEngine()
 
         Task {
+            self.loadCustomCategories()
             await loadCards()
         }
+    }
+
+    func availableCategories() -> [PhraseCategory] {
+        var list: [PhraseCategory] = []
+        for c in PhraseCategory.builtinAllCases where !c.name.isEmpty { list.append(c) }
+        for c in customCategories where !c.name.isEmpty && !list.contains(c) { list.append(c) }
+        for card in cards {
+            let c = card.category
+            if !c.name.isEmpty && !list.contains(c) { list.append(c) }
+        }
+        return list
+    }
+
+    func addCustomCategory(_ name: String) {
+        let c = PhraseCategory(name)
+        guard !c.name.isEmpty else { return }
+        if !customCategories.contains(c) {
+            customCategories.append(c)
+            persistCustomCategories()
+        }
+    }
+
+    private func loadCustomCategories() {
+        let arr = UserDefaults.standard.array(forKey: customCategoriesKey) as? [String] ?? []
+        self.customCategories = arr.map { PhraseCategory($0) }.filter { !$0.name.isEmpty }
+    }
+
+    private func persistCustomCategories() {
+        let arr = customCategories.map(\.name)
+        UserDefaults.standard.set(arr, forKey: customCategoriesKey)
     }
 
     private func ensureVoiceInputPermissions() async -> Bool {
@@ -437,6 +471,9 @@ public final class ParentPhrasesController: ObservableObject {
             try? await repository.upsert(card)
             await loadCards()
             editCard = nil
+            if !card.category.isBuiltin {
+                addCustomCategory(card.category.name)
+            }
             print("✅ カード保存完了: \(card.text)")
         }
     }

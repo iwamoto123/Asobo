@@ -73,7 +73,7 @@ struct ParentPhrasesVoiceInputOverlayView: View {
 
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
-                        ForEach(PhraseCategory.allCases) { cat in
+                        ForEach(PhraseCategory.builtinAllCases) { cat in
                             Button {
                                 selectedCategory = cat
                             } label: {

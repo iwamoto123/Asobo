@@ -7,6 +7,8 @@ struct ParentPhrasesContentView: View {
     @State private var selectedCategory: PhraseCategory = .morning
     @State private var searchText: String = ""
     @State private var sheet: Sheet?
+    @State private var isAddCategoryPresented: Bool = false
+    @State private var newCategoryName: String = ""
 
     private enum Sheet: Identifiable {
         case add(category: PhraseCategory, initialText: String?)
@@ -27,7 +29,8 @@ struct ParentPhrasesContentView: View {
             VStack(spacing: 0) {
                 CategorySelectorView(
                     selectedCategory: $selectedCategory,
-                    categories: PhraseCategory.allCases
+                    categories: controller.availableCategories(),
+                    onAddCategory: { isAddCategoryPresented = true }
                 )
                 .padding(.top, 6)
                 .padding(.bottom, 10)
@@ -78,14 +81,37 @@ struct ParentPhrasesContentView: View {
         .sheet(item: $sheet) { sheet in
             switch sheet {
             case .add(let category, let initialText):
-                PhraseInputSheet(card: nil, category: category, initialText: initialText) { newCard in
+                PhraseInputSheet(
+                    card: nil,
+                    category: category,
+                    initialText: initialText,
+                    availableCategories: controller.availableCategories(),
+                    onCreateCategory: { controller.addCustomCategory($0) }
+                ) { newCard in
                     controller.saveCard(newCard)
                 }
             case .edit(let card):
-                PhraseInputSheet(card: card, category: card.category) { newCard in
+                PhraseInputSheet(
+                    card: card,
+                    category: card.category,
+                    availableCategories: controller.availableCategories(),
+                    onCreateCategory: { controller.addCustomCategory($0) }
+                ) { newCard in
                     controller.saveCard(newCard)
                 }
             }
+        }
+        .alert("カテゴリを追加", isPresented: $isAddCategoryPresented) {
+            TextField("カテゴリ名", text: $newCategoryName)
+            Button("追加") {
+                let c = PhraseCategory(newCategoryName)
+                controller.addCustomCategory(c.name)
+                selectedCategory = c
+                newCategoryName = ""
+            }
+            Button("キャンセル", role: .cancel) { newCategoryName = "" }
+        } message: {
+            Text("あとでカードを追加すれば一覧にも残ります")
         }
         // NOTE: 音声入力UIは一旦オフ（将来また有効化できるよう関連実装は残している）
     }

@@ -4,6 +4,7 @@ import Domain
 struct CategorySelectorView: View {
     @Binding var selectedCategory: PhraseCategory
     let categories: [PhraseCategory]
+    let onAddCategory: (() -> Void)?
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
@@ -17,6 +18,9 @@ struct CategorySelectorView: View {
                             selectedCategory = category
                         }
                     }
+                }
+                if let onAddCategory {
+                    AddCategoryChip(action: onAddCategory)
                 }
             }
             .padding(.horizontal)
@@ -57,10 +61,40 @@ struct CategoryChip: View {
     }
 }
 
+struct AddCategoryChip: View {
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Image(systemName: "plus")
+                    .font(.system(size: 14, weight: .bold))
+                Text("追加")
+                    .font(.system(size: 14, weight: .bold, design: .rounded))
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .fill(Color.white.opacity(0.80))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .stroke(Color.anoneButton.opacity(0.25), lineWidth: 1)
+            )
+            .foregroundStyle(Color(hex: "5A4A42"))
+            .shadow(color: .anoneShadowDark.opacity(0.10), radius: 10, x: 2, y: 6)
+            .shadow(color: .white.opacity(0.7), radius: 10, x: -3, y: -3)
+        }
+        .buttonStyle(.plain)
+    }
+}
+
 #Preview {
     @Previewable @State var selected = PhraseCategory.morning
     return CategorySelectorView(
         selectedCategory: $selected,
-        categories: PhraseCategory.allCases
+        categories: PhraseCategory.builtinAllCases,
+        onAddCategory: {}
     )
 }
