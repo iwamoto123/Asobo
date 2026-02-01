@@ -1,0 +1,94 @@
+import SwiftUI
+
+@available(iOS 17.0, *)
+struct ParentPhrasesVoiceInputOverlayView: View {
+    let isRecording: Bool
+    let text: String
+    let errorText: String?
+    let rms: Double
+    let onStop: () -> Void
+    let onCancel: () -> Void
+    let onAdd: () -> Void
+
+    var body: some View {
+        let level = max(0.0, min(1.0, (rms + 60.0) / 60.0)) // -60...0 dBFS -> 0...1
+        ZStack {
+            Color.black.opacity(0.22)
+                .ignoresSafeArea()
+                .onTapGesture { onCancel() }
+
+            VStack(spacing: 12) {
+                HStack {
+                    HStack(spacing: 10) {
+                        ZStack {
+                            Circle()
+                                .fill(Color.anoneButton.opacity(0.18))
+                                .frame(width: 18, height: 18)
+                                .scaleEffect(0.9 + level * 0.9)
+                                .animation(.linear(duration: 0.08), value: level)
+                            Circle()
+                                .fill(Color.anoneButton)
+                                .frame(width: 8, height: 8)
+                        }
+                        Text(isRecording ? "聞いてるよ…" : "音声入力")
+                            .font(.system(size: 16, weight: .bold, design: .rounded))
+                            .foregroundColor(Color(hex: "5A4A42"))
+                    }
+                        .font(.system(size: 16, weight: .bold, design: .rounded))
+                        .foregroundColor(Color(hex: "5A4A42"))
+                    Spacer()
+                    Button("閉じる") { onCancel() }
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(.gray)
+                }
+
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 10) {
+                        if let err = errorText, !err.isEmpty {
+                            Text(err)
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundColor(.red)
+                        }
+                        Text(text.isEmpty ? "（ここに文字が表示されます）" : text)
+                            .font(.system(size: 18, weight: .bold, design: .rounded))
+                            .foregroundColor(Color(hex: "5A4A42"))
+                    }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(14)
+                        .background(Color.white.opacity(0.95))
+                        .cornerRadius(16)
+                }
+                .frame(maxHeight: 160)
+
+                HStack(spacing: 12) {
+                    Button(action: onStop) {
+                        Label(isRecording ? "停止" : "もう一度", systemImage: isRecording ? "stop.fill" : "arrow.clockwise")
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 12)
+                            .background(Color.white.opacity(0.85))
+                            .foregroundColor(Color(hex: "5A4A42"))
+                            .cornerRadius(16)
+                    }
+
+                    Button(action: onAdd) {
+                        Label("カードに追加", systemImage: "plus")
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 12)
+                            .background(Color.anoneButton)
+                            .foregroundColor(.white)
+                            .cornerRadius(16)
+                    }
+                    .disabled(isRecording || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .opacity(isRecording || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0.55 : 1.0)
+                }
+            }
+            .padding(16)
+            .background(.ultraThinMaterial)
+            .cornerRadius(22)
+            .padding(.horizontal, 16)
+            .padding(.bottom, 8)
+        }
+    }
+}
+
+

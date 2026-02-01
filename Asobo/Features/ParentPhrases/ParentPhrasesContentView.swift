@@ -9,12 +9,12 @@ struct ParentPhrasesContentView: View {
     @State private var sheet: Sheet?
 
     private enum Sheet: Identifiable {
-        case add(category: PhraseCategory)
+        case add(category: PhraseCategory, initialText: String?)
         case edit(card: PhraseCard)
 
         var id: String {
             switch self {
-            case .add(let category): return "add:\(category.id)"
+            case .add(let category, _): return "add:\(category.id)"
             case .edit(let card): return "edit:\(card.id)"
             }
         }
@@ -39,7 +39,7 @@ struct ParentPhrasesContentView: View {
                             message: searchText.isEmpty ? "よく使う声かけを\nカードにしておこう" : "別の言葉でも探してみてね",
                             actionTitle: "フレーズを追加"
                         ) {
-                            sheet = .add(category: selectedCategory)
+                            sheet = .add(category: selectedCategory, initialText: nil)
                         }
                     } else {
                         ScrollView {
@@ -73,20 +73,38 @@ struct ParentPhrasesContentView: View {
             ParentPhrasesBottomBarView(
                 isRecording: controller.isRecording
             ) {
-                sheet = .add(category: selectedCategory)
+                sheet = .add(category: selectedCategory, initialText: nil)
             } onVoiceInput: {
                 controller.startVoiceInput()
             }
         }
         .sheet(item: $sheet) { sheet in
             switch sheet {
-            case .add(let category):
-                PhraseInputSheet(card: nil, category: category) { newCard in
+            case .add(let category, let initialText):
+                PhraseInputSheet(card: nil, category: category, initialText: initialText) { newCard in
                     controller.saveCard(newCard)
                 }
             case .edit(let card):
                 PhraseInputSheet(card: card, category: card.category) { newCard in
                     controller.saveCard(newCard)
+                }
+            }
+        }
+        .overlay {
+            if controller.isVoiceInputPresented {
+                ParentPhrasesVoiceInputOverlayView(
+                    isRecording: controller.isRecording,
+                    text: controller.voiceInputText,
+                    errorText: controller.voiceInputError,
+                    rms: controller.voiceInputRMS
+                ) {
+                    controller.toggleVoiceInput()
+                } onCancel: {
+                    controller.cancelVoiceInput()
+                } onAdd: {
+                    let t = controller.voiceInputText.trimmingCharacters(in: .whitespacesAndNewlines)
+                    controller.cancelVoiceInput()
+                    sheet = .add(category: selectedCategory, initialText: t)
                 }
             }
         }

@@ -5,16 +5,18 @@ struct PhraseInputSheet: View {
     @Environment(\.dismiss) private var dismiss
     let card: PhraseCard?
     let category: PhraseCategory
+    let initialText: String?
     let onSave: (PhraseCard) -> Void
 
     @State private var text: String
     @State private var selectedCategory: PhraseCategory
 
-    init(card: PhraseCard?, category: PhraseCategory, onSave: @escaping (PhraseCard) -> Void) {
+    init(card: PhraseCard?, category: PhraseCategory, initialText: String? = nil, onSave: @escaping (PhraseCard) -> Void) {
         self.card = card
         self.category = category
+        self.initialText = initialText
         self.onSave = onSave
-        _text = State(initialValue: card?.text ?? "")
+        _text = State(initialValue: card?.text ?? initialText ?? "")
         _selectedCategory = State(initialValue: card?.category ?? category)
     }
 
