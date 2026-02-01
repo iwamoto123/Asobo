@@ -137,36 +137,27 @@ public final class MicrophoneCapture {
     // ✅ 修正ポイント: フォーマット決定ロジック (ファイナル)
     // ------------------------------------------------------------
 
-    var tapFormat: AVAudioFormat?
+    // Tapのフォーマットは「有効なものが取れるならそれを使う」。
+    // Bluetooth HFP + VoiceChat 等で 0Hz/不正フォーマットになるケースがあり、その場合に
+    // こちらで無理にフォーマットを指定すると `Input HW format is invalid` でNSExceptionクラッシュしうる。
+    // そのため、無効時は format=nil で installTap し、実際に来た buffer.format から converter を作る。
     let inputFormat = inputNode.outputFormat(forBus: 0)
-
+    let tapFormat: AVAudioFormat?
     if inputFormat.sampleRate > 0 && inputFormat.channelCount > 0 {
-        // エンジンがすでに有効なフォーマットを持っているならそれを使う
         print("✅ MicrophoneCapture: 既存フォーマット使用: \(inputFormat.sampleRate)Hz")
         tapFormat = inputFormat
     } else {
-        // ⚠️ 0Hzの場合: nilはダメ(クラッシュ)、適当な48kもダメ(クラッシュ)
-        // iOSのVoiceProcessingIO入力の「正解」フォーマットを手動構築して渡す
-        print("⚠️ MicrophoneCapture: 0Hz検出 -> 48kHz/Float32を手動構築します")
-
-        // 【重要】commonFormat: .pcmFormatFloat32, interleaved: false がiOSハードウェアの標準
-        tapFormat = AVAudioFormat(
-            commonFormat: .pcmFormatFloat32,
-            sampleRate: 48000,
-            channels: 1,
-            interleaved: false
-        )
-    }
-
-    // 万が一作成失敗したら安全に停止
-    guard let safeFormat = tapFormat else {
-        throw NSError(domain: "MicrophoneCapture", code: -1, userInfo: [
-            NSLocalizedDescriptionKey: "フォーマット構築失敗"
-        ])
+        print("⚠️ MicrophoneCapture: 0Hz検出 -> format=nilでinstallTap（クラッシュ回避）")
+        tapFormat = nil
     }
 
     // バッファサイズ計算
-    let framesPer20ms = AVAudioFrameCount(safeFormat.sampleRate * 0.02)
+    let bufferSize: AVAudioFrameCount
+    if let tapFormat {
+        bufferSize = AVAudioFrameCount(tapFormat.sampleRate * 0.02)
+    } else {
+        bufferSize = 1024
+    }
     audioBuffer.removeAll()
     lastFlushTime = Date()
     isFirstBuffer = true  // ✅ 初回バッファ受信フラグをリセット
@@ -175,7 +166,7 @@ public final class MicrophoneCapture {
     // ------------------------------------------------------------
     // ✅ Tapインストール (手動構築した safeFormat を使用)
     // ------------------------------------------------------------
-    inputNode.installTap(onBus: 0, bufferSize: framesPer20ms, format: safeFormat) { [weak self] buffer, _ in
+    inputNode.installTap(onBus: 0, bufferSize: bufferSize, format: tapFormat) { [weak self] buffer, _ in
         guard let self = self else { return }
 
         // --- Converter作成ロジック ---
