@@ -8,18 +8,24 @@ public enum PhraseCategory: String, Codable, CaseIterable, Identifiable, Sendabl
     case hygiene = "身支度"
     case play = "遊び"
     case praise = "ほめる"
+    case outing = "おでかけ"
+    case returnHome = "帰宅後"
+    case cleanup = "お片付け"
     case custom = "その他"
 
     public var id: String { rawValue }
 
     public var icon: String {
         switch self {
-        case .morning: return "sunrise.fill"
+        case .morning: return "alarm.fill"
         case .meals: return "fork.knife"
         case .bedtime: return "moon.stars.fill"
         case .hygiene: return "hands.sparkles.fill"
         case .play: return "sportscourt.fill"
         case .praise: return "hand.thumbsup.fill"
+        case .outing: return "figure.walk"
+        case .returnHome: return "house.fill"
+        case .cleanup: return "tray.full.fill"
         case .custom: return "square.grid.2x2"
         }
     }
@@ -32,6 +38,9 @@ public enum PhraseCategory: String, Codable, CaseIterable, Identifiable, Sendabl
         case .hygiene: return "blue"
         case .play: return "pink"
         case .praise: return "yellow"
+        case .outing: return "teal"
+        case .returnHome: return "indigo"
+        case .cleanup: return "brown"
         case .custom: return "gray"
         }
     }

@@ -10,6 +10,9 @@ extension PhraseCategory {
         case .hygiene: return .blue
         case .play: return .pink
         case .praise: return .yellow
+        case .outing: return .teal
+        case .returnHome: return .indigo
+        case .cleanup: return .brown
         case .custom: return .gray
         }
     }
