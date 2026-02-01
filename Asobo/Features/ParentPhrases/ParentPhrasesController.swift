@@ -24,7 +24,10 @@ public final class ParentPhrasesController: ObservableObject {
 
     private let repository: ParentPhrasesRepository
     // extension（別ファイル）から音声入力タップに使うため internal にしている
+    // ✅ 再生系（TTS/PlayerNodeStreamer）専用
     let audioEngine: AVAudioEngine
+    // ✅ 音声入力（STT）専用：再生系と分離してハンズフリーへの影響をゼロに寄せる
+    private let sttEngine: AVAudioEngine
     private let player: PlayerNodeStreamer
     private let ttsEngine: TTSEngineProtocol  // ✅ プロトコルで宣言（切り替え可能）
     private var playQueueTask: Task<Void, Never>?
@@ -34,6 +37,11 @@ public final class ParentPhrasesController: ObservableObject {
     var speechRequest: SFSpeechAudioBufferRecognitionRequest?
     // extension（別ファイル）から停止処理に使うため internal にしている
     var micCapture: MicrophoneCapture?
+    // extension（別ファイル）から停止処理に使うため internal にしている
+    var micBufferObserver: NSObjectProtocol?
+    var micRMSObserver: NSObjectProtocol?
+    var voiceInputFallbackTask: Task<Void, Never>?
+    var voiceInputLastBufferAt: Date?
 
     public init(userId: String?) {
         // リポジトリの選択
@@ -49,6 +57,7 @@ public final class ParentPhrasesController: ObservableObject {
 
         // AudioEngine と PlayerNodeStreamer の初期化
         self.audioEngine = AVAudioEngine()
+        self.sttEngine = AVAudioEngine()
         self.player = PlayerNodeStreamer(sharedEngine: audioEngine)
         self.speech = SystemSpeechRecognizer(locale: "ja-JP")
 
@@ -100,6 +109,37 @@ public final class ParentPhrasesController: ObservableObject {
             print("❌ ParentPhrasesController: AudioEngine start failed (\(reason)) - \(error.localizedDescription)")
             return false
         }
+    }
+
+    private func startStandaloneVoiceCapture() throws {
+        // STT専用エンジンでマイクを掴む（再生系とは分離）
+        micCapture?.stop()
+        micCapture = nil
+
+        guard let cap = MicrophoneCapture(
+            sharedEngine: sttEngine,
+            onPCM: { _ in },
+            outputMonitor: nil,
+            ownsEngine: true
+        ) else {
+            throw NSError(domain: "ParentPhrasesController", code: -1, userInfo: [
+                NSLocalizedDescriptionKey: "MicrophoneCaptureの生成に失敗しました"
+            ])
+        }
+        micCapture = cap
+        cap.onInputBuffer = { [weak self] buffer in
+            guard let self else { return }
+            self.voiceInputLastBufferAt = Date()
+            self.speechRequest?.append(buffer)
+        }
+        cap.onVolume = { [weak self] rms in
+            guard let self else { return }
+            self.voiceInputLastBufferAt = Date()
+            Task { @MainActor in
+                self.voiceInputRMS = rms
+            }
+        }
+        try cap.start()
     }
 
     func loadCards() async {
@@ -275,6 +315,7 @@ public final class ParentPhrasesController: ObservableObject {
 
             self.voiceInputText = ""
             self.isVoiceInputPresented = true
+            self.voiceInputLastBufferAt = nil
 
             // requestは使い回ししない（タスク跨ぎで壊れやすい）
             self.speechRequest?.endAudio()
@@ -283,39 +324,60 @@ public final class ParentPhrasesController: ObservableObject {
             request.shouldReportPartialResults = true
             self.speechRequest = request
 
-            // ✅ ハンズフリーに絶対影響を出さないため、ここでは AudioSession を触らない。
-            // エンジン起動ができない場合は「ハンズフリー/会話が音声系を占有中」等が濃厚なので、
-            // 声かけ側は安全に諦めてユーザーへ案内する。
-            guard ensureAudioEngineRunning(reason: "voiceInput") else {
-                self.voiceInputError = "音声入力を開始できませんでした。ハンズフリー/会話を停止してから、もう一度お試しください。"
-                self.isRecording = false
-                return
-            }
-
-            // ✅ ハンズフリーと同じ：MicrophoneCapture 経由で入力バッファ＋RMSを受け取る
+            // ✅ ハンズフリーに影響を出さないため、tapを増やさず “既存のMicrophoneCapture” の入力を購読する
             self.voiceInputRMS = -60.0
+            self.micBufferObserver.map(NotificationCenter.default.removeObserver)
+            self.micRMSObserver.map(NotificationCenter.default.removeObserver)
             self.micCapture?.stop()
-            self.micCapture = MicrophoneCapture(
-                sharedEngine: self.audioEngine,
-                onPCM: { _ in },
-                outputMonitor: self.player.outputMonitor
-            )
-            self.micCapture?.onInputBuffer = { [weak self] buffer in
-                // Speech.frameworkへ入力を流す
-                self?.speechRequest?.append(buffer)
+            self.micCapture = nil
+            self.voiceInputFallbackTask?.cancel()
+            self.voiceInputFallbackTask = nil
+            self.micBufferObserver = NotificationCenter.default.addObserver(
+                forName: MicrophoneCapture.Notifications.inputBuffer,
+                object: nil,
+                queue: nil
+            ) { [weak self] note in
+                guard let self else { return }
+                guard self.isVoiceInputPresented else { return }
+                guard let buffer = note.object as? AVAudioPCMBuffer else { return }
+                self.voiceInputLastBufferAt = Date()
+                self.speechRequest?.append(buffer)
             }
-            self.micCapture?.onVolume = { [weak self] rms in
+            self.micRMSObserver = NotificationCenter.default.addObserver(
+                forName: MicrophoneCapture.Notifications.rms,
+                object: nil,
+                queue: nil
+            ) { [weak self] note in
+                guard let self else { return }
+                guard self.isVoiceInputPresented else { return }
+                guard let rms = note.object as? Double else { return }
+                self.voiceInputLastBufferAt = Date()
                 Task { @MainActor in
-                    self?.voiceInputRMS = rms
+                    self.voiceInputRMS = rms
                 }
             }
-            do {
-                try self.micCapture?.start()
-            } catch {
-                self.voiceInputError = "マイク開始に失敗: \(error.localizedDescription)"
-                print("⚠️ ParentPhrasesController: mic start failed - \(error.localizedDescription)")
-                self.isRecording = false
-                return
+
+            // ✅ 0.6s待っても入力が来ない場合は「単独録音」にフォールバック
+            // - ハンズフリーが動いている場合は通知経路が来るはずなので、影響ゼロのまま動く
+            // - ハンズフリーが動いていない場合は単独エンジンで録音開始してテキスト化する
+            self.voiceInputFallbackTask = Task { @MainActor [weak self] in
+                guard let self else { return }
+                try? await Task.sleep(nanoseconds: 600_000_000)
+                guard self.isVoiceInputPresented else { return }
+                guard self.voiceInputLastBufferAt == nil else { return }
+
+                // 通知購読を止め、単独キャプチャに切り替える（二重append防止）
+                self.micBufferObserver.map(NotificationCenter.default.removeObserver)
+                self.micBufferObserver = nil
+                self.micRMSObserver.map(NotificationCenter.default.removeObserver)
+                self.micRMSObserver = nil
+
+                do {
+                    try self.startStandaloneVoiceCapture()
+                } catch {
+                    self.voiceInputError = "音声入力を開始できませんでした。ハンズフリー/会話を停止してから、もう一度お試しください。"
+                    print("⚠️ ParentPhrasesController: standalone mic start failed - \(error.localizedDescription)")
+                }
             }
 
             self.speechTask?.cancel()

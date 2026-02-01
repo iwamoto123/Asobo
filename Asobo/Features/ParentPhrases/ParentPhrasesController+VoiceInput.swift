@@ -24,8 +24,15 @@ extension ParentPhrasesController {
         speechRequest = nil
         speechTask?.cancel()
         speechTask = nil
+        voiceInputFallbackTask?.cancel()
+        voiceInputFallbackTask = nil
+        voiceInputLastBufferAt = nil
         micCapture?.stop()
         micCapture = nil
+        micBufferObserver.map(NotificationCenter.default.removeObserver)
+        micBufferObserver = nil
+        micRMSObserver.map(NotificationCenter.default.removeObserver)
+        micRMSObserver = nil
         isVoiceInputPresented = keepPanel
     }
 }
