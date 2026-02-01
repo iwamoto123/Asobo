@@ -1,4 +1,5 @@
 import SwiftUI
+import Domain
 
 @available(iOS 17.0, *)
 struct ParentPhrasesVoiceInputOverlayView: View {
@@ -6,6 +7,7 @@ struct ParentPhrasesVoiceInputOverlayView: View {
     let text: String
     let errorText: String?
     let rms: Double
+    @Binding var selectedCategory: PhraseCategory
     let onStop: () -> Void
     let onClose: () -> Void
     let onDiscard: () -> Void
@@ -69,6 +71,24 @@ struct ParentPhrasesVoiceInputOverlayView: View {
                 }
                 .frame(maxHeight: 160)
 
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(PhraseCategory.allCases) { cat in
+                            Button {
+                                selectedCategory = cat
+                            } label: {
+                                Label(cat.rawValue, systemImage: cat.icon)
+                                    .font(.system(size: 12, weight: .bold, design: .rounded))
+                                    .padding(.vertical, 8)
+                                    .padding(.horizontal, 10)
+                                    .background(selectedCategory == cat ? Color.anoneButton : Color.white.opacity(0.85))
+                                    .foregroundColor(selectedCategory == cat ? .white : Color(hex: "5A4A42"))
+                                    .cornerRadius(14)
+                            }
+                        }
+                    }
+                }
+
                 HStack(spacing: 12) {
                     Button(action: onStop) {
                         Label(isRecording ? "停止" : "再開", systemImage: isRecording ? "stop.fill" : "mic.fill")
@@ -80,15 +100,15 @@ struct ParentPhrasesVoiceInputOverlayView: View {
                     }
 
                     Button(action: onAdd) {
-                        Label("カードに追加", systemImage: "plus")
+                        Label(isRecording ? "停止して追加" : "カードに追加", systemImage: "plus")
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 12)
                             .background(Color.anoneButton)
                             .foregroundColor(.white)
                             .cornerRadius(16)
                     }
-                    .disabled(isRecording || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    .opacity(isRecording || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0.55 : 1.0)
+                    .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .opacity(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0.55 : 1.0)
                 }
             }
             .padding(16)
