@@ -61,7 +61,6 @@ public final class ParentPhrasesController: ObservableObject {
 
         Task {
             await loadCards()
-            await startAudioEngine()
         }
     }
 
@@ -88,14 +87,18 @@ public final class ParentPhrasesController: ObservableObject {
         return true
     }
 
-    private func startAudioEngine() async {
+    private func ensureAudioEngineRunning(reason: String) -> Bool {
         do {
-            // ❌ AudioSessionは設定しない（ConversationControllerが既に設定済み）
-            // ConversationControllerと同じAudioSessionを共有するため、ここでは設定しない
-            try audioEngine.start()
-            print("✅ ParentPhrasesController: AudioEngine started")
+            audioEngine.prepare()
+            if !audioEngine.isRunning {
+                // ✅ AudioSessionは触らない（ハンズフリーへの影響をゼロにする）
+                try audioEngine.start()
+                print("✅ ParentPhrasesController: AudioEngine started (\(reason))")
+            }
+            return true
         } catch {
-            print("❌ ParentPhrasesController: AudioEngine start failed - \(error.localizedDescription)")
+            print("❌ ParentPhrasesController: AudioEngine start failed (\(reason)) - \(error.localizedDescription)")
+            return false
         }
     }
 
@@ -158,6 +161,8 @@ public final class ParentPhrasesController: ObservableObject {
     private func playCard(_ card: PhraseCard, requestId: String) async {
         currentPlayRequestId = requestId
         ttsEngine.beginRequest(requestId)
+
+        guard ensureAudioEngineRunning(reason: "playCard") else { return }
 
         // 使用回数をインクリメント
         try? await repository.incrementUsage(id: card.id)
@@ -278,33 +283,11 @@ public final class ParentPhrasesController: ObservableObject {
             request.shouldReportPartialResults = true
             self.speechRequest = request
 
-            // ✅ 重要：AudioSession/Engineが止まっていると tap が一切流れず、RMSもSTTも更新されない
-            // - category/mode は既存（Conversation側）を尊重し、ここでは「有効化」だけ行う
-            let s = AVAudioSession.sharedInstance()
-            do {
-                try s.setActive(true)
-            } catch {
-                // ルート切替直後に失敗することがあるため1回だけリトライ
-                try? await Task.sleep(nanoseconds: 250_000_000)
-                do {
-                    try s.setActive(true)
-                } catch {
-                    self.voiceInputError = "音声の準備に失敗しました（オーディオセッション）: \(error.localizedDescription)"
-                    print("⚠️ ParentPhrasesController: AudioSession setActive failed - \(error.localizedDescription)")
-                    self.isRecording = false
-                    return
-                }
-            }
-
-            do {
-                self.audioEngine.prepare()
-                if !self.audioEngine.isRunning {
-                    try self.audioEngine.start()
-                    print("✅ ParentPhrasesController: AudioEngine started (voice input)")
-                }
-            } catch {
-                self.voiceInputError = "音声の準備に失敗しました（AudioEngine）: \(error.localizedDescription)"
-                print("⚠️ ParentPhrasesController: AudioEngine start failed (voice input) - \(error.localizedDescription)")
+            // ✅ ハンズフリーに絶対影響を出さないため、ここでは AudioSession を触らない。
+            // エンジン起動ができない場合は「ハンズフリー/会話が音声系を占有中」等が濃厚なので、
+            // 声かけ側は安全に諦めてユーザーへ案内する。
+            guard ensureAudioEngineRunning(reason: "voiceInput") else {
+                self.voiceInputError = "音声入力を開始できませんでした。ハンズフリー/会話を停止してから、もう一度お試しください。"
                 self.isRecording = false
                 return
             }
