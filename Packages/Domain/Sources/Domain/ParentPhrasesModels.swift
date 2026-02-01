@@ -23,13 +23,11 @@ public struct PhraseCategory: Codable, Hashable, Identifiable, Sendable {
     public static let hygiene = PhraseCategory("身支度")
     public static let play = PhraseCategory("遊び")
     public static let praise = PhraseCategory("ほめる")
-    public static let outing = PhraseCategory("おでかけ")
-    public static let returnHome = PhraseCategory("帰宅後")
     public static let cleanup = PhraseCategory("お片付け")
     public static let other = PhraseCategory("その他")
 
     public static var builtinAllCases: [PhraseCategory] {
-        [.morning, .meals, .bedtime, .hygiene, .play, .praise, .outing, .returnHome, .cleanup, .other]
+        [.morning, .meals, .bedtime, .hygiene, .play, .praise, .cleanup, .other]
     }
 
     public var isBuiltin: Bool {
@@ -44,8 +42,6 @@ public struct PhraseCategory: Codable, Hashable, Identifiable, Sendable {
         case Self.hygiene.name: return "hands.sparkles.fill"
         case Self.play.name: return "sportscourt.fill"
         case Self.praise.name: return "hand.thumbsup.fill"
-        case Self.outing.name: return "figure.walk"
-        case Self.returnHome.name: return "house.fill"
         case Self.cleanup.name: return "tray.full.fill"
         case Self.other.name: return "square.grid.2x2"
         default: return "tag.fill"
@@ -60,8 +56,6 @@ public struct PhraseCategory: Codable, Hashable, Identifiable, Sendable {
         case Self.hygiene.name: return "blue"
         case Self.play.name: return "pink"
         case Self.praise.name: return "yellow"
-        case Self.outing.name: return "teal"
-        case Self.returnHome.name: return "indigo"
         case Self.cleanup.name: return "brown"
         case Self.other.name: return "gray"
         default: return "gray"

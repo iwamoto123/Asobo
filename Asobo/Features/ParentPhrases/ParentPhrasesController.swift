@@ -25,6 +25,7 @@ public final class ParentPhrasesController: ObservableObject {
 
     private let repository: ParentPhrasesRepository
     private let customCategoriesKey: String
+    private let removedCategoriesMigrationKey: String
     // extension（別ファイル）から音声入力タップに使うため internal にしている
     // ✅ 再生系（TTS/PlayerNodeStreamer）専用
     let audioEngine: AVAudioEngine
@@ -64,6 +65,7 @@ public final class ParentPhrasesController: ObservableObject {
         self.player = PlayerNodeStreamer(sharedEngine: audioEngine)
         self.speech = SystemSpeechRecognizer(locale: "ja-JP")
         self.customCategoriesKey = "ParentPhrases.customCategories.\(userId ?? "local")"
+        self.removedCategoriesMigrationKey = "ParentPhrases.migration.removedOutingReturnHome.\(userId ?? "local")"
 
         // TTS エンジンの選択（どちらかをコメントアウト）
         // 1. OpenAI TTS（高品質、ネットワーク必須、有料）
@@ -180,10 +182,44 @@ public final class ParentPhrasesController: ObservableObject {
     func loadCards() async {
         do {
             self.cards = try await repository.fetchAll()
+            await migrateRemovedCategoriesIfNeeded()
             print("✅ カード読み込み完了: \(cards.count)件")
         } catch {
             print("❌ カード読み込みエラー: \(error)")
         }
+    }
+
+    /// 一回限りの移行: 「おでかけ」「帰宅後」を削除したので、既存カード/カスタムカテゴリがあれば「その他」へ寄せる
+    private func migrateRemovedCategoriesIfNeeded() async {
+        if UserDefaults.standard.bool(forKey: removedCategoriesMigrationKey) { return }
+
+        let removed = Set(["おでかけ", "帰宅後"])
+        var updated = false
+
+        // カスタムカテゴリから除去
+        let filteredCustom = customCategories.filter { !removed.contains($0.name) }
+        if filteredCustom.count != customCategories.count {
+            customCategories = filteredCustom
+            persistCustomCategories()
+            updated = true
+        }
+
+        // 既存カードのカテゴリ移行
+        let targets = cards.filter { removed.contains($0.category.name) }
+        if !targets.isEmpty {
+            for card in targets {
+                var c = card
+                c.category = .other
+                try? await repository.upsert(c)
+            }
+            updated = true
+            self.cards = (try? await repository.fetchAll()) ?? self.cards
+        }
+
+        if updated {
+            print("🔁 ParentPhrasesController: migrated removed categories -> その他")
+        }
+        UserDefaults.standard.set(true, forKey: removedCategoriesMigrationKey)
     }
 
     func filteredCards(for category: PhraseCategory) -> [PhraseCard] {
