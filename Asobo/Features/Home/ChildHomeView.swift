@@ -18,15 +18,6 @@ public struct ChildHomeView: View {
     @StateObject private var controller = ConversationController()
     @State private var isBreathing = false
     @State private var isPressed = false
-    @State private var isTestPressed = false
-    @State private var testLogWindowStartTime: Date?
-    @State private var lastLoggedVADState: ConversationController.VADState?
-    @State private var lastSpeechDetectedStartTime: Date?
-    @State private var rmsLogTimer: Timer?
-    @State private var lastRmsLogTime: Date?
-
-    // TEST観測ログのサンプリング間隔（RMSの瞬間的な落ち込みも見たいので0.10s）
-    private let testRmsLogInterval: TimeInterval = 0.10
     @State private var hasStartedSession = false
     @State private var initialGreetingText: String = ""
     @State private var lastAIDisplayText: String = ""
@@ -52,6 +43,22 @@ public struct ChildHomeView: View {
 
     public var body: some View {
         GeometryReader { geometry in
+            let w = geometry.size.width
+            let h = geometry.size.height
+            // ✅ 画面に対して均等に見えるように、縦を3ブロックに分けて相対配置する
+            // - 上: 吹き出し
+            // - 中: くま
+            // - 下: ユーザー台詞ボックス（タブバー分だけ余白を確保）
+            let bottomPad = max(64, h * 0.07)
+            let topRegion = max(140, h * 0.23)
+            let bottomRegion = max(120, h * 0.22)
+            let middleRegion = max(0, h - topRegion - bottomRegion - bottomPad)
+
+            // くまは「中ブロック」に収まる範囲でサイズ決定（上に行きすぎない）
+            let desiredBear = w * 0.80
+            let bearSize = max(220, min(desiredBear, middleRegion * 0.95))
+            let bubbleWidth = min(w * 0.88, 560)
+
             ZStack {
                 // 1. Background
                 LinearGradient(
@@ -65,51 +72,57 @@ public struct ChildHomeView: View {
                 AmbientCircles()
 
                 // 2. Main Character & Interface
-                VStack(spacing: 12) {
-                    Spacer()
-
-                    VStack(spacing: 12) {
-                        ZStack(alignment: .center) {
-
-                            // A. 吹き出し
-                            SpeechBubbleView(
-                                text: currentDisplayText,
-                                isThinking: controller.isThinking,
-                                isConnecting: controller.isRealtimeConnecting
-                            )
-                            .frame(width: geometry.size.width * 0.85)
-                            .offset(y: -geometry.size.width * 0.55) // 画面内に収まるよう少し下げる
-                            .animation(.spring(response: 0.5, dampingFraction: 0.7), value: currentDisplayText)
-
-                            // B. キャラクター with ハートボタン
-                            MocchyBearView(
-                                size: geometry.size.width * 0.8,
-                                isRecording: controller.isRecording,
-                                isPressed: isPressed,
-                                isTestPressed: isTestPressed,
-                                isBreathing: isBreathing,
-                                isBlinking: isBlinking,
-                                isSquinting: isSquinting,
-                                isNodding: isNodding,
-                                onTap: handleMicButtonTap,
-                                onPressChanged: { pressed in
-                                    withAnimation(.spring(response: 0.3, dampingFraction: 0.5)) { // バウンスを強めに
-                                        isPressed = pressed
-                                    }
-                                },
-                                onTestPressChanged: { pressed in
-                                    handleTestPTTPressChanged(pressed)
-                                }
-                            )
-                            .opacity((controller.isRealtimeActive || controller.isRealtimeConnecting) ? 1.0 : 0.6)
-                            .disabled(!controller.isRealtimeActive && !controller.isRealtimeConnecting)
-                        }
-
-                        stateMonitorView
-                            .padding(.horizontal, 24)
-                            .padding(.top, 16)
-                            .padding(.bottom, 4)
+                VStack(spacing: 0) {
+                    // 上: 吹き出し（上ブロックの中で下寄せ）
+                    VStack {
+                        Spacer(minLength: 0)
+                        SpeechBubbleView(
+                            text: currentDisplayText,
+                            isThinking: controller.isThinking,
+                            isConnecting: controller.isRealtimeConnecting
+                        )
+                        .frame(width: bubbleWidth)
+                        .animation(.spring(response: 0.5, dampingFraction: 0.7), value: currentDisplayText)
                     }
+                    .frame(height: topRegion)
+                    .frame(maxWidth: .infinity)
+
+                    // 中: くま（中ブロックの中央〜やや下寄せ）
+                    VStack {
+                        Spacer(minLength: 0)
+                        MocchyBearView(
+                            size: bearSize,
+                            isRecording: controller.isRecording,
+                            isPressed: isPressed,
+                            isBreathing: isBreathing,
+                            isBlinking: isBlinking,
+                            isSquinting: isSquinting,
+                            isNodding: isNodding,
+                            onTap: handleMicButtonTap,
+                            onPressChanged: { pressed in
+                                withAnimation(.spring(response: 0.3, dampingFraction: 0.5)) { // バウンスを強めに
+                                    isPressed = pressed
+                                }
+                            }
+                        )
+                        .opacity((controller.isRealtimeActive || controller.isRealtimeConnecting) ? 1.0 : 0.6)
+                        .disabled(!controller.isRealtimeActive && !controller.isRealtimeConnecting)
+                        Spacer(minLength: bearSize * 0.06)
+                    }
+                    .frame(height: middleRegion)
+                    .frame(maxWidth: .infinity)
+
+                    // 下: ユーザー台詞ボックス（下ブロックの上寄せ）
+                    VStack {
+                        userSpeechCardView
+                            .padding(.horizontal, 24)
+                        Spacer(minLength: 0)
+                    }
+                    .frame(height: bottomRegion)
+                    .frame(maxWidth: .infinity)
+
+                    // タブバー/ホームインジケータの逃げ
+                    Spacer(minLength: bottomPad)
                 }
 
                 // エラー表示
@@ -165,11 +178,6 @@ public struct ChildHomeView: View {
             // 注意: これを有効にすると、タブを切り替えるたびにセッションが停止・再開される
             // controller.stopRealtimeSession()
         }
-        .onChange(of: controller.vadState) { _ in
-            // 観測ウィンドウ中だけ、vadState遷移をログ
-            guard isTestPressed else { return }
-            logVADStateTransitionIfNeeded()
-        }
         .onChange(of: controller.isRecording) { _ in
             // 録音中の頻度調整は、startEyeAnimation内で管理
         }
@@ -211,60 +219,6 @@ public struct ChildHomeView: View {
         return initialGreetingText
     }
 
-    private var stateMonitorView: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("状態モニター")
-                .font(.caption)
-                .foregroundColor(.secondary)
-
-            stateRow("TurnState", value: turnStateLabel, color: .blue)
-            stateRow("VADState", value: vadStateLabel, color: .purple)
-
-            // フラグタグ（録音/接続…）は見切れやすいので非表示にし、その領域にSTTのリアルタイム表示を出す
-            VStack(alignment: .leading, spacing: 6) {
-                HStack {
-                    Text("あなたの音声（リアルタイム）")
-                        .foregroundColor(.secondary)
-                    Spacer()
-                }
-
-                ScrollView(.vertical, showsIndicators: false) {
-                    let t = monitorUserText
-                    Text(t.isEmpty
-                         ? (controller.isRecording ? "（認識中…）" : "（話すとここに文字が出ます）")
-                         : t)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .frame(minHeight: 34, maxHeight: 72)
-                .padding(8)
-                .background(Color.green.opacity(0.10), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-            }
-        }
-        .padding(12)
-        .background(Color.white.opacity(0.92), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .shadow(color: Color.black.opacity(0.08), radius: 10, x: 0, y: 4)
-        .font(.caption2)
-    }
-
-    private var turnStateLabel: String {
-        switch controller.turnState {
-        case .idle: return "idle"
-        case .waitingUser: return "waitingUser"
-        case .nudgedByAI(let count): return "nudgedByAI(\(count))"
-        case .listening: return "listening"
-        case .thinking: return "thinking"
-        case .speaking: return "speaking"
-        case .clarifying: return "clarifying"
-        }
-    }
-
-    private var vadStateLabel: String {
-        switch controller.vadState {
-        case .idle: return "idle"
-        case .speaking: return "speaking"
-        }
-    }
-
     private var liveUserTranscriptText: String {
         let t = !controller.handsFreeMonitorTranscript.isEmpty
         ? controller.handsFreeMonitorTranscript
@@ -278,18 +232,50 @@ public struct ChildHomeView: View {
             return liveUserTranscriptText
         }
         // 発話終了後は履歴に積むのと同じ「確定テキスト」を優先表示する。
-        let committed = controller.lastCommittedUserText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let committedRaw = controller.lastCommittedUserText.trimmingCharacters(in: .whitespacesAndNewlines)
+        // 技術的プレースホルダはUIに出さない
+        let committed = (committedRaw == "(voice)") ? "" : committedRaw
         return committed.isEmpty ? liveUserTranscriptText : committed
     }
 
-    private func stateRow(_ title: String, value: String, color: Color = .primary) -> some View {
-        HStack {
-            Text(title)
-                .foregroundColor(.secondary)
-            Spacer()
-            Text(value)
-                .foregroundColor(color)
+    private var userSpeechCardView: some View {
+        // 恋愛ゲーム風：ラベル類は出さず、台詞ウィンドウだけに寄せる
+        let t = monitorUserText
+        let placeholder = "話してみてね"
+
+        return VStack(alignment: .leading, spacing: 0) {
+            ScrollView(.vertical, showsIndicators: false) {
+                Group {
+                    if controller.isRecording {
+                        // ライブ更新は追従性を優先してそのまま表示
+                        Text(t.isEmpty ? placeholder : t)
+                    } else {
+                        // 確定文はタイプライターっぽく見せる
+                        TypewriterText(
+                            text: t.isEmpty ? placeholder : t,
+                            isActive: !t.isEmpty,
+                            showsCursorWhenActive: true
+                        )
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .foregroundColor((t.isEmpty && !controller.isRecording) ? .secondary : .primary)
+                .font(.system(size: 18, weight: .medium, design: .monospaced))
+                .lineSpacing(4)
+                .padding(.vertical, 10)
+                .padding(.horizontal, 12)
+            }
+            .frame(minHeight: 54, maxHeight: 110)
         }
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color.black.opacity(0.12))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(Color.white.opacity(0.45), lineWidth: 1)
+        )
+        .shadow(color: Color.black.opacity(0.10), radius: 12, x: 0, y: 6)
     }
 
     private func handleMicButtonTap() {
@@ -379,95 +365,6 @@ public struct ChildHomeView: View {
             }
         }
     }
-
-    // MARK: - VAD Observation Window (TEST 長押し)
-    private func handleTestPTTPressChanged(_ pressed: Bool) {
-        if pressed == isTestPressed { return }
-        isTestPressed = pressed
-
-        if pressed {
-            let start = Date()
-            testLogWindowStartTime = start
-            lastLoggedVADState = controller.vadState
-            lastSpeechDetectedStartTime = (controller.vadState == .speaking) ? start : nil
-            lastRmsLogTime = nil
-
-            print("🧪 VAD TEST: window BEGIN at \(start) (handsFree=\(controller.isHandsFreeMode), vadState=\(controller.vadState))")
-            if !controller.isHandsFreeMode {
-                print("🧪 VAD TEST: ⚠️ handsFree=false のため vadState/RMS が更新されない可能性があります")
-            }
-
-            startRmsLogTimer()
-            logVADStateTransitionIfNeeded(force: true)
-        } else {
-            stopRmsLogTimer()
-
-            let end = Date()
-            let duration = (testLogWindowStartTime.map { end.timeIntervalSince($0) }) ?? 0
-            if let speechStart = lastSpeechDetectedStartTime {
-                let speechDur = end.timeIntervalSince(speechStart)
-                print("🧪 VAD TEST: speech still speaking at END (dur=\(String(format: "%.2f", speechDur))s)")
-            }
-            print("🧪 VAD TEST: window END at \(end) duration=\(String(format: "%.2f", duration))s (vadState=\(controller.vadState))")
-
-            testLogWindowStartTime = nil
-            lastLoggedVADState = nil
-            lastSpeechDetectedStartTime = nil
-            lastRmsLogTime = nil
-        }
-    }
-
-    private func logVADStateTransitionIfNeeded(force: Bool = false) {
-        guard let windowStart = testLogWindowStartTime else { return }
-        let now = Date()
-        let t = now.timeIntervalSince(windowStart)
-        let current = controller.vadState
-
-        if force || lastLoggedVADState != current {
-            if current == .speaking {
-                lastSpeechDetectedStartTime = now
-                print("🧪 VAD TEST: speech DETECTED START t=+\(String(format: "%.2f", t))s (vadState=speaking)")
-            } else {
-                if let speechStart = lastSpeechDetectedStartTime {
-                    let dur = now.timeIntervalSince(speechStart)
-                    print("🧪 VAD TEST: speech DETECTED END   t=+\(String(format: "%.2f", t))s (dur=\(String(format: "%.2f", dur))s, vadState=idle)")
-                } else {
-                    print("🧪 VAD TEST: vadState=idle t=+\(String(format: "%.2f", t))s")
-                }
-                lastSpeechDetectedStartTime = nil
-            }
-            lastLoggedVADState = current
-        }
-    }
-
-    private func startRmsLogTimer() {
-        stopRmsLogTimer()
-        let interval = testRmsLogInterval
-        let controllerRef = controller
-        rmsLogTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak controllerRef] _ in
-            guard let controller = controllerRef else { return }
-            guard self.isTestPressed, let windowStart = self.testLogWindowStartTime else { return }
-            let now = Date()
-            let t = now.timeIntervalSince(windowStart)
-
-            let rmsDb: Double = controller.debugLastInputRmsDb ?? -120.0
-            let startThresh: Double = controller.debugActiveRmsStartThresholdDb
-            let endThresh: Double = controller.debugActiveSpeechEndRmsThresholdDb
-            let session = AVAudioSession.sharedInstance()
-            let input = session.currentRoute.inputs.first
-            let inPort = input?.portType.rawValue ?? "none"
-            let inName = input?.portName ?? "none"
-            print("🧪 VAD TEST: t=+\(String(format: "%.2f", t))s vadState=\(controller.vadState) rmsDb=\(String(format: "%.2f", rmsDb)) | startThresh=\(String(format: "%.1f", startThresh)) endThresh=\(String(format: "%.1f", endThresh)) | input=\(inName)(\(inPort))")
-
-            self.lastRmsLogTime = now
-        }
-        RunLoop.main.add(rmsLogTimer!, forMode: .common)
-    }
-
-    private func stopRmsLogTimer() {
-        rmsLogTimer?.invalidate()
-        rmsLogTimer = nil
-    }
 }
 
 // MARK: - Subviews
@@ -477,17 +374,12 @@ struct MocchyBearView: View {
     let size: CGFloat
     let isRecording: Bool
     let isPressed: Bool
-    let isTestPressed: Bool
     let isBreathing: Bool
     let isBlinking: Bool
     let isSquinting: Bool
     let isNodding: Bool
     let onTap: () -> Void
     let onPressChanged: (Bool) -> Void
-    let onTestPressChanged: (Bool) -> Void
-
-    /// 「TEST 長押し」観測用ボタン。今は使わないので非表示（復活させるときは true に戻す）
-    private let showVADTestButton: Bool = false
 
     var body: some View {
         ZStack {
@@ -552,44 +444,6 @@ struct MocchyBearView: View {
                     }
             )
             .zIndex(1000)
-
-            if showVADTestButton {
-                // 4.5 観測用ボタン（VAD制御とは独立。押下中だけログを出す）
-                // Button + gesture だと環境によってタッチが取りこぼされることがあるため、
-                // contentShape + highPriorityGesture で確実に拾う。
-                VStack(spacing: 2) {
-                    Text(isTestPressed ? "TEST\nON" : "TEST\n長押し")
-                        .font(.caption)
-                        .bold()
-                    if isTestPressed {
-                        Text("記録中")
-                            .font(.caption2)
-                            .bold()
-                    }
-                }
-                .multilineTextAlignment(.center)
-                .foregroundColor(.white)
-                .padding(.vertical, 10)
-                .padding(.horizontal, 12)
-                .background(isTestPressed ? Color.green.opacity(0.90) : Color.purple.opacity(0.85))
-                .cornerRadius(10)
-                .contentShape(Rectangle())
-                .overlay(
-                    RoundedRectangle(cornerRadius: 10)
-                        .stroke(Color.white.opacity(isTestPressed ? 0.9 : 0.5), lineWidth: isTestPressed ? 2 : 1)
-                )
-                .shadow(color: Color.black.opacity(isTestPressed ? 0.25 : 0.12), radius: isTestPressed ? 10 : 6, x: 0, y: 4)
-                .scaleEffect(isTestPressed ? 1.06 : 1.0)
-                .animation(.spring(response: 0.18, dampingFraction: 0.75), value: isTestPressed)
-                .frame(minWidth: 78, minHeight: 60) // ヒット領域を拡大
-                .offset(x: size * 0.36, y: size * 0.32) // ハートの横
-                .highPriorityGesture(
-                    DragGesture(minimumDistance: 0)
-                        .onChanged { _ in onTestPressChanged(true) }
-                        .onEnded { _ in onTestPressChanged(false) }
-                )
-                .zIndex(1001)
-            }
 
             // 5. 手 (ハートを抱っこ)
             HStack(spacing: size * 0.52) {
@@ -741,6 +595,54 @@ struct HeartButtonBody: View {
     }
 }
 
+// MARK: - Typewriter
+
+/// タイプライター風の表示（確定文向け）。
+/// - Note: ライブ更新（STTのdelta）に追従させると読みづらいので、Homeでは「確定文」のみ想定。
+struct TypewriterText: View {
+    let text: String
+    let isActive: Bool
+    let showsCursorWhenActive: Bool
+    var interval: TimeInterval = 0.018
+
+    @State private var rendered: String = ""
+    @State private var task: Task<Void, Never>?
+
+    var body: some View {
+        Text(rendered + (showsCursorWhenActive && isActive && rendered != text ? "▍" : ""))
+            .onAppear { startIfNeeded() }
+            .onChange(of: text) { _ in startIfNeeded() }
+            .onChange(of: isActive) { _ in startIfNeeded() }
+            .onDisappear {
+                task?.cancel()
+                task = nil
+            }
+    }
+
+    private func startIfNeeded() {
+        task?.cancel()
+        task = nil
+
+        guard isActive else {
+            rendered = text
+            return
+        }
+
+        // 先頭から打ち直す（恋愛ゲームっぽい挙動）
+        rendered = ""
+        let target = text
+        task = Task {
+            for ch in target {
+                if Task.isCancelled { return }
+                await MainActor.run {
+                    rendered.append(ch)
+                }
+                try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
+            }
+        }
+    }
+}
+
 /// 録音中のキラキラエフェクト
 struct ParticleEffectView: View {
     let size: CGFloat
@@ -856,7 +758,7 @@ struct SpeechBubbleView: View {
             Image(systemName: "arrowtriangle.down.fill")
                 .font(.system(size: 24))
                 .foregroundColor(.white.opacity(0.95))
-                .offset(y: 50) // 下へ
+                .offset(y: 56) // 下へ（ほんの少しだけ出す）
                 .shadow(color: .anoneShadowDark.opacity(0.1), radius: 2, x: 0, y: 2)
 
             // テキスト表示エリア（インジケーターなしで常に同じスタイル）
@@ -876,6 +778,8 @@ struct SpeechBubbleView: View {
         }
         .frame(minHeight: 100)
         .fixedSize(horizontal: false, vertical: true)
+        // offsetはレイアウトサイズに反映されないため、しっぽ分だけ下に余白を作る
+        .padding(.bottom, 8)
     }
 }
 
