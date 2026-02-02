@@ -44,7 +44,7 @@ struct ParentPhrasesContentView: View {
                                 .foregroundStyle(Color(hex: "5A4A42").opacity(0.8))
                         }
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .padding(.bottom, 80)
+                        // 下部バーは safeAreaInset に任せる（余白を二重にしない）
                     } else if visibleCards.isEmpty {
                         ParentPhrasesEmptyStateView(
                             title: searchText.isEmpty ? "まだフレーズがないよ" : "見つからなかったよ",
@@ -54,28 +54,45 @@ struct ParentPhrasesContentView: View {
                             sheet = .add(category: selectedCategory, initialText: nil)
                         }
                     } else {
-                        ScrollView {
-                            LazyVStack(spacing: 14) {
-                                ForEach(visibleCards) { card in
-                                    PhraseCardView(
-                                        card: card,
-                                        isPlayingThisCard: controller.playingCardId == card.id,
-                                        isPreparingThisCard: controller.preparingCardId == card.id,
-                                        playbackProgress: controller.playingCardId == card.id ? controller.playbackProgress : 0.0,
-                                        isAnyPlaying: controller.isPlaying || controller.preparingCardId != nil
-                                    ) {
-                                        controller.playPhrase(card)
-                                    } onEdit: {
+                        List {
+                            ForEach(visibleCards) { card in
+                                PhraseCardView(
+                                    card: card,
+                                    isPlayingThisCard: controller.playingCardId == card.id,
+                                    isPreparingThisCard: controller.preparingCardId == card.id,
+                                    playbackProgress: controller.playingCardId == card.id ? controller.playbackProgress : 0.0,
+                                    isAnyPlaying: controller.isPlaying || controller.preparingCardId != nil
+                                ) {
+                                    controller.playPhrase(card)
+                                } onEdit: {
+                                    sheet = .edit(card: card)
+                                } onDelete: {
+                                    controller.deleteCard(card)
+                                }
+                                .swipeActions(edge: .leading, allowsFullSwipe: false) {
+                                    Button {
                                         sheet = .edit(card: card)
-                                    } onDelete: {
+                                    } label: {
+                                        Label("編集", systemImage: "pencil")
+                                    }
+                                    .tint(.blue)
+                                }
+                                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                                    Button(role: .destructive) {
                                         controller.deleteCard(card)
+                                    } label: {
+                                        Label("削除", systemImage: "trash")
                                     }
                                 }
+                                .listRowSeparator(.hidden)
+                                .listRowBackground(Color.clear)
+                                .listRowInsets(EdgeInsets(top: 7, leading: 16, bottom: 7, trailing: 16))
                             }
-                            .padding(.horizontal, 16)
-                            .padding(.top, 6)
-                            .padding(.bottom, 80)
                         }
+                        .listStyle(.plain)
+                        .scrollContentBackground(.hidden)
+                        .padding(.top, 6)
+                        // 下部バーは safeAreaInset に任せる（余白を二重にしない）
                     }
                 }
             }

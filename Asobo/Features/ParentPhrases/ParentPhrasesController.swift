@@ -83,12 +83,28 @@ public final class ParentPhrasesController: ObservableObject {
 
     func availableCategories() -> [PhraseCategory] {
         var list: [PhraseCategory] = []
-        for c in PhraseCategory.builtinAllCases where !c.name.isEmpty { list.append(c) }
-        for c in customCategories where !c.name.isEmpty && !list.contains(c) { list.append(c) }
+        let other = PhraseCategory.other
+
+        // 1) 内蔵カテゴリ（「その他」は最後に回す）
+        for c in PhraseCategory.builtinAllCases where !c.name.isEmpty && c != other {
+            if !list.contains(c) { list.append(c) }
+        }
+
+        // 2) ユーザー追加カテゴリ（常に「その他」より前）
+        for c in customCategories where !c.name.isEmpty && c != other {
+            if !list.contains(c) { list.append(c) }
+        }
+
+        // 3) 既存カードから検出された未登録カテゴリ（ユーザーカテゴリ扱いで「その他」より前）
         for card in cards {
             let c = card.category
-            if !c.name.isEmpty && !list.contains(c) { list.append(c) }
+            if !c.name.isEmpty && c != other && !PhraseCategory.builtinAllCases.contains(c) {
+                if !list.contains(c) { list.append(c) }
+            }
         }
+
+        // 4) 「その他」は常に最後
+        if !list.contains(other) { list.append(other) }
         return list
     }
 
@@ -229,13 +245,11 @@ public final class ParentPhrasesController: ObservableObject {
         cards
             .filter { $0.category == category }
             .sorted { card1, card2 in
-                // 優先順位 → 使用回数 → 作成日の順
-                if card1.priority != card2.priority {
-                    return card1.priority < card2.priority
-                }
-                if card1.usageCount != card2.usageCount {
-                    return card1.usageCount > card2.usageCount
-                }
+                // ✅ 起動時は「使用回数が多い順」
+                if card1.usageCount != card2.usageCount { return card1.usageCount > card2.usageCount }
+                // タイブレーク: 最終使用 → 優先順位 → 作成日
+                if let a = card1.lastUsedAt, let b = card2.lastUsedAt, a != b { return a > b }
+                if card1.priority != card2.priority { return card1.priority < card2.priority }
                 return card1.createdAt > card2.createdAt
             }
     }

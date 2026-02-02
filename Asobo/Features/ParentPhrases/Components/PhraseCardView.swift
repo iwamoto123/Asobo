@@ -44,7 +44,7 @@ struct PhraseCardView: View {
                         .lineLimit(2)
 
                     HStack(spacing: 10) {
-                        Label("\(card.usageCount)回", systemImage: "chart.bar.fill")
+                        Text("\(card.usageCount)回")
                             .font(.caption)
                             .foregroundColor(.gray.opacity(0.75))
 
