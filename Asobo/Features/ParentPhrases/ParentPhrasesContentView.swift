@@ -36,7 +36,16 @@ struct ParentPhrasesContentView: View {
                 .padding(.bottom, 10)
 
                 Group {
-                    if visibleCards.isEmpty {
+                    if !controller.hasLoadedCards {
+                        VStack(spacing: 12) {
+                            ProgressView()
+                            Text("読み込み中…")
+                                .font(.system(size: 14, weight: .semibold, design: .rounded))
+                                .foregroundStyle(Color(hex: "5A4A42").opacity(0.8))
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .padding(.bottom, 80)
+                    } else if visibleCards.isEmpty {
                         ParentPhrasesEmptyStateView(
                             title: searchText.isEmpty ? "まだフレーズがないよ" : "見つからなかったよ",
                             message: searchText.isEmpty ? "よく使う声かけを\nカードにしておこう" : "別の言葉でも探してみてね",

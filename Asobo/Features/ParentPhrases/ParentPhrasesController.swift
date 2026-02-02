@@ -11,6 +11,7 @@ import Speech
 @MainActor
 public final class ParentPhrasesController: ObservableObject {
     @Published var cards: [PhraseCard] = []
+    @Published var hasLoadedCards: Bool = false
     @Published var customCategories: [PhraseCategory] = []
     @Published var isRecording: Bool = false
     @Published var isVoiceInputPresented: Bool = false
@@ -180,6 +181,7 @@ public final class ParentPhrasesController: ObservableObject {
     }
 
     func loadCards() async {
+        // 初回ロード完了までは空状態UIを出さない（チラつき防止）
         do {
             self.cards = try await repository.fetchAll()
             await migrateRemovedCategoriesIfNeeded()
@@ -187,6 +189,7 @@ public final class ParentPhrasesController: ObservableObject {
         } catch {
             print("❌ カード読み込みエラー: \(error)")
         }
+        if !hasLoadedCards { hasLoadedCards = true }
     }
 
     /// 一回限りの移行: 「おでかけ」「帰宅後」を削除したので、既存カード/カスタムカテゴリがあれば「その他」へ寄せる
