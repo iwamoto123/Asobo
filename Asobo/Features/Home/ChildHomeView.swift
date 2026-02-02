@@ -18,6 +18,14 @@ public struct ChildHomeView: View {
     @StateObject private var controller = ConversationController()
     @State private var isBreathing = false
     @State private var isPressed = false
+    /// Home表示用に「最後に確定したユーザーテキスト」を保持する。
+    /// Controller側がセッション切替などで値をクリアしても、次の更新まで表示を維持する。
+    @State private var stableUserText: String = ""
+    /// lastCommittedUserText の反映をデバウンスして、ホーム表示のブレ/チカチカを防ぐ
+    @State private var stableUserTextUpdateTask: Task<Void, Never>?
+    /// 録音中のライブ表示は更新頻度が高いので、Home側で軽く間引いて“ブレ”を抑える
+    @State private var stableLiveText: String = ""
+    @State private var stableLiveTextUpdateTask: Task<Void, Never>?
     @State private var hasStartedSession = false
     @State private var initialGreetingText: String = ""
     @State private var lastAIDisplayText: String = ""
@@ -53,6 +61,7 @@ public struct ChildHomeView: View {
             let topRegion = max(140, h * 0.23)
             let bottomRegion = max(120, h * 0.22)
             let middleRegion = max(0, h - topRegion - bottomRegion - bottomPad)
+            let interGap = max(8, h * 0.012) // くまとユーザー台詞ボックスの間（ほんの少し）
 
             // くまは「中ブロック」に収まる範囲でサイズ決定（上に行きすぎない）
             let desiredBear = w * 0.80
@@ -107,7 +116,7 @@ public struct ChildHomeView: View {
                         )
                         .opacity((controller.isRealtimeActive || controller.isRealtimeConnecting) ? 1.0 : 0.6)
                         .disabled(!controller.isRealtimeActive && !controller.isRealtimeConnecting)
-                        Spacer(minLength: bearSize * 0.06)
+                        Spacer(minLength: max(bearSize * 0.08, interGap))
                     }
                     .frame(height: middleRegion)
                     .frame(maxWidth: .infinity)
@@ -116,6 +125,7 @@ public struct ChildHomeView: View {
                     VStack {
                         userSpeechCardView
                             .padding(.horizontal, 24)
+                            .padding(.top, interGap)
                         Spacer(minLength: 0)
                     }
                     .frame(height: bottomRegion)
@@ -181,6 +191,42 @@ public struct ChildHomeView: View {
         .onChange(of: controller.isRecording) { _ in
             // 録音中の頻度調整は、startEyeAnimation内で管理
         }
+        .onChange(of: controller.isRecording) { isRecording in
+            if isRecording {
+                // 新規録音開始：前回のライブ表示を一旦クリア
+                stableLiveTextUpdateTask?.cancel()
+                stableLiveTextUpdateTask = nil
+                stableLiveText = ""
+                scheduleLiveTextUpdate()
+            } else {
+                // 録音停止：確定文が来るまで直前のライブを保持したいので、ここでは消さない
+                stableLiveTextUpdateTask?.cancel()
+                stableLiveTextUpdateTask = nil
+            }
+        }
+        .onChange(of: controller.handsFreeMonitorTranscript) { _ in
+            scheduleLiveTextUpdate()
+        }
+        .onChange(of: controller.transcript) { _ in
+            scheduleLiveTextUpdate()
+        }
+        .onChange(of: controller.lastCommittedUserText) { newValue in
+            // ✅ 確定したテキストは「少し待ってから」固定表示する（更新のブレ/チカチカ回避）
+            stableUserTextUpdateTask?.cancel()
+            let raw = newValue
+            stableUserTextUpdateTask = Task { @MainActor in
+                // 軽いラグを入れて、コミット直後の揺れを吸収
+                try? await Task.sleep(nanoseconds: 260_000_000) // 0.26s
+                let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty else { return }
+                // 技術的プレースホルダはUIに出さない
+                guard trimmed != "(voice)" else { return }
+                // 同じ文を再設定しない
+                if stableUserText != trimmed {
+                    stableUserText = trimmed
+                }
+            }
+        }
         .onChange(of: controller.aiResponseText) { newValue in
             // AIテキストが更新されたら常に保持（録音中の表示は固定で最後の値を使う）
             if !newValue.isEmpty {
@@ -227,39 +273,25 @@ public struct ChildHomeView: View {
     }
 
     private var monitorUserText: String {
-        // 発話中は「今しゃべっている内容」が見えないと不安になるので、ライブSTTを優先表示する。
+        // ✅ 録音中：リアルタイム表示（間引き済み）を出す
         if controller.isRecording {
-            return liveUserTranscriptText
+            return stableLiveText
         }
-        // 発話終了後は履歴に積むのと同じ「確定テキスト」を優先表示する。
-        let committedRaw = controller.lastCommittedUserText.trimmingCharacters(in: .whitespacesAndNewlines)
-        // 技術的プレースホルダはUIに出さない
-        let committed = (committedRaw == "(voice)") ? "" : committedRaw
-        return committed.isEmpty ? liveUserTranscriptText : committed
+        // ✅ 録音後：確定文があればそれを表示。確定が来るまでの間は直前のライブを保持。
+        return !stableUserText.isEmpty ? stableUserText : stableLiveText
     }
 
     private var userSpeechCardView: some View {
         // 恋愛ゲーム風：ラベル類は出さず、台詞ウィンドウだけに寄せる
         let t = monitorUserText
         let placeholder = "話してみてね"
+        let displayText = t.isEmpty ? placeholder : t
 
         return VStack(alignment: .leading, spacing: 0) {
             ScrollView(.vertical, showsIndicators: false) {
-                Group {
-                    if controller.isRecording {
-                        // ライブ更新は追従性を優先してそのまま表示
-                        Text(t.isEmpty ? placeholder : t)
-                    } else {
-                        // 確定文はタイプライターっぽく見せる
-                        TypewriterText(
-                            text: t.isEmpty ? placeholder : t,
-                            isActive: !t.isEmpty,
-                            showsCursorWhenActive: true
-                        )
-                    }
-                }
+                Text(displayText)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .foregroundColor((t.isEmpty && !controller.isRecording) ? .secondary : .primary)
+                .foregroundColor(t.isEmpty ? .secondary : .primary)
                 .font(.system(size: 18, weight: .medium, design: .monospaced))
                 .lineSpacing(4)
                 .padding(.vertical, 10)
@@ -282,8 +314,42 @@ public struct ChildHomeView: View {
         guard controller.isRealtimeActive else { return }
         if controller.isHandsFreeMode {
             controller.stopHandsFreeConversation()
+            // ✅ ハート停止時：ユーザーの表示を初期状態に戻す
+            stableUserTextUpdateTask?.cancel()
+            stableUserTextUpdateTask = nil
+            stableLiveTextUpdateTask?.cancel()
+            stableLiveTextUpdateTask = nil
+            stableUserText = ""
+            stableLiveText = ""
+            controller.lastCommittedUserText = ""
+            controller.handsFreeMonitorTranscript = ""
+            controller.transcript = ""
         } else {
             controller.startHandsFreeConversation()
+            // ✅ 再開時も前の表示が残らないように初期化
+            stableUserTextUpdateTask?.cancel()
+            stableUserTextUpdateTask = nil
+            stableLiveTextUpdateTask?.cancel()
+            stableLiveTextUpdateTask = nil
+            stableUserText = ""
+            stableLiveText = ""
+            controller.lastCommittedUserText = ""
+            controller.handsFreeMonitorTranscript = ""
+            controller.transcript = ""
+        }
+    }
+
+    private func scheduleLiveTextUpdate() {
+        guard controller.isRecording else { return }
+        stableLiveTextUpdateTask?.cancel()
+        let raw = liveUserTranscriptText
+        stableLiveTextUpdateTask = Task { @MainActor in
+            // ライブ表示は少し間引いて読みやすさ優先（それでも十分リアルタイム）
+            try? await Task.sleep(nanoseconds: 120_000_000) // 0.12s
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            if stableLiveText != trimmed {
+                stableLiveText = trimmed
+            }
         }
     }
 
