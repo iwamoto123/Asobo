@@ -44,6 +44,13 @@ struct ProfileView: View {
     @State private var childEditors: [ChildEditor] = []
     @State private var loadedChildEditorIds: [String] = []
 
+    @State private var isAddSiblingSheetPresented = false
+    @State private var newChildName = ""
+    @State private var newChildNickname = ""
+    @State private var newChildBirthDate = Date()
+    @State private var isAddingSibling = false
+    @State private var addSiblingError: String?
+
     @State private var selectedPhotoItem: PhotosPickerItem?
     @State private var selectedPhotoData: Data?
     @State private var currentPhotoURLString: String?
@@ -142,6 +149,9 @@ struct ProfileView: View {
             }
             .padding()
         }
+        .sheet(isPresented: $isAddSiblingSheetPresented) {
+            addSiblingSheet
+        }
     }
 
     private var headerSection: some View {
@@ -208,6 +218,129 @@ struct ProfileView: View {
                 ForEach($childEditors) { $c in
                     ChildEditorCard(editor: $c)
                 }
+            }
+
+            Button {
+                // 入力初期化
+                newChildName = ""
+                newChildNickname = ""
+                newChildBirthDate = Date()
+                addSiblingError = nil
+                isAddSiblingSheetPresented = true
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "plus.circle.fill")
+                    Text("きょうだいを追加")
+                        .fontWeight(.semibold)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 12)
+                .background(Color.gray.opacity(0.08))
+                .foregroundColor(Color.anoneButton)
+                .cornerRadius(12)
+            }
+            .disabled(isSaving || isAddingSibling)
+            .accessibilityLabel("きょうだいを追加")
+        }
+    }
+
+    private var addSiblingSheet: some View {
+        NavigationStack {
+            Form {
+                Section("きょうだいの情報") {
+                    TextField("お名前（例：はな）", text: $newChildName)
+                    TextField("呼び名（任意：例：はーちゃん）", text: $newChildNickname)
+                    DatePicker(
+                        "お誕生日",
+                        selection: $newChildBirthDate,
+                        in: Date.distantPast...Date(),
+                        displayedComponents: .date
+                    )
+                    .environment(\.locale, Locale(identifier: "ja_JP"))
+                }
+
+                if let addSiblingError {
+                    Section {
+                        Text(addSiblingError)
+                            .font(.caption)
+                            .foregroundColor(.red)
+                    }
+                }
+            }
+            .navigationTitle("きょうだいを追加")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("キャンセル") { isAddSiblingSheetPresented = false }
+                        .disabled(isAddingSibling)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button {
+                        Task { await addSibling() }
+                    } label: {
+                        if isAddingSibling {
+                            ProgressView()
+                        } else {
+                            Text("追加")
+                                .fontWeight(.bold)
+                        }
+                    }
+                    .disabled(isAddingSibling)
+                }
+            }
+        }
+    }
+
+    private func addSibling() async {
+        guard let uid = authVM.currentUser?.uid else {
+            await MainActor.run { addSiblingError = "ログイン情報が見つかりません" }
+            return
+        }
+
+        let name = newChildName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let nickname = newChildNickname.trimmingCharacters(in: .whitespacesAndNewlines)
+        if name.isEmpty && nickname.isEmpty {
+            await MainActor.run { addSiblingError = "お名前か呼び名のどちらかを入力してください" }
+            return
+        }
+        if newChildBirthDate > Date() {
+            await MainActor.run { addSiblingError = "お誕生日は過去の日付を選んでください" }
+            return
+        }
+
+        await MainActor.run {
+            isAddingSibling = true
+            addSiblingError = nil
+        }
+        defer { Task { @MainActor in isAddingSibling = false } }
+
+        do {
+            let db = Firestore.firestore()
+            let ref = db.collection("users").document(uid).collection("children").document()
+
+            let displayName = !name.isEmpty ? name : nickname
+            let nickName: String? = nickname.isEmpty ? nil : nickname
+
+            var data: [String: Any] = [:]
+            data["displayName"] = displayName
+            if let nickName {
+                data["nickName"] = nickName
+            }
+            data["birthDate"] = Timestamp(date: newChildBirthDate)
+            data["interestContext"] = []
+            data["createdAt"] = Timestamp(date: Date())
+
+            try await ref.setData(data)
+
+            await authVM.fetchUserProfile(userId: uid)
+            await MainActor.run {
+                loadInitialValues()
+                message = "きょうだいを追加しました"
+                isAddSiblingSheetPresented = false
+            }
+        } catch {
+            await MainActor.run {
+                addSiblingError = "追加に失敗しました: \(error.localizedDescription)"
             }
         }
     }
