@@ -8,11 +8,27 @@ import FirebaseAuth
 struct OnboardingView: View {
     @ObservedObject var authVM: AuthViewModel
     @State private var tabSelection = 0
+    @State private var keyboardHeight: CGFloat = 0
+
+    private struct AdditionalChildInput: Identifiable {
+        let id = UUID()
+        var name: String = ""
+        var nickname: String = ""
+        var birthDate: Date = Date()
+    }
+
+    private struct AgeConfirmItem: Identifiable {
+        let id = UUID()
+        let callName: String
+        let ageText: String
+    }
 
     // 入力データ
     @State private var parentName = ""
     @State private var childName = ""
     @State private var childNickname = ""
+    @State private var hasAdditionalChildren = false
+    @State private var additionalChildren: [AdditionalChildInput] = []
     @State private var teddyName = ""
     @State private var birthDate = Date()
     @State private var selectedPhotoItem: PhotosPickerItem?
@@ -25,9 +41,31 @@ struct OnboardingView: View {
     // 入力必須エラーフラグ
     @State private var parentError = false
     @State private var childNameError = false
-    @State private var childNicknameError = false
     @State private var teddyError = false
     @State private var birthDateError = false
+
+    private var ageConfirmItems: [AgeConfirmItem] {
+        func callName(name: String, nickname: String) -> String? {
+            let n = name.trimmingCharacters(in: .whitespacesAndNewlines)
+            let nick = nickname.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !nick.isEmpty { return nick }
+            if !n.isEmpty { return n }
+            return nil
+        }
+
+        var items: [AgeConfirmItem] = []
+
+        if let mainCall = callName(name: childName, nickname: childNickname) {
+            items.append(.init(callName: mainCall, ageText: ageString(from: birthDate)))
+        }
+
+        for c in additionalChildren {
+            guard let cCall = callName(name: c.name, nickname: c.nickname) else { continue }
+            items.append(.init(callName: cCall, ageText: ageString(from: c.birthDate)))
+        }
+
+        return items
+    }
 
     var body: some View {
         ZStack {
@@ -65,51 +103,146 @@ struct OnboardingView: View {
                 // Step 2: 子供の名前と誕生日
                 OnboardingStepView(
                     title: "お子さまについて",
-                    description: "お話しする子の名前と年齢を教えてください。\n誕生日は正確に入力してね。"
+                    description: "お話しする長男・長女の名前と年齢を教えてください。\nごきょうだいがいる場合は、この画面の下から追加できます。"
                 ) {
-                    VStack(spacing: 15) {
-                        TextField("お名前（例：たろう）", text: $childName)
-                            .textFieldStyle(RoundedBorderTextFieldStyle())
-                            .onChange(of: childName) { _ in childNameError = false }
-                        if childNameError {
-                            Text("入力は必須です")
-                                .font(.caption)
-                                .foregroundColor(.red)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                        TextField("呼び名（例：たーくん）", text: $childNickname)
-                            .textFieldStyle(RoundedBorderTextFieldStyle())
-                            .onChange(of: childNickname) { _ in childNicknameError = false }
-                        if childNicknameError {
-                            Text("入力は必須です")
-                                .font(.caption)
-                                .foregroundColor(.red)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                        DatePicker("お誕生日", selection: $birthDate, in: Date.distantPast...Date(), displayedComponents: .date)
-                            .environment(\.locale, Locale(identifier: "ja_JP"))
-                            .onChange(of: birthDate) { newDate in
-                                birthDateError = newDate > Date()
+                    ScrollView {
+                        VStack(spacing: 15) {
+                            TextField("お名前（例：たろう）", text: $childName)
+                                .textFieldStyle(RoundedBorderTextFieldStyle())
+                                .onChange(of: childName) { _ in childNameError = false }
+                            if childNameError {
+                                Text("入力は必須です")
+                                    .font(.caption)
+                                    .foregroundColor(.red)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
                             }
-                        if birthDateError {
-                            Text("過去の日付を入れてください")
-                                .font(.caption)
-                                .foregroundColor(.red)
-                                .frame(maxWidth: .infinity, alignment: .leading)
+                            TextField("呼び名（任意：例：たーくん）", text: $childNickname)
+                                .textFieldStyle(RoundedBorderTextFieldStyle())
+
+                            DatePicker("お誕生日", selection: $birthDate, in: Date.distantPast...Date(), displayedComponents: .date)
+                                .environment(\.locale, Locale(identifier: "ja_JP"))
+                                .onChange(of: birthDate) { newDate in
+                                    birthDateError = newDate > Date()
+                                }
+                            if birthDateError {
+                                Text("過去の日付を入れてください")
+                                    .font(.caption)
+                                    .foregroundColor(.red)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+
+                            // きょうだいがいる場合ボタン（画面の下）
+                            Button {
+                                withAnimation(.easeInOut) {
+                                    hasAdditionalChildren.toggle()
+                                    if hasAdditionalChildren && additionalChildren.isEmpty {
+                                        additionalChildren.append(.init())
+                                    }
+                                }
+                            } label: {
+                                HStack(spacing: 8) {
+                                    Image(systemName: hasAdditionalChildren ? "chevron.down" : "chevron.right")
+                                    Text("きょうだいがいる場合")
+                                }
+                                .font(.subheadline.weight(.semibold))
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 10)
+                                .background(Color.white.opacity(0.9))
+                                .foregroundColor(Color.anoneButton)
+                                .cornerRadius(12)
+                            }
+                            .padding(.top, 4)
+
+                            if hasAdditionalChildren {
+                                VStack(alignment: .leading, spacing: 10) {
+                                    Text("きょうだい")
+                                        .font(.subheadline.weight(.semibold))
+                                        .foregroundColor(Color(hex: "5A4A42"))
+                                    Text("名前を呼ぶと喜ぶので、きょうだいがいる場合は入れてみてください。")
+                                        .font(.footnote)
+                                        .foregroundColor(Color(hex: "8A7A72"))
+
+                                    ForEach($additionalChildren) { $c in
+                                        VStack(spacing: 10) {
+                                            HStack(spacing: 8) {
+                                                TextField("お名前（例：はな）", text: $c.name)
+                                                    .textFieldStyle(RoundedBorderTextFieldStyle())
+                                                TextField("呼び名（任意：例：はーちゃん）", text: $c.nickname)
+                                                    .textFieldStyle(RoundedBorderTextFieldStyle())
+                                                Button {
+                                                    additionalChildren.removeAll { $0.id == c.id }
+                                                    if additionalChildren.isEmpty {
+                                                        hasAdditionalChildren = false
+                                                    }
+                                                } label: {
+                                                    Image(systemName: "minus.circle.fill")
+                                                        .foregroundColor(.red.opacity(0.85))
+                                                }
+                                                .accessibilityLabel("きょうだいを削除")
+                                            }
+                                            DatePicker("お誕生日", selection: $c.birthDate, in: Date.distantPast...Date(), displayedComponents: .date)
+                                                .environment(\.locale, Locale(identifier: "ja_JP"))
+                                        }
+                                        .padding(12)
+                                        .background(Color.white.opacity(0.55))
+                                        .cornerRadius(12)
+                                    }
+
+                                    Button {
+                                        guard additionalChildren.count < 5 else { return }
+                                        additionalChildren.append(.init())
+                                    } label: {
+                                        HStack(spacing: 6) {
+                                            Image(systemName: "plus.circle.fill")
+                                            Text("きょうだいを追加")
+                                        }
+                                        .font(.subheadline.weight(.semibold))
+                                    }
+                                    .disabled(additionalChildren.count >= 5)
+                                    .foregroundColor(additionalChildren.count >= 5 ? .gray : Color.anoneButton)
+                                }
+                                .padding(.top, 4)
+                            }
                         }
+                        .padding(.horizontal)
+                        // キーボード + 下のナビボタン分の余白を確保して、隠れないようにする
+                        .padding(.bottom, keyboardHeight > 0 ? keyboardHeight + 120 : 0)
                     }
-                    .padding(.horizontal)
+                    .scrollDismissesKeyboard(.interactively)
                 }
                 .tag(1)
 
                 // Step 3: 年齢確認
                 VStack(spacing: 20) {
-                    Text("お子さんの年齢は")
+                    let items = ageConfirmItems
+                    Text(items.count <= 1 ? "お子さんの年齢は" : "お子さんたちの年齢は")
                         .font(.subheadline)
                         .foregroundColor(Color(hex: "5A4A42"))
-                    Text("\(ageString(from: birthDate))")
-                        .font(.largeTitle.bold())
-                        .foregroundColor(Color(hex: "5A4A42"))
+
+                    if let first = items.first, items.count <= 1 {
+                        Text(first.ageText)
+                            .font(.largeTitle.bold())
+                            .foregroundColor(Color(hex: "5A4A42"))
+                    } else {
+                        VStack(spacing: 12) {
+                            ForEach(items) { item in
+                                HStack {
+                                    Text(item.callName)
+                                        .font(.headline.weight(.semibold))
+                                        .foregroundColor(Color(hex: "5A4A42"))
+                                    Spacer()
+                                    Text(item.ageText)
+                                        .font(.title3.bold())
+                                        .foregroundColor(Color(hex: "5A4A42"))
+                                }
+                                .padding(.vertical, 10)
+                                .padding(.horizontal, 14)
+                                .background(Color.white.opacity(0.65))
+                                .cornerRadius(12)
+                            }
+                        }
+                        .frame(maxWidth: .infinity)
+                    }
                     Text("で合っていますか？")
                         .font(.subheadline)
                         .foregroundColor(Color(hex: "5A4A42"))
@@ -252,10 +385,28 @@ struct OnboardingView: View {
                 }
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { note in
+            guard let endFrame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else { return }
+            let screen = UIScreen.main.bounds
+            let overlap = max(0, screen.maxY - endFrame.minY)
+            let duration = note.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double ?? 0.25
+            withAnimation(.easeOut(duration: duration)) {
+                keyboardHeight = overlap
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { note in
+            let duration = note.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double ?? 0.25
+            withAnimation(.easeOut(duration: duration)) {
+                keyboardHeight = 0
+            }
+        }
     }
 
     var canSubmit: Bool {
-        !parentName.isEmpty && !childName.isEmpty && !childNickname.isEmpty && !teddyName.isEmpty
+        !parentName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+        !childName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+        !teddyName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+        birthDate <= Date()
     }
 
     // データ保存処理
@@ -317,11 +468,13 @@ struct OnboardingView: View {
                 try await db.collection("users").document(uid).setData(profileData)
                 print("✅ OnboardingView: 親プロフィール保存成功")
 
-                // 3. 子供プロフィールの保存
-                let childProfile = FirebaseChildProfile(
+                // 3. 子どもプロフィールの保存（メイン + きょうだいを同列に children コレクションへ作成）
+                let trimmedChildName = childName.trimmingCharacters(in: .whitespacesAndNewlines)
+                let trimmedChildNickname = childNickname.trimmingCharacters(in: .whitespacesAndNewlines)
+                let mainChildProfile = FirebaseChildProfile(
                     id: childRef.documentID,
-                    displayName: childName,
-                    nickName: childNickname.isEmpty ? childName : childNickname,
+                    displayName: trimmedChildName,
+                    nickName: trimmedChildNickname.isEmpty ? trimmedChildName : trimmedChildNickname,
                     birthDate: birthDate,
                     photoURL: photoURL,
                     teddyName: teddyName,
@@ -329,24 +482,51 @@ struct OnboardingView: View {
                     createdAt: Date()
                 )
 
-                // 手動エンコード
-                var childData: [String: Any] = [:]
-                childData["displayName"] = childProfile.displayName
-                if let nickName = childProfile.nickName {
-                    childData["nickName"] = nickName
+                var mainChildData: [String: Any] = [:]
+                mainChildData["displayName"] = mainChildProfile.displayName
+                if let nickName = mainChildProfile.nickName {
+                    mainChildData["nickName"] = nickName
                 }
-                childData["birthDate"] = Timestamp(date: childProfile.birthDate)
-                if let photoURL = childProfile.photoURL {
-                    childData["photoURL"] = photoURL
+                mainChildData["birthDate"] = Timestamp(date: mainChildProfile.birthDate)
+                if let photoURL = mainChildProfile.photoURL {
+                    mainChildData["photoURL"] = photoURL
                 }
-                if let teddyName = childProfile.teddyName {
-                    childData["teddyName"] = teddyName
+                if let teddyName = mainChildProfile.teddyName {
+                    mainChildData["teddyName"] = teddyName
                 }
-                childData["interestContext"] = [] // 空配列
-                childData["createdAt"] = Timestamp(date: childProfile.createdAt)
+                mainChildData["interestContext"] = [] // 空配列
+                mainChildData["createdAt"] = Timestamp(date: mainChildProfile.createdAt)
 
-                try await childRef.setData(childData)
-                print("✅ OnboardingView: 子供プロフィール保存成功 - childId: \(childRef.documentID)")
+                try await childRef.setData(mainChildData)
+                print("✅ OnboardingView: 子どもプロフィール保存成功（メイン） - childId: \(childRef.documentID)")
+
+                // きょうだい（任意）
+                let additionalUsed = additionalChildren.compactMap { input -> AdditionalChildInput? in
+                    let name = input.name.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let nickname = input.nickname.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if name.isEmpty && nickname.isEmpty { return nil }
+                    return input
+                }
+
+                for input in additionalUsed {
+                    let ref = db.collection("users").document(uid).collection("children").document()
+                    let name = input.name.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let nickname = input.nickname.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let displayName = !name.isEmpty ? name : nickname
+                    let nickName: String? = nickname.isEmpty ? nil : nickname
+
+                    var data: [String: Any] = [:]
+                    data["displayName"] = displayName
+                    if let nickName {
+                        data["nickName"] = nickName
+                    }
+                    data["birthDate"] = Timestamp(date: input.birthDate)
+                    data["interestContext"] = []
+                    data["createdAt"] = Timestamp(date: Date())
+
+                    try await ref.setData(data)
+                    print("✅ OnboardingView: 子どもプロフィール保存成功（きょうだい） - childId: \(ref.documentID)")
+                }
 
                 // 4. 親のcurrentChildIdを更新
                 try await db.collection("users").document(uid).updateData(["currentChildId": childRef.documentID])
@@ -375,9 +555,8 @@ struct OnboardingView: View {
             return !parentError
         case 1:
             childNameError = isEmpty(childName)
-            childNicknameError = isEmpty(childNickname)
             birthDateError = birthDate > Date()
-            return !(childNameError || childNicknameError || birthDateError)
+            return !(childNameError || birthDateError)
         case 2:
             // 年齢確認: 入力はないので常に通過
             return true

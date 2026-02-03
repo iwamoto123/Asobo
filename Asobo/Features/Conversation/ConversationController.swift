@@ -310,6 +310,9 @@ public final class ConversationController: NSObject, ObservableObject {
     var currentChildId: String?
     private var currentChildName: String?
     private var currentChildNickname: String?
+    /// HomeなどのUIから「今はこの名前を優先して呼んでほしい」を指定するためのオーバーライド
+    /// - Note: ここで指定された場合、systemPrompt側で優先的に呼びかけるよう指示する
+    var preferredCallNameOverride: String?
     // NOTE: 別ファイルのextensionから参照/更新するため internal（モジュール内限定）
     var turnCount: Int = 0
 
@@ -325,6 +328,21 @@ public final class ConversationController: NSObject, ObservableObject {
         return nil
     }
 
+    /// systemPromptで使う呼び名（UI指定のオーバーライドがあればそれを優先）
+    var effectiveCallName: String? {
+        if let override = preferredCallNameOverride?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !override.isEmpty {
+            return override
+        }
+        return childCallName
+    }
+
+    /// Homeの名前ボタンなどから呼び出す
+    public func setPreferredCallNameOverride(_ name: String?) {
+        let trimmed = name?.trimmingCharacters(in: .whitespacesAndNewlines)
+        preferredCallNameOverride = (trimmed?.isEmpty == true) ? nil : trimmed
+    }
+
     // ✅ ユーザー情報を設定するメソッド
     public func setupUser(userId: String, childId: String, childName: String? = nil, childNickname: String? = nil) {
         self.currentUserId = userId
@@ -333,6 +351,8 @@ public final class ConversationController: NSObject, ObservableObject {
         let trimmedNickname = childNickname?.trimmingCharacters(in: .whitespacesAndNewlines)
         self.currentChildName = trimmedName?.isEmpty == true ? nil : trimmedName
         self.currentChildNickname = trimmedNickname?.isEmpty == true ? nil : trimmedNickname
+        // childが切り替わったらオーバーライドはリセット（別の子に引きずらない）
+        self.preferredCallNameOverride = nil
         print("✅ ConversationController: ユーザー情報を設定 - Parent=\(userId), Child=\(childId), Name=\(childCallName ?? "n/a")")
     }
 

@@ -20,13 +20,20 @@ extension ConversationController {
 
     // MARK: - System prompt
     var currentSystemPrompt: String {
-        let callName = childCallName
+        let callName = effectiveCallName
         let nameInstruction: String
         if let callName {
+            let focusHint: String
+            if let override = preferredCallNameOverride, !override.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                focusHint = "- いまは特に「\(callName)」に向けて話してください（この名前を優先して呼ぶ）。\n"
+            } else {
+                focusHint = ""
+            }
             nameInstruction = """
         【子どもの名前】
         - 子どもは「\(callName)」。挨拶や励まし、問いかけなど自然なタイミングでときどき名前を呼んでください。
         - 同じ返答で連呼したり、文脈に合わない呼びかけはしないでください。
+        \(focusHint)
         """
         } else {
             nameInstruction = ""

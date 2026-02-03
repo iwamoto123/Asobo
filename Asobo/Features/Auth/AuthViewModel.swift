@@ -11,6 +11,7 @@ class AuthViewModel: ObservableObject {
     @Published var currentUser: User?
     @Published var userProfile: FirebaseParentProfile?
     @Published var selectedChild: FirebaseChildProfile?
+    @Published var children: [FirebaseChildProfile] = []
     @Published var isLoading = true
     @Published var isSigningIn = false
     @Published var errorMessage: String?
@@ -133,30 +134,37 @@ class AuthViewModel: ObservableObject {
             // 親データのデコード
             self.userProfile = try decodeParent(from: data, id: userId)
 
-            // 2. 子供プロフィールの取得
-            // currentChildIdがあれば優先的に取得、なければサブコレクション全体を取得して先頭を使う
-            var targetChildDoc: DocumentSnapshot?
-
-            if let currentChildId = self.userProfile?.currentChildId {
-                let childDoc = try await db.collection("users").document(userId).collection("children").document(currentChildId).getDocument()
-                if childDoc.exists {
-                    targetChildDoc = childDoc
+            // 2. 子どもプロフィールの取得（全件）
+            let childrenSnap = try await db.collection("users").document(userId).collection("children").getDocuments()
+            var decoded: [FirebaseChildProfile] = []
+            decoded.reserveCapacity(childrenSnap.documents.count)
+            for d in childrenSnap.documents {
+                let childData = d.data()
+                do {
+                    let child = try decodeChild(from: childData, id: d.documentID)
+                    decoded.append(child)
+                } catch {
+                    print("❌ AuthViewModel: 子データのデコード失敗 (childId: \(d.documentID)) - \(error)")
                 }
             }
+            // 安定した並び（作成日時があればそれ、なければ名前）
+            decoded.sort { a, b in
+                if a.createdAt != b.createdAt { return a.createdAt < b.createdAt }
+                return a.displayName < b.displayName
+            }
+            self.children = decoded
 
-            // ID指定で見つからなかった場合、一覧から取得
-            if targetChildDoc == nil {
-                let childrenSnap = try await db.collection("users").document(userId).collection("children").getDocuments()
-                targetChildDoc = childrenSnap.documents.first
+            // 3. 選択中の子（currentChildId優先）
+            if let currentChildId = self.userProfile?.currentChildId,
+               let current = decoded.first(where: { $0.id == currentChildId }) {
+                self.selectedChild = current
+            } else {
+                self.selectedChild = decoded.first
             }
 
-            // 最終判定
-            if let childDoc = targetChildDoc, let childData = childDoc.data() {
-                // 子データのデコード
-                print("📸 AuthViewModel: 子データを取得中... photoURL確認 -> \(childData["photoURL"] as? String ?? "nil")")
-                self.selectedChild = try decodeChild(from: childData, id: childDoc.documentID)
+            if self.selectedChild != nil {
                 self.authState = .main
-                print("✅ AuthViewModel: 準備完了 (Child: \(self.selectedChild?.displayName ?? "unknown"))")
+                print("✅ AuthViewModel: 準備完了 (Child: \(self.selectedChild?.displayName ?? "unknown"), children=\(decoded.count))")
             } else {
                 print("⚠️ AuthViewModel: 子どもデータが見つかりません -> Onboardingへ")
                 self.authState = .onboarding
@@ -257,3 +265,4 @@ class AuthViewModel: ObservableObject {
         return decoder
     }
 }
+

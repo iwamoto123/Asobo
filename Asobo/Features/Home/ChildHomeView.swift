@@ -32,6 +32,8 @@ public struct ChildHomeView: View {
     @State private var isBlinking = false
     @State private var isSquinting = false
     @State private var isNodding = false
+    /// Homeの名前ボタンで「いま呼んでほしい子」を指定（きょうだいがいる場合のみ）
+    @State private var preferredChildId: String?
 
     // 最初の質問パターン
     private let greetingPatterns = [
@@ -128,9 +130,16 @@ public struct ChildHomeView: View {
 
                     // 下: ユーザー台詞ボックス（下ブロックの上寄せ）
                     VStack {
-                        userSpeechCardView
-                            .padding(.horizontal, 24)
-                            .padding(.top, interGap)
+                        VStack(spacing: 10) {
+                            userSpeechCardView
+
+                            // きょうだいがいる場合のみ：名前ボタン
+                            if authVM.children.count > 1 {
+                                preferredNameButtonsView
+                            }
+                        }
+                        .padding(.horizontal, 24)
+                        .padding(.top, interGap)
                         Spacer(minLength: 0)
                     }
                     .frame(height: bottomRegion)
@@ -166,6 +175,9 @@ public struct ChildHomeView: View {
                     childNickname: child.nickName
                 )
             }
+            // 初期はオーバーライドなし
+            controller.setPreferredCallNameOverride(nil)
+            preferredChildId = nil
 
             withAnimation(.easeInOut(duration: 3.0).repeatForever(autoreverses: true)) {
                 isBreathing = true
@@ -188,6 +200,11 @@ public struct ChildHomeView: View {
 
             startEyeAnimation()
             startNoddingAnimation()
+        }
+        .onChange(of: authVM.selectedChild?.id) { _ in
+            // 選択中の子が変わったら、Homeの「呼び名優先」もリセット
+            preferredChildId = nil
+            controller.setPreferredCallNameOverride(nil)
         }
         .onDisappear {
             // ✅ タブを離れた時にセッションを停止（オプション：必要に応じてコメントアウト）
@@ -279,9 +296,14 @@ public struct ChildHomeView: View {
     }
 
     private var monitorUserText: String {
-        // ✅ 録音中：リアルタイム表示（間引き済み）を出す
+        // ✅ 録音中：
+        // - 次のユーザー発話（ライブ文字）が来るまでは「前回の確定文」を表示したままにする
+        // - ライブ文字が入ったらライブ表示へ切り替える
         if controller.isRecording {
-            return stableLiveText
+            if !stableLiveText.isEmpty {
+                return stableLiveText
+            }
+            return stableUserText
         }
         // ✅ 録音後：確定文があればそれを表示。確定が来るまでの間は直前のライブを保持。
         return !stableUserText.isEmpty ? stableUserText : stableLiveText
@@ -314,6 +336,58 @@ public struct ChildHomeView: View {
                 .stroke(Color.white.opacity(0.45), lineWidth: 1)
         )
         .shadow(color: Color.black.opacity(0.10), radius: 12, x: 0, y: 6)
+    }
+
+    private var preferredNameButtonsView: some View {
+        // childrenは「メイン + きょうだい」同列。ボタンは“呼び名（ニックネーム優先）”を表示する。
+        let items: [(id: String, label: String)] = authVM.children.compactMap { child in
+            guard let id = child.id else { return nil }
+            let nick = (child.nickName ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            let name = child.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+            let label = !nick.isEmpty ? nick : name
+            guard !label.isEmpty else { return nil }
+            return (id: id, label: label)
+        }
+
+        return HStack(spacing: 10) {
+            Text("今話しているのは")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundColor(Color(hex: "5A4A42"))
+                .lineLimit(1)
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(items, id: \.id) { item in
+                        let isSelected = (preferredChildId == item.id)
+                        Button {
+                            if preferredChildId == item.id {
+                                preferredChildId = nil
+                                controller.setPreferredCallNameOverride(nil)
+                            } else {
+                                preferredChildId = item.id
+                                controller.setPreferredCallNameOverride(item.label)
+                            }
+                        } label: {
+                            Text(item.label)
+                                .font(.system(size: 14, weight: .semibold))
+                                .padding(.vertical, 8)
+                                .padding(.horizontal, 12)
+                                .background(isSelected ? Color.anoneButton : Color.white.opacity(0.9))
+                                .foregroundColor(isSelected ? .white : Color.anoneButton)
+                                .clipShape(Capsule())
+                                .overlay(
+                                    Capsule()
+                                        .stroke(Color.anoneButton.opacity(isSelected ? 0 : 0.35), lineWidth: 1)
+                                )
+                        }
+                    }
+                }
+                .padding(.horizontal, 2)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("今話しているのは、呼んでほしい名前を選ぶ")
     }
 
     private func handleMicButtonTap() {

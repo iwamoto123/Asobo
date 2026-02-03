@@ -38,13 +38,11 @@ class ImageCache {
 struct ProfileView: View {
     @EnvironmentObject var authVM: AuthViewModel
 
-    @State private var childName = ""
-    @State private var childNickName = ""
     @State private var teddyName = ""
     @State private var parentName = ""
     @State private var loginMethod = ""
-    @State private var birthDate: Date?
-    @State private var birthDatePickerDate = Date()
+    @State private var childEditors: [ChildEditor] = []
+    @State private var loadedChildEditorIds: [String] = []
 
     @State private var selectedPhotoItem: PhotosPickerItem?
     @State private var selectedPhotoData: Data?
@@ -56,249 +54,332 @@ struct ProfileView: View {
     @State private var isSaving = false
     @State private var message: String?
 
+    private struct ChildEditor: Identifiable, Equatable {
+        let id: String // childId
+        var displayName: String
+        var nickName: String
+        var birthDate: Date
+    }
+
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
-
-                Text("子どものプロフィール")
-                    .font(.title3.weight(.semibold))
-                    .foregroundColor(Color(hex: "5A4A42"))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-
-                HStack(alignment: .top, spacing: 16) {
-                    VStack(spacing: 12) {
-                        PhotosPicker(selection: $selectedPhotoItem, matching: .images) {
-                            if let data = selectedPhotoData, let uiImage = UIImage(data: data) {
-                                Image(uiImage: uiImage)
-                                    .resizable()
-                                    .scaledToFill()
-                                    .frame(width: 90, height: 90)
-                                    .clipShape(Circle())
-                            } else if let image = profileImage {
-                                image
-                                    .resizable()
-                                    .scaledToFill()
-                                    .frame(width: 90, height: 90)
-                                    .clipShape(Circle())
-                            } else if currentPhotoURLString != nil {
-                                ProgressView().frame(width: 90, height: 90)
-                            } else {
-                                Circle()
-                                    .fill(Color.gray.opacity(0.2))
-                                    .frame(width: 90, height: 90)
-                                    .overlay(
-                                        Image(systemName: "camera.fill")
-                                            .font(.system(size: 32))
-                                            .foregroundColor(.gray)
-                                    )
-                            }
-                        }
-                        .buttonStyle(.plain)
-                        Text("画像をアップロード")
-                            .font(.caption)
-                            .foregroundColor(.gray)
-                    }
-
-                    VStack(alignment: .leading, spacing: 12) {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text("子どもの名前")
-                                .font(.caption)
-                                .foregroundColor(.gray)
-                            TextField("お名前", text: $childName)
-                                .textFieldStyle(.roundedBorder)
-                        }
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text("呼び方")
-                                .font(.caption)
-                                .foregroundColor(.gray)
-                            TextField("呼び名", text: $childNickName)
-                                .textFieldStyle(.roundedBorder)
-                        }
-                        if let bd = birthDate {
-                            VStack(alignment: .leading, spacing: 6) {
-                                Text("年齢")
-                                    .font(.caption)
-                                    .foregroundColor(.gray)
-                                Text(ageString(from: bd))
-                                    .font(.body)
-                                    .foregroundColor(Color(hex: "5A4A42"))
-                                DatePicker("誕生日", selection: $birthDatePickerDate, displayedComponents: .date)
-                                    .datePickerStyle(.compact)
-                                    .labelsHidden()
-                                    .onChange(of: birthDatePickerDate) { newValue in
-                                        self.birthDate = newValue
-                                    }
-                            }
-                        }
-                    }
-                }
-
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("ぬいぐるみの呼び方")
-                        .font(.caption)
-                        .foregroundColor(.gray)
-                    TextField("例：くまちゃん", text: $teddyName)
-                        .textFieldStyle(.roundedBorder)
-                }
-
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("保護者の名前")
-                        .font(.caption)
-                        .foregroundColor(.gray)
-                    TextField("保護者のお名前", text: $parentName)
-                        .textFieldStyle(.roundedBorder)
-                }
-
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("ログイン方法")
-                        .font(.caption)
-                        .foregroundColor(.gray)
-                    Text(loginMethod.isEmpty ? "不明" : loginMethod)
-                        .font(.body)
-                        .foregroundColor(Color(hex: "5A4A42"))
-                }
-
-                if let message = message {
-                    Text(message)
-                        .font(.caption)
-                        .foregroundColor(.red)
-                }
-
-                Button(action: saveProfile) {
-                    if isSaving {
-                        ProgressView().tint(.white)
-                    } else {
-                        Text("保存する")
-                            .fontWeight(.bold)
-                    }
-                }
-                .frame(maxWidth: .infinity)
-                .padding()
-                .background(Color.anoneButton)
-                .foregroundColor(.white)
-                .cornerRadius(14)
-                .disabled(isSaving) // 保存中は連打防止
-
-                Button(role: .destructive) {
-                    authVM.signOut()
-                } label: {
-                    Text("ログアウト")
-                        .frame(maxWidth: .infinity)
-                        .padding()
-                }
-                .background(Color.gray.opacity(0.1))
-                .cornerRadius(12)
-            }
-            .padding()
-        }
-        .navigationTitle("プロフィール")
-        .navigationBarTitleDisplayMode(.inline)
-        // ① 画面が表示された時にロード
-        .onAppear {
-            loadInitialValues()
-            Task { await loadProfileImageIfNeeded(forceReload: true) }
-        }
-        // ② 【重要】ViewModelのデータ取得完了を検知してロード
-        // idを監視することで、データが更新されたときに検知できる
-        .onChange(of: authVM.selectedChild?.id) { _ in
-            loadInitialValues()
-            Task { await loadProfileImageIfNeeded(forceReload: true) }
-        }
-        .onChange(of: authVM.userProfile?.id) { _ in
-            loadInitialValues()
-        }
-        // isLoadingがfalseになったとき（データ取得完了時）にもロード
-        .onChange(of: authVM.isLoading) { isLoading in
-            if !isLoading {
+        content
+            .navigationTitle("プロフィール")
+            .navigationBarTitleDisplayMode(.inline)
+            .onAppear {
                 loadInitialValues()
                 Task { await loadProfileImageIfNeeded(forceReload: true) }
             }
-        }
-        .onChange(of: authVM.selectedChild?.photoURL) { newURL in
-            currentPhotoURLString = newURL
-            Task { await loadProfileImageIfNeeded(forceReload: true) }
-        }
-        .onChange(of: currentPhotoURLString) { _ in
-            Task { await loadProfileImageIfNeeded(forceReload: true) }
-        }
-        // 写真選択時の処理
-        .onChange(of: selectedPhotoItem) { newItem in
-            Task {
-                if let data = try? await newItem?.loadTransferable(type: Data.self),
-                   let uiImage = UIImage(data: data) {
-                    await MainActor.run {
-                        imageForCropping = uiImage
+            .onChange(of: authVM.selectedChild?.id) { _ in
+                loadInitialValues()
+                Task { await loadProfileImageIfNeeded(forceReload: true) }
+            }
+            .onChange(of: authVM.userProfile?.id) { _ in
+                loadInitialValues()
+            }
+            .onChange(of: childrenIdsKey) { _ in
+                loadInitialValues()
+            }
+            .onChange(of: authVM.isLoading) { isLoading in
+                if !isLoading {
+                    loadInitialValues()
+                    Task { await loadProfileImageIfNeeded(forceReload: true) }
+                }
+            }
+            .onChange(of: authVM.selectedChild?.photoURL) { newURL in
+                currentPhotoURLString = newURL
+                Task { await loadProfileImageIfNeeded(forceReload: true) }
+            }
+            .onChange(of: currentPhotoURLString) { _ in
+                Task { await loadProfileImageIfNeeded(forceReload: true) }
+            }
+            .onChange(of: selectedPhotoItem) { newItem in
+                Task {
+                    if let data = try? await newItem?.loadTransferable(type: Data.self),
+                       let uiImage = UIImage(data: data) {
+                        await MainActor.run {
+                            imageForCropping = uiImage
+                        }
                     }
                 }
             }
-        }
-        .sheet(isPresented: Binding(
-            get: { imageForCropping != nil },
-            set: { isPresented in
-                if !isPresented { imageForCropping = nil }
+            .sheet(isPresented: Binding(
+                get: { imageForCropping != nil },
+                set: { isPresented in
+                    if !isPresented { imageForCropping = nil }
+                }
+            )) {
+                if let imageForCropping {
+                    AvatarCropperView(
+                        image: imageForCropping,
+                        onCancel: {
+                            self.imageForCropping = nil
+                        },
+                        onCrop: { cropped in
+                            self.selectedPhotoData = cropped.jpegData(compressionQuality: 0.9)
+                            self.imageForCropping = nil
+                        }
+                    )
+                }
             }
-        )) {
-            if let imageForCropping {
-                AvatarCropperView(
-                    image: imageForCropping,
-                    onCancel: {
-                        self.imageForCropping = nil
-                    },
-                    onCrop: { cropped in
-                        self.selectedPhotoData = cropped.jpegData(compressionQuality: 0.9)
-                        self.imageForCropping = nil
-                    }
+    }
+
+    private var childrenIdsKey: String {
+        authVM.children.map { $0.id ?? "" }.joined(separator: "|")
+    }
+
+    private var content: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 24) {
+                headerSection
+                avatarSection
+                childrenEditorsSection
+                teddySection
+                parentSection
+                loginSection
+                messageSection
+                saveButton
+                logoutButton
+            }
+            .padding()
+        }
+    }
+
+    private var headerSection: some View {
+        Text("子どものプロフィール")
+            .font(.title3.weight(.semibold))
+            .foregroundColor(Color(hex: "5A4A42"))
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var avatarSection: some View {
+        HStack(alignment: .top, spacing: 16) {
+            VStack(spacing: 12) {
+                PhotosPicker(selection: $selectedPhotoItem, matching: .images) {
+                    avatarContent
+                }
+                .buttonStyle(.plain)
+                Text("画像をアップロード")
+                    .font(.caption)
+                    .foregroundColor(.gray)
+            }
+            Spacer()
+        }
+    }
+
+    @ViewBuilder
+    private var avatarContent: some View {
+        if let data = selectedPhotoData, let uiImage = UIImage(data: data) {
+            Image(uiImage: uiImage)
+                .resizable()
+                .scaledToFill()
+                .frame(width: 90, height: 90)
+                .clipShape(Circle())
+        } else if let image = profileImage {
+            image
+                .resizable()
+                .scaledToFill()
+                .frame(width: 90, height: 90)
+                .clipShape(Circle())
+        } else if currentPhotoURLString != nil {
+            ProgressView().frame(width: 90, height: 90)
+        } else {
+            Circle()
+                .fill(Color.gray.opacity(0.2))
+                .frame(width: 90, height: 90)
+                .overlay(
+                    Image(systemName: "camera.fill")
+                        .font(.system(size: 32))
+                        .foregroundColor(.gray)
                 )
+        }
+    }
+
+    private var childrenEditorsSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("お子さまたち（名前・呼び方・誕生日）")
+                .font(.subheadline.weight(.semibold))
+                .foregroundColor(Color(hex: "5A4A42"))
+
+            if childEditors.isEmpty {
+                Text("子ども情報が見つかりません。")
+                    .font(.footnote)
+                    .foregroundColor(.gray)
+            } else {
+                ForEach($childEditors) { $c in
+                    ChildEditorCard(editor: $c)
+                }
             }
         }
     }
 
-    private func loadInitialValues() {
-        // データがまだロードされていない場合は何もしない（既存入力を消さないため）
-        // ただし、画像URLだけは、selectedChildがnilでも、isLoadingがfalseなら設定を試みる（初回立ち上げ時の問題を解決）
-        guard let child = authVM.selectedChild else {
-            // selectedChildがnilの場合、画像URLだけは設定を試みる（初回立ち上げ時の問題を解決）
-            if !authVM.isLoading, let urlString = authVM.selectedChild?.photoURL {
-                print("📸 ProfileView: loadInitialValues - selectedChildがnilだが、photoURLを設定: \(urlString)")
-                if currentPhotoURLString != urlString {
-                    currentPhotoURLString = urlString
+    private var teddySection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("ぬいぐるみの呼び方")
+                .font(.caption)
+                .foregroundColor(.gray)
+            TextField("例：くまちゃん", text: $teddyName)
+                .textFieldStyle(.roundedBorder)
+        }
+    }
+
+    private var parentSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("保護者の名前")
+                .font(.caption)
+                .foregroundColor(.gray)
+            TextField("保護者のお名前", text: $parentName)
+                .textFieldStyle(.roundedBorder)
+        }
+    }
+
+    private var loginSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("ログイン方法")
+                .font(.caption)
+                .foregroundColor(.gray)
+            Text(loginMethod.isEmpty ? "不明" : loginMethod)
+                .font(.body)
+                .foregroundColor(Color(hex: "5A4A42"))
+        }
+    }
+
+    @ViewBuilder
+    private var messageSection: some View {
+        if let message = message {
+            Text(message)
+                .font(.caption)
+                .foregroundColor(.red)
+        }
+    }
+
+    private var saveButton: some View {
+        Button(action: saveProfile) {
+            if isSaving {
+                ProgressView().tint(.white)
+            } else {
+                Text("保存する")
+                    .fontWeight(.bold)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding()
+        .background(Color.anoneButton)
+        .foregroundColor(.white)
+        .cornerRadius(14)
+        .disabled(isSaving)
+    }
+
+    private var logoutButton: some View {
+        Button(role: .destructive) {
+            authVM.signOut()
+        } label: {
+            Text("ログアウト")
+                .frame(maxWidth: .infinity)
+                .padding()
+        }
+        .background(Color.gray.opacity(0.1))
+        .cornerRadius(12)
+    }
+
+    private struct ChildEditorCard: View {
+        @Binding var editor: ChildEditor
+
+        var body: some View {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 10) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("子どもの名前")
+                            .font(.caption)
+                            .foregroundColor(.gray)
+                        TextField("お名前", text: $editor.displayName)
+                            .textFieldStyle(.roundedBorder)
+                    }
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("呼び方")
+                            .font(.caption)
+                            .foregroundColor(.gray)
+                        TextField("呼び名", text: $editor.nickName)
+                            .textFieldStyle(.roundedBorder)
+                    }
+                }
+
+                HStack {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("年齢")
+                            .font(.caption)
+                            .foregroundColor(.gray)
+                        Text(ageString(from: editor.birthDate))
+                            .font(.body)
+                            .foregroundColor(Color(hex: "5A4A42"))
+                    }
+                    Spacer()
+                    DatePicker("誕生日", selection: $editor.birthDate, in: Date.distantPast...Date(), displayedComponents: .date)
+                        .datePickerStyle(.compact)
+                        .labelsHidden()
                 }
             }
-            return
+            .padding(12)
+            .background(Color.white.opacity(0.55))
+            .cornerRadius(12)
         }
 
-        // テキストフィールドが空の場合のみセット（入力中を邪魔しない）
-        // または、常に最新データを正とするなら強制上書きする。今回は強制上書きパターン。
+        private func ageString(from birthDate: Date) -> String {
+            let calendar = Calendar.current
+            let now = Date()
+            let years = calendar.dateComponents([.year], from: birthDate, to: now).year ?? 0
+            let anchor = calendar.date(byAdding: .year, value: years, to: birthDate) ?? birthDate
+            let months = calendar.dateComponents([.month], from: anchor, to: now).month ?? 0
+            return "\(years)歳 \(months)ヶ月"
+        }
+    }
 
-        childName = child.displayName
-        childNickName = child.nickName ?? ""
-        teddyName = child.teddyName ?? ""
-
+    private func loadInitialValues() {
+        // 親
         if let user = authVM.userProfile {
             parentName = user.parentName ?? user.displayName ?? ""
         }
 
-        birthDate = child.birthDate
-        birthDatePickerDate = child.birthDate
+        // 子ども一覧（編集用）: childId一覧が変わった時だけ再構築（編集中の上書きを避ける）
+        let newIds = authVM.children.compactMap { $0.id }
+        if loadedChildEditorIds != newIds {
+            childEditors = authVM.children.compactMap { c in
+                guard let id = c.id else { return nil }
+                return ChildEditor(
+                    id: id,
+                    displayName: c.displayName,
+                    nickName: c.nickName ?? "",
+                    birthDate: c.birthDate
+                )
+            }
+            loadedChildEditorIds = newIds
+        }
 
-        // 画像の更新: selectedPhotoDataがnilの時だけURLを更新（ユーザーが選択中の画像を優先）
-        if selectedPhotoData == nil {
-            if let urlString = child.photoURL {
-                print("📸 ProfileView: loadInitialValues - photoURL取得: \(urlString)")
-                // URL文字列が変更された場合のみ更新
-                if currentPhotoURLString != urlString {
-                    print("📸 ProfileView: loadInitialValues - URL変更検出、強制再読み込み（前: \(currentPhotoURLString ?? "nil"), 新: \(urlString)）")
-                    // 直接新しいURL文字列を設定（.id()モディファイアにより、URL文字列が変更されれば自動的に再読み込みされる）
-                    currentPhotoURLString = urlString
+        // 選択中の子（写真・ぬいぐるみ）
+        if let child = authVM.selectedChild {
+            teddyName = child.teddyName ?? ""
+
+            // 画像の更新: selectedPhotoDataがnilの時だけURLを更新（ユーザーが選択中の画像を優先）
+            if selectedPhotoData == nil {
+                if let urlString = child.photoURL {
+                    print("📸 ProfileView: loadInitialValues - photoURL取得: \(urlString)")
+                    if currentPhotoURLString != urlString {
+                        print("📸 ProfileView: loadInitialValues - URL変更検出、強制再読み込み（前: \(currentPhotoURLString ?? "nil"), 新: \(urlString)）")
+                        currentPhotoURLString = urlString
+                    } else {
+                        print("📸 ProfileView: loadInitialValues - URL変更なし")
+                    }
                 } else {
-                    print("📸 ProfileView: loadInitialValues - URL変更なし")
+                    print("⚠️ ProfileView: loadInitialValues - photoURLがnil")
+                    currentPhotoURLString = nil
                 }
             } else {
-                print("⚠️ ProfileView: loadInitialValues - photoURLがnil")
-                currentPhotoURLString = nil
+                print("ℹ️ ProfileView: loadInitialValues - selectedPhotoDataがあるため、URLは更新しません")
             }
         } else {
-            print("ℹ️ ProfileView: loadInitialValues - selectedPhotoDataがあるため、URLは更新しません")
+            // selectedChildがnilの場合は写真URLをクリア
+            if selectedPhotoData == nil {
+                currentPhotoURLString = nil
+            }
         }
 
         loginMethod = authVM.currentUser?.providerData.first.map { provider in
@@ -316,7 +397,7 @@ struct ProfileView: View {
             message = "ログイン情報が見つかりません"
             return
         }
-        guard let childId = authVM.selectedChild?.id else {
+        guard let selectedChildId = authVM.selectedChild?.id else {
             message = "子どもの情報が取得できません"
             return
         }
@@ -338,7 +419,7 @@ struct ProfileView: View {
                     }
 
                     let storage = Storage.storage(url: "gs://asobo-539e5.firebasestorage.app")
-                    let ref = storage.reference().child("users/\(uid)/children/\(childId)/photo.jpg")
+                    let ref = storage.reference().child("users/\(uid)/children/\(selectedChildId)/photo.jpg")
 
                     let metadata = StorageMetadata()
                     metadata.contentType = "image/jpeg"
@@ -357,23 +438,31 @@ struct ProfileView: View {
                 parentData["parentName"] = parentName
                 try await db.collection("users").document(uid).setData(parentData, merge: true)
 
-                // 子プロフィール更新
-                var childData: [String: Any] = [:]
-                childData["displayName"] = childName
-                childData["nickName"] = childNickName
-                childData["teddyName"] = teddyName
-                if let birthDate = birthDate {
-                    childData["birthDate"] = Timestamp(date: birthDate)
-                }
-                if let photoURL = photoURL {
-                    childData["photoURL"] = photoURL
-                    print("📸 ProfileView: Firestoreに保存するphotoURL: \(photoURL)")
-                } else {
-                    print("⚠️ ProfileView: photoURLがnilのため、Firestoreには保存しません")
-                }
+                // 子プロフィール更新（全員分: 名前/呼び方/誕生日）
+                for c in childEditors {
+                    let displayName = c.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let nick = c.nickName.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !displayName.isEmpty else { continue }
 
-                try await db.collection("users").document(uid).collection("children").document(childId).setData(childData, merge: true)
-                print("✅ ProfileView: Firestoreへの保存完了")
+                    var childData: [String: Any] = [:]
+                    childData["displayName"] = displayName
+                    childData["nickName"] = nick.isEmpty ? displayName : nick
+                    childData["birthDate"] = Timestamp(date: c.birthDate)
+
+                    // 選択中の子だけ: ぬいぐるみ/写真
+                    if c.id == selectedChildId {
+                        childData["teddyName"] = teddyName
+                        if let photoURL = photoURL {
+                            childData["photoURL"] = photoURL
+                            print("📸 ProfileView: Firestoreに保存するphotoURL: \(photoURL)")
+                        } else {
+                            print("⚠️ ProfileView: photoURLがnilのため、Firestoreには保存しません")
+                        }
+                    }
+
+                    try await db.collection("users").document(uid).collection("children").document(c.id).setData(childData, merge: true)
+                }
+                print("✅ ProfileView: Firestoreへの保存完了（children=\(childEditors.count)）")
 
                 // 選択画像データを先にクリア（URL表示に戻す）
                 await MainActor.run {
