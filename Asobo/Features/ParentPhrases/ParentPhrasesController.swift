@@ -154,8 +154,7 @@ public final class ParentPhrasesController: ObservableObject {
         do {
             audioEngine.prepare()
             if !audioEngine.isRunning {
-                // ✅ AudioSessionは触らない（ハンズフリーへの影響をゼロにする）
-            try audioEngine.start()
+                try audioEngine.start()
                 print("✅ ParentPhrasesController: AudioEngine started (\(reason))")
             }
             return true
@@ -163,6 +162,24 @@ public final class ParentPhrasesController: ObservableObject {
             print("❌ ParentPhrasesController: AudioEngine start failed (\(reason)) - \(error.localizedDescription)")
             return false
         }
+    }
+
+    /// ✅ 非Bluetooth時に Receiver（受話口）へ落ちた場合だけ、スピーカーへ戻す
+    /// - Note: 声かけ再生で .playback へ切り替えると「メディア音量(0になりがち)」へ切り替わり無音になり得るため、
+    ///         カテゴリ/モードは触らず、ルーティングだけを最低限補強する。
+    private func ensureSpeakerOutputIfNoBluetooth(reason: String) {
+        let s = AVAudioSession.sharedInstance()
+        let hasBluetoothOutput = s.currentRoute.outputs.contains(where: { out in
+            out.portType == .bluetoothHFP || out.portType == .bluetoothA2DP || out.portType == .bluetoothLE
+        })
+        guard !hasBluetoothOutput else { return }
+        let isReceiver = s.currentRoute.outputs.contains(where: { $0.portType == .builtInReceiver })
+        guard isReceiver else { return } // 既にSpeakerなら触らない（音量メーターの変化を減らす）
+        try? s.overrideOutputAudioPort(.speaker)
+        #if canImport(UIKit)
+        UIDevice.current.isProximityMonitoringEnabled = false
+        #endif
+        print("📢 ParentPhrasesController: speaker override applied (receiver->speaker, no BT) (\(reason))")
     }
 
     private func startStandaloneVoiceCapture() throws {
@@ -289,6 +306,10 @@ public final class ParentPhrasesController: ObservableObject {
     private func playCard(_ card: PhraseCard, requestId: String) async {
         currentPlayRequestId = requestId
         ttsEngine.beginRequest(requestId)
+
+        // ✅ 非Bluetooth時の受話口落ち対策（カテゴリ切替はしない）
+        ensureSpeakerOutputIfNoBluetooth(reason: "playCard")
+        audioEngine.mainMixerNode.outputVolume = 1.0
 
         guard ensureAudioEngineRunning(reason: "playCard") else { return }
 

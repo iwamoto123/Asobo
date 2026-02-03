@@ -124,20 +124,21 @@ public final class AudioSessionManager {
 
         print("🔄 AudioSessionManager: ルート変更検出 - reason: \(reason), hasBluetooth: \(hasBluetoothOutput)")
 
-        switch reason {
-        case .newDeviceAvailable, .oldDeviceUnavailable:
-            // Bluetooth接続/切断時に出力先を調整
-            if !hasBluetoothOutput {
-                // Bluetooth切断時：スピーカー出力を強制
-                try? session.overrideOutputAudioPort(.speaker)
-                print("📢 AudioSessionManager: Bluetooth切断 - スピーカー出力に切り替え")
-            } else {
-                // Bluetooth接続時：オーバーライドを解除（イヤホンに出力）
-                try? session.overrideOutputAudioPort(.none)
-                print("🎧 AudioSessionManager: Bluetooth接続 - イヤホン出力に切り替え")
-            }
-        default:
-            break
+        // ✅ categoryChange(=3) はアプリ内の設定変更（mode切替など）でも発生し、
+        // BT接続中はこの瞬間だけ「BT未接続」に見えることがある。
+        // ただし非BTでは categoryChange でも Receiver に落ちることがあるため、非BTは補正する。
+        if reason == .categoryChange, hasBluetoothOutput {
+            print("ℹ️ AudioSessionManager: route override skipped (categoryChange, bluetooth=true)")
+            return
+        }
+
+        // それ以外は常に出力先を補正する（受話口落ち・BT切替対策）
+        if !hasBluetoothOutput {
+            try? session.overrideOutputAudioPort(.speaker)
+            print("📢 AudioSessionManager: スピーカー出力を強制（Bluetooth未接続、reason=\(reason.rawValue)）")
+        } else {
+            try? session.overrideOutputAudioPort(.none)
+            print("🎧 AudioSessionManager: オーバーライド解除（Bluetooth接続、reason=\(reason.rawValue)）")
         }
     }
 

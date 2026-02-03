@@ -196,7 +196,7 @@ struct ProfileView: View {
 
     private var childrenEditorsSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("お子さまたち（名前・呼び方・誕生日）")
+            Text("お子さまたち")
                 .font(.subheadline.weight(.semibold))
                 .foregroundColor(Color(hex: "5A4A42"))
 

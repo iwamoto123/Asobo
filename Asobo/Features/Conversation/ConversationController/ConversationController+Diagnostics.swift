@@ -116,6 +116,14 @@ extension ConversationController {
         let outputs = session.currentRoute.outputs.map { $0.portType.rawValue }.joined(separator: ",")
         print("🔄 ConversationController: audio route change detected - reason=\(reason.rawValue), outputs=[\(outputs.isEmpty ? "none" : outputs)]")
 
+        // ✅ categoryChange(=3) はアプリ内のAudioSession再設定（例: 画面遷移/再生準備）でも頻発する。
+        // ここで毎回 prepareForNextStream() / engine restart を走らせると、再生中にバッファが破棄されたり
+        // RemoteIOの初期化が競合して 561015905 で落ちることがあるため、無視する。
+        if reason == .categoryChange {
+            print("ℹ️ ConversationController: route change ignored (categoryChange)")
+            return
+        }
+
         // ルート変更でパイプラインが途切れた場合に備えて再開を試みる
         player.prepareForNextStream()
         if !sharedAudioEngine.isRunning {

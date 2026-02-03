@@ -249,6 +249,27 @@ public final class PlayerNodeStreamer {
     return 20.0 * log10(Double(rms))
   }
 
+  /// ✅ IOサイクルが来ている時だけ安全に play() する（"player did not see an IO cycle." abort回避）
+  private func safePlayIfPossible(context: String) -> Bool {
+    guard engine.isRunning else {
+      print("⚠️ PlayerNodeStreamer: safePlay skipped (\(context)) - engine is not running")
+      return false
+    }
+    // lastRenderTime が nil の間は「まだIOサイクルが来ていない」可能性が高い
+    if engine.outputNode.lastRenderTime == nil {
+      print("⚠️ PlayerNodeStreamer: safePlay skipped (\(context)) - no IO cycle yet (outputNode.lastRenderTime=nil)")
+      return false
+    }
+    if !player.isPlaying {
+      player.play()
+      stateLock.lock()
+      let stopFlag = stopRequested
+      stateLock.unlock()
+      print("▶️ PlayerNodeStreamer: player.play() issued (\(context)) - stopRequested=\(stopFlag), engineRunning=\(engine.isRunning), pendingBuffers=\(pendingBufferCount)")
+    }
+    return true
+  }
+
   /// 受信した Int16/mono（24kHz）のPCMチャンクを再生
   public func playChunk(_ data: Data) {
     playChunk(data, forceStart: false)
@@ -428,11 +449,13 @@ public final class PlayerNodeStreamer {
     }
     
     if !player.isPlaying {
-      player.play()
-      stateLock.lock()
-      let stopFlag = stopRequested
-      stateLock.unlock()
-      print("▶️ PlayerNodeStreamer: player.play() issued - stopRequested=\(stopFlag), engineRunning=\(engine.isRunning), pendingBuffers=\(pendingBufferCount)")
+      // ✅ IOサイクル前の abort 回避：安全に play() できる状態かを確認
+      if !safePlayIfPossible(context: "playChunk") {
+        // 一度だけ軽くリトライ（IOサイクルが次tickで来ることがある）
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) { [weak self] in
+          _ = self?.safePlayIfPossible(context: "playChunk.retry")
+        }
+      }
     }
   }
 
@@ -482,9 +505,9 @@ public final class PlayerNodeStreamer {
       }
     }
     player.volume = 1.0  // ✅ volumeを戻す
-    if !player.isPlaying {
-      player.play()
-    }
+    // ⚠️ ここで player.play() すると、AudioSession未アクティブ等でIOサイクルがまだ来ていない場合に
+    // "player did not see an IO cycle." でabortすることがある。
+    // 再生開始は、バッファをスケジュールした playChunk() 側で安全に行う。
   }
 
   /// ✅ ローカルの音声ファイル（相槌など）を再生する
@@ -515,7 +538,11 @@ public final class PlayerNodeStreamer {
 
     // ファイルをスケジュールして即再生
     player.scheduleFile(file, at: nil, completionHandler: nil)
-    player.play()
+    if !safePlayIfPossible(context: "playLocalFile") {
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) { [weak self] in
+        _ = self?.safePlayIfPossible(context: "playLocalFile.retry")
+      }
+    }
   }
   
   /// ✅ 参考プロジェクトパターン：再生中かどうかを確認

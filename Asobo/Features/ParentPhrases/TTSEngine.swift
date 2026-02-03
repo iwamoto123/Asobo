@@ -105,10 +105,16 @@ public final class TTSEngine: TTSEngineProtocol {
 
         print("✅ TTSEngine[\(requestId)]: 音声データ準備完了 - size=\(pcmData.count) bytes")
 
+        // ✅ 声かけは「小さすぎる」ことがUX的に致命的なので、PCM16をピーク正規化して持ち上げる
+        // - iOSのシステム音量自体は上げられない（outputVolumeは読み取り専用）
+        // - 代わりにサンプル振幅を増やす（上限付き・クリップ回避）
+        // - BTは歪み/耳障りを避けて少し控えめな目標ピークにする
+        let normalizedPCM = Self.normalizePCM16ForParentPhrases(pcmData)
+
         // ✅ 末尾の音切れ対策：短い無音を足す（24kHz/mono/PCM16）
         let tailSilenceSec: Double = 0.12
         let tailBytes = Int(24_000 * tailSilenceSec) * 2
-        var pcmWithTail = pcmData
+        var pcmWithTail = normalizedPCM
         pcmWithTail.append(Data(repeating: 0, count: tailBytes))
 
         // PlayerNodeStreamerで再生
@@ -137,6 +143,63 @@ public final class TTSEngine: TTSEngineProtocol {
             player.stop()
         }
         print("✅ TTSEngine[\(requestId)]: 再生完了 - 終了通知")
+    }
+
+    // MARK: - Gain helpers (ParentPhrases only)
+    private static func parentPhrasesNormalizeTargetPeakForCurrentRoute() -> Float {
+        let s = AVAudioSession.sharedInstance()
+        let outs = s.currentRoute.outputs.map { $0.portType }
+        let isBluetooth = outs.contains(where: { port in
+            port == .bluetoothA2DP || port == .bluetoothHFP || port == .bluetoothLE
+        })
+        // 目標ピーク（Int16.max に対する割合）
+        let ratio: Float = isBluetooth ? 0.72 : 0.90
+        let peak = ratio * Float(Int16.max)
+        print("🔊 TTSEngine: ParentPhrases targetPeak=\(Int(peak)) (ratio=\(ratio), outputs=\(outs.map(\.rawValue).joined(separator: ",")))")
+        return peak
+    }
+
+    /// 24kHz/mono/PCM16（little-endian）を想定して、目標ピークへ正規化（上限付き）
+    private static func normalizePCM16ForParentPhrases(_ data: Data) -> Data {
+        guard data.count % 2 == 0 else { return data }
+
+        // 1) peak を測る
+        var peakAbs: Int16 = 0
+        data.withUnsafeBytes { raw in
+            let ptr = raw.bindMemory(to: Int16.self)
+            for i in 0..<ptr.count {
+                let v = ptr[i]
+                let a = v == Int16.min ? Int16.max : Int16(abs(Int(v)))
+                if a > peakAbs { peakAbs = a }
+            }
+        }
+        if peakAbs <= 0 { return data }
+
+        // 2) 目標ピークに合わせて gain を決める（上限付き）
+        let targetPeak = parentPhrasesNormalizeTargetPeakForCurrentRoute()
+        let rawGain = targetPeak / Float(peakAbs)
+        let gain = min(max(rawGain, 1.0), 8.0) // 過剰ブーストでノイズが目立つのを防ぐ
+        let gainText = String(format: "%.2f", gain)
+        let rawGainText = String(format: "%.2f", rawGain)
+        print("🔊 TTSEngine: ParentPhrases normalize peakAbs=\(peakAbs), gain=\(gainText) (rawGain=\(rawGainText))")
+        guard gain > 1.001 else { return data }
+
+        var out = Data(count: data.count)
+        out.withUnsafeMutableBytes { outRaw in
+            data.withUnsafeBytes { inRaw in
+                let inPtr = inRaw.bindMemory(to: Int16.self)
+                let outPtr = outRaw.bindMemory(to: Int16.self)
+                let n = min(inPtr.count, outPtr.count)
+                for i in 0..<n {
+                    let x = Float(inPtr[i])
+                    var y = x * gain
+                    if y > Float(Int16.max) { y = Float(Int16.max) }
+                    if y < Float(Int16.min) { y = Float(Int16.min) }
+                    outPtr[i] = Int16(y)
+                }
+            }
+        }
+        return out
     }
 
     /// 進行中の再生をキャンセル（次の再生を優先）

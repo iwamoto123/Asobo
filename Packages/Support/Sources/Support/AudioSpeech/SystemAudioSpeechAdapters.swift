@@ -5,7 +5,15 @@ public final class SystemAudioSessionManager: AudioSessionManaging {
     public init() {}
     public func configure() throws {
         let s = AVAudioSession.sharedInstance()
-        try s.setCategory(.record, mode: .measurement, options: .duckOthers)
+        // ✅ Local STT中でも「再生（TTS/効果音）」が完全に死なないようにする
+        // - .record のままだと、その後に再生系（声かけカード等）へ戻す処理がない限り音が極小/無音になりやすい
+        // - .defaultToSpeaker で受話口ルートを避け、iPhoneの音量ボタン（メディア音量）に自然に追従させる
+        // - Speech用途なので mode は .measurement のまま維持（音声処理を抑えて認識を安定）
+        try s.setCategory(
+            .playAndRecord,
+            mode: .measurement,
+            options: [.defaultToSpeaker, .allowBluetooth, .allowBluetoothA2DP]
+        )
         try s.setActive(true, options: .notifyOthersOnDeactivation)
     }
 }
