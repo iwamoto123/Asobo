@@ -10,6 +10,9 @@ import Services
 import Support
 import DataStores
 import Network
+#if canImport(UIKit)
+import UIKit
+#endif
 
 @MainActor
 public final class ConversationController: NSObject, ObservableObject {
@@ -277,6 +280,15 @@ public final class ConversationController: NSObject, ObservableObject {
     var inMemoryTurns: [FirebaseTurn] = []       // 会話ログ（要約用）
     // NOTE: 別ファイルのextensionから参照/更新するため internal（モジュール内限定）
     var routeChangeObserver: Any?
+    
+    // MARK: - App lifecycle / background keep-alive
+    var lifecycleObserverTokens: [NSObjectProtocol] = []
+    #if canImport(UIKit)
+    var backgroundTaskId: UIBackgroundTaskIdentifier = .invalid
+    #endif
+    /// 他アプリ（YouTube等）にオーディオを奪われて `shouldResume=false` になった場合に、
+    /// フォアグラウンド復帰時に自動でハンズフリーを復旧するためのフラグ。
+    var needsHandsFreeRecoveryOnForeground: Bool = false
 
     // MARK: - Fallback TTS tuning (audio-only; UIテキストは変えない)
     /// フォールバックTTSの音声は、入力テキスト側の軽い整形と再生側のVoice FXでテンションを調整する。
@@ -462,6 +474,7 @@ public final class ConversationController: NSObject, ObservableObject {
         // ✅ 共通エンジンを使用してPlayerNodeStreamerを初期化（AEC有効化のため）
         self.player = PlayerNodeStreamer(sharedEngine: sharedAudioEngine)
         super.init()
+        setupAppLifecycleObservers()
     }
 
     deinit {
@@ -520,6 +533,15 @@ public final class ConversationController: NSObject, ObservableObject {
             NotificationCenter.default.removeObserver(observer)
             routeChangeObserver = nil
         }
+        
+        lifecycleObserverTokens.forEach { NotificationCenter.default.removeObserver($0) }
+        lifecycleObserverTokens.removeAll()
+        #if canImport(UIKit)
+        if backgroundTaskId != .invalid {
+            UIApplication.shared.endBackgroundTask(backgroundTaskId)
+            backgroundTaskId = .invalid
+        }
+        #endif
 
         print("✅ ConversationController: deinit - リソースクリーンアップ完了")
     }

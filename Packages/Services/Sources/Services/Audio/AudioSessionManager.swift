@@ -29,12 +29,16 @@ import UIKit
 /// - 近接センサを無効化して、受話口への自動切り替えを防ぐ
 public final class AudioSessionManager {
     public init() {}
+    
+    private var routeChangeObserver: NSObjectProtocol?
 
-    public func configure() throws {
+    public func configure(reset: Bool = true) throws {
         let s = AVAudioSession.sharedInstance()
 
         // 既存のセッションを非アクティブにする（競合を防ぐ）
-        try? s.setActive(false)
+        if reset {
+            try? s.setActive(false)
+        }
 
         // ✅ AEC（エコーキャンセレーション）を有効化するための設定
         // .defaultToSpeaker: スピーカーに強制出力（重要！）
@@ -78,12 +82,15 @@ public final class AudioSessionManager {
         }
 
         // ✅ ルート変更通知を監視（Bluetooth接続/切断時に適切に対応）
-        NotificationCenter.default.addObserver(
-            forName: AVAudioSession.routeChangeNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] notification in
-            self?.handleRouteChange(notification)
+        // - Note: configure() が複数回呼ばれてもオブザーバが増殖しないように token を保持する
+        if routeChangeObserver == nil {
+            routeChangeObserver = NotificationCenter.default.addObserver(
+                forName: AVAudioSession.routeChangeNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] notification in
+                self?.handleRouteChange(notification)
+            }
         }
 
         // ✅ 近接センサが勝手にONになるのを避ける
@@ -144,11 +151,10 @@ public final class AudioSessionManager {
 
     public func deactivate() throws {
         // ルート変更通知の監視を解除
-        NotificationCenter.default.removeObserver(
-            self,
-            name: AVAudioSession.routeChangeNotification,
-            object: nil
-        )
+        if let token = routeChangeObserver {
+            NotificationCenter.default.removeObserver(token)
+            routeChangeObserver = nil
+        }
         try AVAudioSession.sharedInstance().setActive(false)
     }
 }

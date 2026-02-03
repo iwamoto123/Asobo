@@ -50,6 +50,8 @@ extension ConversationController {
         handsFreeSTTRestartTask?.cancel()
         handsFreeSTTRestartTask = nil
         cancelSTTVADEndTimer()
+        // ユーザーが明示的に止めた場合は、フォアグラウンド復帰での自動復旧はしない
+        needsHandsFreeRecoveryOnForeground = false
         isHandsFreeMode = false
         isRecording = false
         isUserSpeaking = false

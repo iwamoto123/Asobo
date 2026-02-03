@@ -223,6 +223,7 @@ extension ConversationController {
         currentTurnId = 0
         listeningTurnId = 0
         playbackTurnId = nil
+        needsHandsFreeRecoveryOnForeground = false
 
         // セッション開始タスクをキャンセル
         sessionStartTask?.cancel()
