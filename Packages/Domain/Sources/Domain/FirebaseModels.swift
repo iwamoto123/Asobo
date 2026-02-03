@@ -200,15 +200,52 @@ public struct FirebaseVoiceStamp: Codable, Identifiable {
 /// 週次レポート (/users/{userId}/children/{childId}/reports/{weekISO})
 /// LINE通知の代わりにアプリ内で表示するためのデータ
 public struct FirebaseWeeklyReport: Codable, Identifiable {
+    public struct SpeakerSection: Codable, Identifiable, Hashable {
+        public var id: String { (speakerChildId ?? "") + "|" + (speakerChildName ?? "") }
+        public var speakerChildId: String?
+        public var speakerChildName: String?
+        public var summary: String
+
+        public init(speakerChildId: String? = nil, speakerChildName: String? = nil, summary: String) {
+            self.speakerChildId = speakerChildId
+            self.speakerChildName = speakerChildName
+            self.summary = summary
+        }
+    }
+
     public var id: String? // weekISO (例: "2025-W47")
-    public var summary: String         // 全体の要約
+    /// 期間開始（週の開始日）。未設定の場合は createdAt / id から推定して表示側でフォールバックする。
+    public var periodStart: Date?
+    /// 期間終了（週の最終日）。未設定の場合は createdAt / id から推定して表示側でフォールバックする。
+    public var periodEnd: Date?
+    /// 「このレポートを生成した時点でのセッション数」。10セッション増えたら再生成、の判定に使う。
+    public var sessionCountAtGeneration: Int?
+    /// きょうだいがいる場合に、子ごとに分けた要約（任意）
+    public var sections: [SpeakerSection]?
+
+    public var summary: String         // 全体の要約（=画面の「まとめ」）
     public var topInterests: [FirebaseInterestTag] // よく話した話題TOP3
     public var newVocabulary: [String]     // 新しく使った言葉
     public var adviceForParent: String?    // 親へのアドバイス（AI生成）
     public var createdAt: Date
 
-    public init(id: String? = nil, summary: String, topInterests: [FirebaseInterestTag], newVocabulary: [String], adviceForParent: String? = nil, createdAt: Date = Date()) {
+    public init(
+        id: String? = nil,
+        periodStart: Date? = nil,
+        periodEnd: Date? = nil,
+        sessionCountAtGeneration: Int? = nil,
+        sections: [SpeakerSection]? = nil,
+        summary: String,
+        topInterests: [FirebaseInterestTag],
+        newVocabulary: [String],
+        adviceForParent: String? = nil,
+        createdAt: Date = Date()
+    ) {
         self.id = id
+        self.periodStart = periodStart
+        self.periodEnd = periodEnd
+        self.sessionCountAtGeneration = sessionCountAtGeneration
+        self.sections = sections
         self.summary = summary
         self.topInterests = topInterests
         self.newVocabulary = newVocabulary

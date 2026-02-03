@@ -102,7 +102,17 @@ FirebaseSharingLevel: none, summaryOnly, full
 #### 6. `FirebaseWeeklyReport`
 - **パス**: `/users/{userId}/children/{childId}/reports/{weekISO}`
 - **用途**: 週次レポート（LINE通知の代わり）
-- **フィールド**: `id`, `summary`, `topInterests`, `newVocabulary`, `adviceForParent`, `createdAt`
+- **フィールド**:
+  - `id`: weekISO（例: "2025-W36"）
+  - `periodStart`: 週の開始日（オプション）
+  - `periodEnd`: 週の最終日（オプション）
+  - `sessionCountAtGeneration`: 生成時点のセッション数（10増えたら再生成の判定用、オプション）
+  - `sections`: きょうだい別の要約（オプション）
+  - `summary`: 全体の要約（画面の「まとめ」）
+  - `topInterests`: よく出た興味タグTOP3
+  - `newVocabulary`: 新語まとめ
+  - `adviceForParent`: 親へのヒント（任意）
+  - `createdAt`: 作成日時
 
 #### 7. `FirebaseAppSettings`
 - **パス**: `/users/{userId}/settings/config`

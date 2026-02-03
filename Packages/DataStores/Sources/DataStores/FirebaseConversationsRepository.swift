@@ -279,6 +279,128 @@ public final class FirebaseConversationsRepository {
         return decodedSessions
     }
 
+    /// 期間内のセッションを取得（startedAtでフィルタ）
+    /// - Note: 週次レポート生成用。Firestoreの範囲クエリのため `startedAt` のindexが必要になる場合があります。
+    public func fetchSessionsInRange(
+        userId: String,
+        childId: String,
+        start: Date,
+        end: Date,
+        limit: Int = 200
+    ) async throws -> [FirebaseConversationSession] {
+        let ref = db.collection("users").document(userId)
+            .collection("children").document(childId)
+            .collection("sessions")
+            .whereField("startedAt", isGreaterThanOrEqualTo: Timestamp(date: start))
+            .whereField("startedAt", isLessThan: Timestamp(date: end))
+            .order(by: "startedAt", descending: true)
+            .limit(to: limit)
+
+        print("🔍 FirebaseConversationsRepository: セッション期間取得 - start=\(start), end=\(end), limit=\(limit)")
+
+        let snapshot = try await ref.getDocuments()
+        let decoder = JSONDecoder()
+        let dateFormatter = ISO8601DateFormatter()
+        dateFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+
+        var decodedSessions: [FirebaseConversationSession] = []
+        for doc in snapshot.documents {
+            var data = doc.data()
+            data["id"] = doc.documentID
+            if let startedAt = data["startedAt"] as? Timestamp {
+                data["startedAt"] = dateFormatter.string(from: startedAt.dateValue())
+            }
+            if let endedAt = data["endedAt"] as? Timestamp {
+                data["endedAt"] = dateFormatter.string(from: endedAt.dateValue())
+            }
+            if data["interestContext"] == nil { data["interestContext"] = [] }
+            if data["summaries"] == nil { data["summaries"] = [] }
+            if data["newVocabulary"] == nil { data["newVocabulary"] = [] }
+            if data["turnCount"] == nil { data["turnCount"] = 0 }
+            if data["mode"] == nil { data["mode"] = "freeTalk" }
+
+            guard let jsonData = try? JSONSerialization.data(withJSONObject: data) else { continue }
+            decoder.dateDecodingStrategy = .custom { decoder in
+                let container = try decoder.singleValueContainer()
+                let dateString = try container.decode(String.self)
+                let formatter = ISO8601DateFormatter()
+                formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+                if let date = formatter.date(from: dateString) { return date }
+                formatter.formatOptions = [.withInternetDateTime]
+                if let date = formatter.date(from: dateString) { return date }
+                throw DecodingError.dataCorruptedError(in: container, debugDescription: "Invalid date format: \(dateString)")
+            }
+            if let session = try? decoder.decode(FirebaseConversationSession.self, from: jsonData) {
+                decodedSessions.append(session)
+            }
+        }
+        return decodedSessions
+    }
+
+    // MARK: - 週次レポート
+
+    /// 週次レポートを取得（存在しなければnil）
+    public func fetchWeeklyReport(userId: String, childId: String, weekISO: String) async throws -> FirebaseWeeklyReport? {
+        let ref = db.collection("users").document(userId)
+            .collection("children").document(childId)
+            .collection("reports").document(weekISO)
+
+        let doc = try await ref.getDocument()
+        guard doc.exists else { return nil }
+
+        var data = doc.data() ?? [:]
+        data["id"] = doc.documentID
+
+        let decoder = JSONDecoder()
+        let dateFormatter = ISO8601DateFormatter()
+        dateFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+
+        if let createdAt = data["createdAt"] as? Timestamp {
+            data["createdAt"] = dateFormatter.string(from: createdAt.dateValue())
+        }
+        if let periodStart = data["periodStart"] as? Timestamp {
+            data["periodStart"] = dateFormatter.string(from: periodStart.dateValue())
+        }
+        if let periodEnd = data["periodEnd"] as? Timestamp {
+            data["periodEnd"] = dateFormatter.string(from: periodEnd.dateValue())
+        }
+
+        guard let jsonData = try? JSONSerialization.data(withJSONObject: data) else { return nil }
+        decoder.dateDecodingStrategy = .custom { decoder in
+            let container = try decoder.singleValueContainer()
+            let dateString = try container.decode(String.self)
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            if let date = formatter.date(from: dateString) { return date }
+            formatter.formatOptions = [.withInternetDateTime]
+            if let date = formatter.date(from: dateString) { return date }
+            throw DecodingError.dataCorruptedError(in: container, debugDescription: "Invalid date format: \(dateString)")
+        }
+        return try? decoder.decode(FirebaseWeeklyReport.self, from: jsonData)
+    }
+
+    /// 週次レポートを保存（upsert）
+    public func upsertWeeklyReport(userId: String, childId: String, report: FirebaseWeeklyReport) async throws {
+        let weekISO = report.id ?? UUID().uuidString
+        let ref = db.collection("users").document(userId)
+            .collection("children").document(childId)
+            .collection("reports").document(weekISO)
+
+        let encoder = JSONEncoder()
+        let data = try encoder.encode(report)
+        guard var dict = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw NSError(domain: "FirebaseConversationsRepository", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to encode weekly report"])
+        }
+
+        dict.removeValue(forKey: "id")
+        dict["createdAt"] = Timestamp(date: report.createdAt)
+        if let start = report.periodStart { dict["periodStart"] = Timestamp(date: start) }
+        if let end = report.periodEnd { dict["periodEnd"] = Timestamp(date: end) }
+
+        try await ref.setData(dict, merge: true)
+        print("✅ FirebaseConversationsRepository: 週次レポート upsert - weekISO: \(weekISO)")
+    }
+
     // MARK: - ターン管理
 
     /// セッションの全ターンを取得（分析用）

@@ -56,6 +56,11 @@ struct HistoryListView: View {
                     } else {
                         ScrollView {
                             LazyVStack(spacing: 16) {
+                                WeeklySummaryCardView(
+                                    report: viewModel.weeklyReport,
+                                    isLoading: viewModel.isWeeklyReportLoading,
+                                    errorMessage: viewModel.weeklyReportErrorMessage
+                                )
                                 ForEach(filteredSessions) { session in
                                     NavigationLink(destination: ChatDetailView(session: session)) {
                                         SessionCardView(session: session, viewModel: viewModel)
@@ -195,6 +200,134 @@ struct SessionCardView: View {
         .background(Color.white)
         .cornerRadius(20)
         // クレイモーフィズム風の影
+        .shadow(color: .anoneShadowDark.opacity(0.15), radius: 10, x: 5, y: 5)
+        .shadow(color: .white, radius: 10, x: -5, y: -5)
+    }
+}
+
+// MARK: - Weekly Summary Card (Parent)
+struct WeeklySummaryCardView: View {
+    let report: FirebaseWeeklyReport?
+    let isLoading: Bool
+    let errorMessage: String?
+
+    private func formatRange(start: Date?, end: Date?, fallbackDate: Date) -> String? {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "M/d"
+        formatter.locale = Locale(identifier: "ja_JP")
+        if let start, let end {
+            return "\(formatter.string(from: start))〜\(formatter.string(from: end))でお話したこと"
+        }
+        let cal = Calendar(identifier: .iso8601)
+        guard let interval = cal.dateInterval(of: .weekOfYear, for: fallbackDate) else { return nil }
+        let s = interval.start
+        let e = interval.end.addingTimeInterval(-1)
+        return "\(formatter.string(from: s))〜\(formatter.string(from: e))でお話したこと"
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("1週間のまとめ")
+                    .font(.system(size: 16, weight: .bold, design: .rounded))
+                    .foregroundColor(Color(hex: "5A4A42"))
+
+                Spacer()
+
+                if isLoading {
+                    ProgressView()
+                        .tint(Color.anoneButton)
+                }
+            }
+
+            if let errorMessage {
+                Text(errorMessage)
+                    .font(.system(size: 12, design: .rounded))
+                    .foregroundColor(.gray)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if let report {
+                if let title = formatRange(start: report.periodStart, end: report.periodEnd, fallbackDate: report.createdAt) {
+                    Text(title)
+                        .font(.system(size: 12, weight: .semibold, design: .rounded))
+                        .foregroundColor(.gray)
+                }
+
+                let sections = report.sections ?? []
+                if !sections.isEmpty {
+                    ForEach(sections, id: \.self) { section in
+                        VStack(alignment: .leading, spacing: 6) {
+                            if let name = section.speakerChildName?.trimmingCharacters(in: .whitespacesAndNewlines),
+                               !name.isEmpty, name != "(未指定)" {
+                                Text(name)
+                                    .font(.system(size: 13, weight: .bold, design: .rounded))
+                                    .foregroundColor(Color(hex: "5A4A42"))
+                            }
+                            Text(section.summary)
+                                .font(.system(size: 13, design: .rounded))
+                                .foregroundColor(Color(hex: "5A4A42"))
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .padding(.top, 2)
+                    }
+                }
+
+                if !report.topInterests.isEmpty {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("興味タグ")
+                            .font(.system(size: 12, weight: .bold, design: .rounded))
+                            .foregroundColor(.gray)
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 6) {
+                                ForEach(report.topInterests, id: \.self) { tag in
+                                    InterestTagView(tag: tag)
+                                }
+                            }
+                        }
+                    }
+                    .padding(.top, 6)
+                }
+
+                if !report.newVocabulary.isEmpty {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("新語まとめ")
+                            .font(.system(size: 12, weight: .bold, design: .rounded))
+                            .foregroundColor(.gray)
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 6) {
+                                ForEach(report.newVocabulary, id: \.self) { w in
+                                    Text(w)
+                                        .font(.system(size: 11, weight: .semibold, design: .rounded))
+                                        .foregroundColor(Color.anoneButton)
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 4)
+                                        .background(Color.anoneButton.opacity(0.10))
+                                        .cornerRadius(10)
+                                }
+                            }
+                        }
+                    }
+                    .padding(.top, 6)
+                }
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("まとめ")
+                        .font(.system(size: 12, weight: .bold, design: .rounded))
+                        .foregroundColor(.gray)
+                    Text(report.summary)
+                        .font(.system(size: 13, design: .rounded))
+                        .foregroundColor(Color(hex: "5A4A42"))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(.top, 6)
+            } else {
+                Text("この週のまとめはまだありません")
+                    .font(.system(size: 12, design: .rounded))
+                    .foregroundColor(.gray)
+            }
+        }
+        .padding(16)
+        .background(Color.white)
+        .cornerRadius(20)
         .shadow(color: .anoneShadowDark.opacity(0.15), radius: 10, x: 5, y: 5)
         .shadow(color: .white, radius: 10, x: -5, y: -5)
     }
