@@ -249,6 +249,9 @@ public struct ChildHomeView: View {
                 // 同じ文を再設定しない
                 if stableUserText != trimmed {
                     stableUserText = trimmed
+                    // ✅ 確定文が更新されたら、次のユーザー発話が来るまでライブ表示は空に戻す
+                    // （送信/再起動でライブが一瞬空になったときに前回確定文へ戻る“チラ見え”を防ぐ）
+                    stableLiveText = ""
                 }
             }
         }
@@ -432,6 +435,8 @@ public struct ChildHomeView: View {
             // ライブ表示は少し間引いて読みやすさ優先（それでも十分リアルタイム）
             try? await Task.sleep(nanoseconds: 120_000_000) // 0.12s
             let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            // ✅ ライブ側は「空文字への更新」をしない（STTの瞬間的な空で表示がブレるのを防ぐ）
+            guard !trimmed.isEmpty else { return }
             if stableLiveText != trimmed {
                 stableLiveText = trimmed
             }
