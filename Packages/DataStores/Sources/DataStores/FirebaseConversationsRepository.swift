@@ -75,6 +75,32 @@ public final class FirebaseConversationsRepository {
         ])
     }
 
+    /// セッションに「話していた子（きょうだい含む）」を紐付けて更新
+    /// - Note: Firestoreパスの childId とは独立のメタ情報。履歴カード等で区別するために使用する。
+    public func updateSpeakerAttribution(
+        userId: String,
+        childId: String,
+        sessionId: String,
+        speakerChildId: String?,
+        speakerChildName: String?
+    ) async throws {
+        let ref = db.collection("users").document(userId)
+            .collection("children").document(childId)
+            .collection("sessions").document(sessionId)
+
+        var update: [String: Any] = [:]
+        if let speakerChildId, !speakerChildId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            update["speakerChildId"] = speakerChildId
+        }
+        if let speakerChildName, !speakerChildName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            update["speakerChildName"] = speakerChildName
+        }
+        guard !update.isEmpty else { return }
+
+        try await ref.updateData(update)
+        print("✅ FirebaseConversationsRepository: speaker attribution updated - sessionId: \(sessionId), speakerChildName: \(speakerChildName ?? "nil")")
+    }
+
     // MARK: - ターン管理
 
     /// ターンの追加（会話中）

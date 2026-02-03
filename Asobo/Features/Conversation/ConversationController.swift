@@ -313,6 +313,14 @@ public final class ConversationController: NSObject, ObservableObject {
     /// HomeなどのUIから「今はこの名前を優先して呼んでほしい」を指定するためのオーバーライド
     /// - Note: ここで指定された場合、systemPrompt側で優先的に呼びかけるよう指示する
     var preferredCallNameOverride: String?
+    /// きょうだいがいる場合に「いま話しているのはこの子」をUIから一時指定するためのオーバーライド。
+    /// - Note: Firestore上の保存パス(childId)は変えず、セッションにメタ情報として保存して履歴表示に使う。
+    var speakerChildIdOverride: String?
+    var speakerChildNameOverride: String?
+    /// 録音中に押されていた「話者（子）」を、このターンの保存に確実に反映するためのロック。
+    /// - Note: ボタンが離されても、録音中に押されていた事実を保持したい。
+    var lockedSpeakerChildIdForTurn: String?
+    var lockedSpeakerChildNameForTurn: String?
     // NOTE: 別ファイルのextensionから参照/更新するため internal（モジュール内限定）
     var turnCount: Int = 0
 
@@ -343,6 +351,23 @@ public final class ConversationController: NSObject, ObservableObject {
         preferredCallNameOverride = (trimmed?.isEmpty == true) ? nil : trimmed
     }
 
+    /// Homeの「きょうだい名前ボタン（押している間だけ有効）」などから呼び出す
+    /// - Note: ここで指定された値は Firestore の session にメタ情報として保存し、履歴カード表示で使う。
+    public func setSpeakerAttributionOverride(childId: String?, childName: String?) {
+        let trimmedId = childId?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedName = childName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        speakerChildIdOverride = (trimmedId?.isEmpty == true) ? nil : trimmedId
+        speakerChildNameOverride = (trimmedName?.isEmpty == true) ? nil : trimmedName
+
+        // 録音中なら、このターンに紐付く値としてロックする（押下が離れても保持）
+        if isRecording {
+            if let id = speakerChildIdOverride, let name = speakerChildNameOverride {
+                lockedSpeakerChildIdForTurn = id
+                lockedSpeakerChildNameForTurn = name
+            }
+        }
+    }
+
     // ✅ ユーザー情報を設定するメソッド
     public func setupUser(userId: String, childId: String, childName: String? = nil, childNickname: String? = nil) {
         self.currentUserId = userId
@@ -353,6 +378,10 @@ public final class ConversationController: NSObject, ObservableObject {
         self.currentChildNickname = trimmedNickname?.isEmpty == true ? nil : trimmedNickname
         // childが切り替わったらオーバーライドはリセット（別の子に引きずらない）
         self.preferredCallNameOverride = nil
+        self.speakerChildIdOverride = nil
+        self.speakerChildNameOverride = nil
+        self.lockedSpeakerChildIdForTurn = nil
+        self.lockedSpeakerChildNameForTurn = nil
         print("✅ ConversationController: ユーザー情報を設定 - Parent=\(userId), Child=\(childId), Name=\(childCallName ?? "n/a")")
     }
 

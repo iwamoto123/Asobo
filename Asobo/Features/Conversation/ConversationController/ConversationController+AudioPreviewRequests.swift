@@ -77,6 +77,11 @@ extension ConversationController {
         let trimmed = userText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
 
+        // ✅ このターンの「話者（子）」メタ情報は、リクエスト開始時点でスナップショットする
+        // （レスポンス待ちの間にUIの“押下”が離れても、会話としては押下中に話していたことがあるため）
+        let speakerChildIdForThisTurn = self.speakerChildIdOverride
+        let speakerChildNameForThisTurn = self.speakerChildNameOverride
+
         await MainActor.run {
             // ✅ 履歴に積むのと同じ確定テキストをUIへ公開（Homeのモニター表示用）
             self.lastCommittedUserText = trimmed
@@ -178,6 +183,8 @@ extension ConversationController {
 
             // Firebase保存
             if let userId = currentUserId, let childId = currentChildId, let sessionId = currentSessionId {
+                let speakerChildId = speakerChildIdForThisTurn
+                let speakerChildName = speakerChildNameForThisTurn
                 let userTurn = FirebaseTurn(role: .child, text: trimmed, timestamp: Date())
                 let aiTurn = FirebaseTurn(role: .ai, text: cleanFinal, timestamp: Date())
                 print("🗂️ ConversationController: append inMemoryTurns (user:'\(userTurn.text ?? "nil")', ai:'\(aiTurn.text ?? "nil")')")
@@ -191,12 +198,21 @@ extension ConversationController {
                 }
                 turnCount += 2
                 let updatedTurnCount = turnCount
-                Task.detached { [weak self, userId, childId, sessionId, userTurn, aiTurn, updatedTurnCount] in
+                Task.detached { [weak self, userId, childId, sessionId, userTurn, aiTurn, updatedTurnCount, speakerChildId, speakerChildName] in
                     let repo = FirebaseConversationsRepository()
                     do {
                         try await repo.addTurn(userId: userId, childId: childId, sessionId: sessionId, turn: userTurn)
                         try await repo.addTurn(userId: userId, childId: childId, sessionId: sessionId, turn: aiTurn)
                         try? await repo.updateTurnCount(userId: userId, childId: childId, sessionId: sessionId, turnCount: updatedTurnCount)
+                        if speakerChildId != nil || speakerChildName != nil {
+                            try? await repo.updateSpeakerAttribution(
+                                userId: userId,
+                                childId: childId,
+                                sessionId: sessionId,
+                                speakerChildId: speakerChildId,
+                                speakerChildName: speakerChildName
+                            )
+                        }
                     } catch {
                         await MainActor.run {
                             self?.logFirebaseError(error, operation: "テキスト会話の保存")
@@ -237,6 +253,14 @@ extension ConversationController {
             await MainActor.run { self.errorMessage = "音声プレビュークライアントが初期化されていません" }
             return
         }
+
+        // ✅ このターンの「話者（子）」メタ情報は、リクエスト開始時点でスナップショットする
+        // - Note: 録音中に押されていた名前を優先したいので、locked -> override の順で解決する
+        let speakerChildIdForThisTurn = self.lockedSpeakerChildIdForTurn ?? self.speakerChildIdOverride
+        let speakerChildNameForThisTurn = self.lockedSpeakerChildNameForTurn ?? self.speakerChildNameOverride
+        // 次ターンへ持ち越さない
+        self.lockedSpeakerChildIdForTurn = nil
+        self.lockedSpeakerChildNameForTurn = nil
 
         await MainActor.run {
             // 新しい返答を開始するので前の表示テキストをクリア
@@ -363,6 +387,8 @@ extension ConversationController {
 
             // Firebase保存（ユーザー音声もローカル文字起こししたテキストを保存）
             if let userId = currentUserId, let childId = currentChildId, let sessionId = currentSessionId {
+                let speakerChildId = speakerChildIdForThisTurn
+                let speakerChildName = speakerChildNameForThisTurn
                 let userText = await userTranscriptionTask?.value?.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
                 let userTurn = FirebaseTurn(role: .child, text: userText?.isEmpty == false ? userText! : "(voice)", timestamp: Date())
                 let aiTurn = FirebaseTurn(role: .ai, text: cleanFinal, timestamp: Date())
@@ -379,12 +405,21 @@ extension ConversationController {
                 }
                 turnCount += 2
                 let updatedTurnCount = turnCount
-                Task.detached { [weak self, userId, childId, sessionId, userTurn, aiTurn, updatedTurnCount] in
+                Task.detached { [weak self, userId, childId, sessionId, userTurn, aiTurn, updatedTurnCount, speakerChildId, speakerChildName] in
                     let repo = FirebaseConversationsRepository()
                     do {
                         try await repo.addTurn(userId: userId, childId: childId, sessionId: sessionId, turn: userTurn)
                         try await repo.addTurn(userId: userId, childId: childId, sessionId: sessionId, turn: aiTurn)
                         try? await repo.updateTurnCount(userId: userId, childId: childId, sessionId: sessionId, turnCount: updatedTurnCount)
+                        if speakerChildId != nil || speakerChildName != nil {
+                            try? await repo.updateSpeakerAttribution(
+                                userId: userId,
+                                childId: childId,
+                                sessionId: sessionId,
+                                speakerChildId: speakerChildId,
+                                speakerChildName: speakerChildName
+                            )
+                        }
                     } catch {
                         await MainActor.run {
                             self?.logFirebaseError(error, operation: "音声会話の保存")
@@ -433,12 +468,24 @@ extension ConversationController {
         let updatedTurnCount = turnCount
 
         guard let userId = currentUserId, let childId = currentChildId, let sessionId = currentSessionId else { return }
-        Task.detached { [weak self, userId, childId, sessionId, updatedTurnCount] in
+        // できるだけ録音中の押下を優先してスナップショット
+        let speakerChildId = self.lockedSpeakerChildIdForTurn ?? self.speakerChildIdOverride
+        let speakerChildName = self.lockedSpeakerChildNameForTurn ?? self.speakerChildNameOverride
+        Task.detached { [weak self, userId, childId, sessionId, updatedTurnCount, speakerChildId, speakerChildName] in
             let repo = FirebaseConversationsRepository()
             do {
                 let userTurn = FirebaseTurn(role: .child, text: placeholder, timestamp: Date())
                 try await repo.addTurn(userId: userId, childId: childId, sessionId: sessionId, turn: userTurn)
                 try? await repo.updateTurnCount(userId: userId, childId: childId, sessionId: sessionId, turnCount: updatedTurnCount)
+                if speakerChildId != nil || speakerChildName != nil {
+                    try? await repo.updateSpeakerAttribution(
+                        userId: userId,
+                        childId: childId,
+                        sessionId: sessionId,
+                        speakerChildId: speakerChildId,
+                        speakerChildName: speakerChildName
+                    )
+                }
             } catch {
                 await MainActor.run {
                     self?.logFirebaseError(error, operation: "音声のみターンの保存")

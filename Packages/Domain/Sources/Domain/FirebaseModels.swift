@@ -117,15 +117,33 @@ public struct FirebaseConversationSession: Codable, Identifiable {
     public var mode: FirebaseSessionMode
     public var startedAt: Date
     public var endedAt: Date?
+    /// きょうだいがいる場合に「この会話は誰（どの子）の会話として記録したいか」を保持する。
+    /// - Note: Firestore上の保存パス(/children/{childId}/...)とは独立に、UI表示/区別用のメタ情報として使う。
+    public var speakerChildId: String?
+    public var speakerChildName: String?
     public var interestContext: [FirebaseInterestTag] // この会話で触れられた興味タグ
     public var summaries: [String]            // 会話の短い要約（履歴一覧表示用）
     public var newVocabulary: [String]        // 新しく使った言葉
     public var turnCount: Int                 // ターンの総数
 
-    public init(id: String? = nil, mode: FirebaseSessionMode, startedAt: Date = Date(), interestContext: [FirebaseInterestTag] = [], summaries: [String] = [], newVocabulary: [String] = [], turnCount: Int = 0) {
+    public init(
+        id: String? = nil,
+        mode: FirebaseSessionMode,
+        startedAt: Date = Date(),
+        endedAt: Date? = nil,
+        speakerChildId: String? = nil,
+        speakerChildName: String? = nil,
+        interestContext: [FirebaseInterestTag] = [],
+        summaries: [String] = [],
+        newVocabulary: [String] = [],
+        turnCount: Int = 0
+    ) {
         self.id = id
         self.mode = mode
         self.startedAt = startedAt
+        self.endedAt = endedAt
+        self.speakerChildId = speakerChildId
+        self.speakerChildName = speakerChildName
         self.interestContext = interestContext
         self.summaries = summaries
         self.newVocabulary = newVocabulary

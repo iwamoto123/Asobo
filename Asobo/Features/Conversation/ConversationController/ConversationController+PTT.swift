@@ -105,6 +105,11 @@ extension ConversationController {
 
             // 4. 状態更新
             self.isRecording = true
+            // ✅ 録音開始時点の「話者（子）」押下状態をロック（録音中に離されても、このターンの保存に反映する）
+            if let id = self.speakerChildIdOverride, let name = self.speakerChildNameOverride {
+                self.lockedSpeakerChildIdForTurn = id
+                self.lockedSpeakerChildNameForTurn = name
+            }
             self.transcript = ""
             self.turnState = .listening
             self.markListeningTurn()

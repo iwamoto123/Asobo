@@ -177,6 +177,7 @@ public struct ChildHomeView: View {
             }
             // 初期はオーバーライドなし
             controller.setPreferredCallNameOverride(nil)
+            controller.setSpeakerAttributionOverride(childId: nil, childName: nil)
             preferredChildId = nil
 
             withAnimation(.easeInOut(duration: 3.0).repeatForever(autoreverses: true)) {
@@ -205,6 +206,7 @@ public struct ChildHomeView: View {
             // 選択中の子が変わったら、Homeの「呼び名優先」もリセット
             preferredChildId = nil
             controller.setPreferredCallNameOverride(nil)
+            controller.setSpeakerAttributionOverride(childId: nil, childName: nil)
         }
         .onDisappear {
             // ✅ タブを離れた時にセッションを停止（オプション：必要に応じてコメントアウト）
@@ -360,12 +362,15 @@ public struct ChildHomeView: View {
                     ForEach(items, id: \.id) { item in
                         let isSelected = (preferredChildId == item.id)
                         Button {
+                            // ✅ 仕様: タップで選択（=ずっとその子）、もう一度タップで解除
                             if preferredChildId == item.id {
                                 preferredChildId = nil
                                 controller.setPreferredCallNameOverride(nil)
+                                controller.setSpeakerAttributionOverride(childId: nil, childName: nil)
                             } else {
                                 preferredChildId = item.id
                                 controller.setPreferredCallNameOverride(item.label)
+                                controller.setSpeakerAttributionOverride(childId: item.id, childName: item.label)
                             }
                         } label: {
                             Text(item.label)

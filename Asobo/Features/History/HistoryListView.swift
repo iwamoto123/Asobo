@@ -138,6 +138,14 @@ struct SessionCardView: View {
                         .font(.system(size: 12, design: .rounded))
                         .foregroundColor(.gray)
 
+                    if let raw = session.speakerChildName?.trimmingCharacters(in: .whitespacesAndNewlines),
+                       !raw.isEmpty {
+                        Text("・\(raw)")
+                            .font(.system(size: 12, weight: .semibold, design: .rounded))
+                            .foregroundColor(.gray)
+                            .lineLimit(1)
+                    }
+
                     Spacer()
 
                     if session.mode == .story {

@@ -74,6 +74,8 @@ FirebaseSharingLevel: none, summaryOnly, full
   - `mode`: セッションモード（freeTalk/story）
   - `startedAt`: 開始時刻
   - `endedAt`: 終了時刻（オプション）
+  - `speakerChildId`: きょうだいがいる場合の「この会話は誰の会話か」(オプション)
+  - `speakerChildName`: きょうだいがいる場合の表示名（履歴カード用）(オプション)
   - `interestContext`: この会話で触れられた興味タグ
   - `summaries`: 会話の短い要約（配列）
   - `newVocabulary`: 新しく使った言葉（配列）
