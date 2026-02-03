@@ -37,14 +37,14 @@ public struct ChildHomeView: View {
     private let greetingPatterns = [
         "ねえねえ、\nきょうは なにが たのしかった？",
         "こんにちは！\nきょうは なにして あそんだ？",
-        "おはよう！\nきょうは どんな きもち？",
+        "おはよう！\nいま どんな きもち？",
         "やあ！\nきょうは なにが おもしろかった？",
         "こんにちは！\nきょうは どこに いったの？",
         "やあ！\nきょうは だれと あそんだ？",
         "こんにちは！\nきょうは なにを たべた？",
-        "こんにちは！\nきょうは なにが すきだった？",
+        "こんにちは！\nなにか すきなものある？",
         "やあ！\nきょうは どんな ことした？",
-        "こんにちは！\nきょうは なにが たのしかった？"
+        "こんにちは！\nいま 気になることある？"
     ]
 
     public init() {}
@@ -57,7 +57,10 @@ public struct ChildHomeView: View {
             // - 上: 吹き出し
             // - 中: くま
             // - 下: ユーザー台詞ボックス（タブバー分だけ余白を確保）
-            let bottomPad = max(64, h * 0.07)
+            // 全体が上に寄りすぎる場合があるので、ほんの少しだけ全体を下げる
+            let globalDownShift = max(10, h * 0.015)
+            // タブバー/ホームインジケータの逃げ（大きすぎると全体が上に寄るので少しだけ控えめに）
+            let bottomPad = max(56, h * 0.06)
             let topRegion = max(140, h * 0.23)
             let bottomRegion = max(120, h * 0.22)
             let middleRegion = max(0, h - topRegion - bottomRegion - bottomPad)
@@ -84,6 +87,8 @@ public struct ChildHomeView: View {
                 VStack(spacing: 0) {
                     // 上: 吹き出し（上ブロックの中で下寄せ）
                     VStack {
+                        // 画面上端にほんの少し余白（長文で伸びた時にも“余裕”が見える）
+                        Spacer(minLength: max(10, h * 0.015))
                         Spacer(minLength: 0)
                         SpeechBubbleView(
                             text: currentDisplayText,
@@ -134,6 +139,7 @@ public struct ChildHomeView: View {
                     // タブバー/ホームインジケータの逃げ
                     Spacer(minLength: bottomPad)
                 }
+                .padding(.top, globalDownShift)
 
                 // エラー表示
                 if let errorMessage = controller.errorMessage {
@@ -814,38 +820,38 @@ struct SpeechBubbleView: View {
     let isConnecting: Bool
 
     var body: some View {
-        ZStack {
-            // 吹き出し本体
-            RoundedRectangle(cornerRadius: 30)
-                .fill(Color.white.opacity(0.95))
-                .shadow(color: .anoneShadowDark.opacity(0.15), radius: 10, x: 0, y: 5)
+        // しっぽを「レイアウトの一部」にして、吹き出しの下部に常にくっつくようにする
+        VStack(spacing: 0) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 30)
+                    .fill(Color.white.opacity(0.95))
 
-            // しっぽ (逆三角形)
+                // テキスト表示エリア
+                VStack {
+                    if !text.isEmpty {
+                        Text(text)
+                            .font(.system(size: 20, weight: .bold, design: .rounded))
+                            .foregroundColor(Color(hex: "5A4A42"))
+                            .multilineTextAlignment(.center)
+                            .lineSpacing(6)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .padding(.horizontal, 20)
+                            .padding(.vertical, 10)
+                    }
+                }
+                .padding(20)
+            }
+            .shadow(color: .anoneShadowDark.opacity(0.15), radius: 10, x: 0, y: 5)
+            .frame(minHeight: 100)
+
             Image(systemName: "arrowtriangle.down.fill")
                 .font(.system(size: 24))
                 .foregroundColor(.white.opacity(0.95))
-                .offset(y: 56) // 下へ（ほんの少しだけ出す）
+                // ちょっとだけ重ねて「くっつき感」を出す
+                .padding(.top, -4)
                 .shadow(color: .anoneShadowDark.opacity(0.1), radius: 2, x: 0, y: 2)
-
-            // テキスト表示エリア（インジケーターなしで常に同じスタイル）
-            VStack {
-                if !text.isEmpty {
-                    Text(text)
-                        .font(.system(size: 20, weight: .bold, design: .rounded))
-                        .foregroundColor(Color(hex: "5A4A42"))
-                        .multilineTextAlignment(.center)
-                        .lineSpacing(6)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .padding(.horizontal, 20)
-                        .padding(.vertical, 10)
-                }
-            }
-            .padding(20)
         }
-        .frame(minHeight: 100)
         .fixedSize(horizontal: false, vertical: true)
-        // offsetはレイアウトサイズに反映されないため、しっぽ分だけ下に余白を作る
-        .padding(.bottom, 8)
     }
 }
 

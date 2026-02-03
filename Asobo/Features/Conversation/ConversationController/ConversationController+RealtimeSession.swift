@@ -199,6 +199,8 @@ extension ConversationController {
 
                 // 状態を更新
                 await MainActor.run {
+                    // ✅ 接続復帰時：過去の接続系警告（例: "networking lost"）が残らないようにクリア
+                    self.errorMessage = nil
                     self.isRealtimeConnecting = false
                     self.isRealtimeActive = true
                     self.mode = .realtime
