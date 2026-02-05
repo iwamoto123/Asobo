@@ -99,6 +99,10 @@ extension ConversationController {
             self.isThinking = true
             self.playRandomFiller()
             self.player.prepareForNextStream()
+            let isHfp = AVAudioSession.sharedInstance().currentRoute.outputs.contains { $0.portType == .bluetoothHFP }
+            if isHfp {
+                self.player.primeForPlaybackIfNeeded(reason: "beforeStream.hfp", force: true)
+            }
         }
 
         let tStart = Date()

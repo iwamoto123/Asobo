@@ -120,6 +120,7 @@ final class AudioPreviewStreamingClient {
         var audioChunkCount = 0
         var emptyChunkCount = 0
         var audioFieldNullCount = 0
+        var firstAudioLogged = false
         var finishReasons: [String: Int] = [:]
         var refusalSummaries: [String] = []
         var audioMissingPayloadSamples: [String] = []
@@ -177,15 +178,13 @@ final class AudioPreviewStreamingClient {
                         refusalSummaries.append(summary)
                     }
 
+                    // ⚠️ message.audio はストリーム終盤で累積データとして返されることがある。
+                    // delta.audio と両方処理すると出だしが二重再生されるため、
+                    // ストリーミング再生では delta.audio のみを使用する。
                     if let messageAudio = choice.message?.audio {
-                        if let audioString = messageAudio.data {
-                            if let audioData = Data(base64Encoded: audioString) {
-                                didReceiveAudio = true
-                                audioChunkCount += 1
-                                onAudioChunk(audioData)
-                            } else {
-                                print("⚠️ AudioPreviewStreamingClient: message.audio decode失敗 - length=\(audioString.count)")
-                            }
+                        if messageAudio.data != nil {
+                            // delta.audio で既に再生済みなので、ここでは再生しない
+                            print("ℹ️ AudioPreviewStreamingClient: message.audio present (skipped for streaming, delta.audio preferred)")
                         } else {
                             audioFieldNullCount += 1
                             print("⚠️ AudioPreviewStreamingClient: message.audio present but data=null")
@@ -238,6 +237,14 @@ final class AudioPreviewStreamingClient {
                         if let audioData = Data(base64Encoded: audioString) {
                             didReceiveAudio = true
                             audioChunkCount += 1
+                            if !firstAudioLogged {
+                                firstAudioLogged = true
+                                let dt = Date().timeIntervalSince(t0)
+                                print("🎵 AudioPreviewStreamingClient: first audio chunk received (\(String(format: "%.2f", dt))s since request start)")
+                            }
+                            // ✅ 重複検出用: 先頭8バイトをログ（Int16サンプル4つ分）
+                            let prefixHex = audioData.prefix(8).map { String(format: "%02X", $0) }.joined()
+                            print("🎵 delta.audio chunk #\(audioChunkCount): bytes=\(audioData.count), prefix=\(prefixHex)")
                             onAudioChunk(audioData)
                         } else {
                             print("⚠️ AudioPreviewStreamingClient: audio chunk decode失敗 - length=\(audioString.count)")

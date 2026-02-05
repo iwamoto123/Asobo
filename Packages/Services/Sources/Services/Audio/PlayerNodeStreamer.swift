@@ -1,4 +1,5 @@
 import AVFoundation
+import Foundation
 
 /// ✅ 出力RMSモニタリング用のクラス
 public final class OutputMonitor {
@@ -78,7 +79,7 @@ public final class PlayerNodeStreamer {
   // 受信チャンクを貯める簡易ジッタバッファ
   private var queue: [Data] = []
   private var queuedFrames: AVAudioFrameCount = 0
-  private let prebufferSec: Double = 0.2 // 200ms たまったらスタート（実機での安定性向上）
+  private var prebufferSec: Double = 0.2 // 200ms たまったらスタート（実機での安定性向上）
   
   // ✅ 追加: 正確な再生状態追跡用
   private var pendingBufferCount: Int = 0
@@ -87,7 +88,27 @@ public final class PlayerNodeStreamer {
   private var stopRequested: Bool = false
   // ✅ 最初のチャンク受信時に状態をログするためのフラグ
   private var firstChunkLogged: Bool = false
-  
+
+  // ✅ HFP時の出だし二重感軽減のためのフェードイン
+  private var isFirstChunkOfStream: Bool = true
+  private var fadeInDurationSec: Double = 0.0  // 0 = 無効、HFP時のみ有効化
+  private var totalFadedSamples: Int = 0       // 現在のストリームでフェード済みのサンプル数
+
+  // ✅ HFP時の出だし二重感軽減：最初のチャンクを破棄
+  private var discardInitialSec: Double = 0.0  // 0 = 無効、HFP時は0.1〜0.15推奨
+  private var discardedSamples: Int = 0        // 現在のストリームで破棄済みのサンプル数
+
+  // ✅ HFP時の二重再生対策：最初のplay()呼び出しを遅延
+  private var playStartDelaySec: Double = 0.0  // 0 = 無効、HFP時は0.15推奨
+  private var isFirstPlayOfStream: Bool = true
+  private var isDelayingFirstPlay: Bool = false  // 遅延中フラグ（二重play防止）
+
+  // ✅ HFP時のSCO安定化：無音プリミング（IOサイクル確立）
+  private var primeSilenceSec: Double = 0.0  // 0 = 無効
+  private var isPrimingPlayback: Bool = false
+  private var lastPrimeAt: Date?
+  private var primeSequence: Int = 0
+
   // ✅ 追加: 再生状態変更通知クロージャ
   public var onPlaybackStateChange: ((Bool) -> Void)?
 
@@ -281,6 +302,39 @@ public final class PlayerNodeStreamer {
     let shouldStop = stopRequested
     stateLock.unlock()
     if shouldStop { return }
+
+    // ✅ 重複検出用: 受信チャンクの先頭をログ
+    let prefixHex = data.prefix(8).map { String(format: "%02X", $0) }.joined()
+    print("🎧 playChunk received: bytes=\(data.count), prefix=\(prefixHex), queueSize=\(queue.count)")
+
+    // ✅ HFP時の出だし二重感軽減：最初のチャンクを破棄
+    if discardInitialSec > 0 {
+      let samplesToDiscard = Int(inFormat.sampleRate * discardInitialSec)
+      let samplesInChunk = data.count / MemoryLayout<Int16>.size
+      if discardedSamples < samplesToDiscard {
+        let remainingToDiscard = samplesToDiscard - discardedSamples
+        if samplesInChunk <= remainingToDiscard {
+          // このチャンク全体を破棄
+          discardedSamples += samplesInChunk
+          print("🗑️ PlayerNodeStreamer: discarding chunk (samples=\(samplesInChunk), totalDiscarded=\(discardedSamples)/\(samplesToDiscard))")
+          return
+        } else {
+          // 部分的に破棄（残りを再生）
+          let bytesToDiscard = remainingToDiscard * MemoryLayout<Int16>.size
+          let remainingData = data.suffix(from: bytesToDiscard)
+          discardedSamples = samplesToDiscard
+          print("🗑️ PlayerNodeStreamer: partial discard (discarded=\(bytesToDiscard) bytes, remaining=\(remainingData.count) bytes)")
+          // 残りのデータで続行
+          return playChunkInternal(Data(remainingData), forceStart: forceStart)
+        }
+      }
+    }
+
+    playChunkInternal(data, forceStart: forceStart)
+  }
+
+  /// playChunk の内部実装（破棄処理後に呼ばれる）
+  private func playChunkInternal(_ data: Data, forceStart: Bool) {
     logFirstChunkStateIfNeeded()
 
     // ✅ エンジンが停止している場合は再開を試みる
@@ -359,7 +413,7 @@ public final class PlayerNodeStreamer {
     if forceStart, !player.isPlaying, queuedFrames < targetFrames {
       print("⚡️ PlayerNodeStreamer: forceStart=true のためプリバッファを無視して再生開始")
     }
-    
+
     // 十分なデータが蓄積された（または既に再生中）
     if !player.isPlaying && queue.count > 0 {
       print("▶️ PlayerNodeStreamer: 再生開始 - \(queue.count) chunks, \(queuedFrames) frames")
@@ -391,6 +445,23 @@ public final class PlayerNodeStreamer {
         print("⚠️ PlayerNodeStreamer: 変換エラー - \(error.localizedDescription)")
       }
       return
+    }
+
+    // ---------------------------------------------------------
+    // ✅ HFP時の出だし二重感軽減：フェードイン適用
+    // ---------------------------------------------------------
+    if fadeInDurationSec > 0 {
+      let fadeInSamples = Int(format.sampleRate * fadeInDurationSec)
+      if totalFadedSamples < fadeInSamples {
+        applyFadeIn(to: outBuf, fadeInSamples: fadeInSamples, alreadyFaded: totalFadedSamples)
+        totalFadedSamples += Int(outBuf.frameLength)
+        if isFirstChunkOfStream {
+          print("🎚️ PlayerNodeStreamer: fade-in applied to first chunk (duration=\(fadeInDurationSec)s, samples=\(fadeInSamples))")
+          isFirstChunkOfStream = false
+        }
+      }
+    } else {
+      isFirstChunkOfStream = false
     }
 
     // ---------------------------------------------------------
@@ -449,11 +520,33 @@ public final class PlayerNodeStreamer {
     }
     
     if !player.isPlaying {
-      // ✅ IOサイクル前の abort 回避：安全に play() できる状態かを確認
-      if !safePlayIfPossible(context: "playChunk") {
-        // 一度だけ軽くリトライ（IOサイクルが次tickで来ることがある）
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) { [weak self] in
-          _ = self?.safePlayIfPossible(context: "playChunk.retry")
+      // ✅ HFP時の二重再生対策：最初のplay()を遅延させてSCOリンク安定を待つ
+      if isFirstPlayOfStream && playStartDelaySec > 0 {
+        isFirstPlayOfStream = false
+        isDelayingFirstPlay = true
+        let delay = playStartDelaySec
+        print("⏳ PlayerNodeStreamer: delaying first play() by \(delay)s for HFP stability")
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+          guard let self = self else { return }
+          self.isDelayingFirstPlay = false
+          print("⏳ PlayerNodeStreamer: delay completed, calling play()")
+          if !self.safePlayIfPossible(context: "playChunk.delayed") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) { [weak self] in
+              _ = self?.safePlayIfPossible(context: "playChunk.delayed.retry")
+            }
+          }
+        }
+      } else if isDelayingFirstPlay {
+        // ✅ 遅延中は play() を呼ばない（バッファはスケジュール済み）
+        print("⏸️ PlayerNodeStreamer: play() skipped - delay in progress")
+      } else {
+        isFirstPlayOfStream = false
+        // ✅ IOサイクル前の abort 回避：安全に play() できる状態かを確認
+        if !safePlayIfPossible(context: "playChunk") {
+          // 一度だけ軽くリトライ（IOサイクルが次tickで来ることがある）
+          DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) { [weak self] in
+            _ = self?.safePlayIfPossible(context: "playChunk.retry")
+          }
         }
       }
     }
@@ -481,6 +574,7 @@ public final class PlayerNodeStreamer {
     outputMonitor.reset()
     // ✅ タップを削除
     engine.mainMixerNode.removeTap(onBus: 0)
+    isPrimingPlayback = false
     notifyPlaybackStartCancelledAll()
   }
   
@@ -735,6 +829,139 @@ public final class PlayerNodeStreamer {
     stateLock.lock()
     firstChunkLogged = false
     stateLock.unlock()
+
+    // ✅ フェードイン状態をリセット
+    isFirstChunkOfStream = true
+    totalFadedSamples = 0
+
+    // ✅ 破棄状態をリセット
+    discardedSamples = 0
+
+    // ✅ 再生開始遅延状態をリセット
+    isFirstPlayOfStream = true
+    isDelayingFirstPlay = false  // ✅ 遅延中フラグもリセット
+    isPrimingPlayback = false
+  }
+
+  /// ✅ HFP時の出だし二重感軽減のためのフェードイン時間を設定
+  /// - Parameter seconds: フェードイン時間（秒）。0で無効。HFP時は0.15〜0.2推奨
+  public func setFadeInDuration(_ seconds: Double) {
+    fadeInDurationSec = max(0, seconds)
+    print("🎚️ PlayerNodeStreamer: fadeInDuration set to \(fadeInDurationSec)s")
+  }
+
+  /// ✅ プリバッファ時間を設定（HFP時は長めに設定することで安定性向上）
+  /// - Parameter seconds: プリバッファ時間（秒）。通常0.2、HFP時は0.35推奨
+  public func setPrebufferDuration(_ seconds: Double) {
+    prebufferSec = max(0.1, min(1.0, seconds))
+    print("📦 PlayerNodeStreamer: prebufferSec set to \(prebufferSec)s")
+  }
+
+  /// ✅ 最初のチャンク破棄時間を設定（HFP時のSCOリンク立ち上がり問題対策）
+  /// - Parameter seconds: 破棄時間（秒）。0で無効。HFP時は0.1〜0.15推奨
+  public func setDiscardInitialDuration(_ seconds: Double) {
+    discardInitialSec = max(0, min(0.5, seconds))
+    print("🗑️ PlayerNodeStreamer: discardInitialSec set to \(discardInitialSec)s")
+  }
+
+  /// ✅ 最初のplay()呼び出し遅延を設定（HFP時のSCOリンク安定待ち）
+  /// - Parameter seconds: 遅延時間（秒）。0で無効。HFP時は0.15推奨
+  public func setPlayStartDelay(_ seconds: Double) {
+    playStartDelaySec = max(0, min(0.5, seconds))
+    print("⏳ PlayerNodeStreamer: playStartDelaySec set to \(playStartDelaySec)s")
+  }
+
+  /// ✅ HFP時のSCO安定化：無音プリミング時間を設定
+  /// - Parameter seconds: 無音の長さ（秒）。0で無効。HFP時は0.03〜0.05推奨
+  public func setPrimeSilenceDuration(_ seconds: Double) {
+    primeSilenceSec = max(0, min(0.2, seconds))
+    print("🧪 PlayerNodeStreamer: primeSilenceSec set to \(primeSilenceSec)s")
+  }
+
+  /// ✅ IOサイクル確立のための無音プリミング（HFP向け）
+  /// - Note: 実音声の前に短い無音を一度だけ流し、SCO立ち上がり時の二重再生を回避する狙い
+  public func primeForPlaybackIfNeeded(reason: String, force: Bool = false) {
+    guard primeSilenceSec > 0 else { return }
+    if isPrimingPlayback {
+      print("🧪 PlayerNodeStreamer: prime skipped (already priming) reason=\(reason)")
+      return
+    }
+    let now = Date()
+    if !force, let last = lastPrimeAt, now.timeIntervalSince(last) < 1.0 {
+      print("🧪 PlayerNodeStreamer: prime skipped (cooldown) reason=\(reason)")
+      return
+    }
+
+    if !engine.isRunning {
+      do {
+        try engine.start()
+        print("✅ PlayerNodeStreamer: engine started for priming")
+      } catch {
+        print("⚠️ PlayerNodeStreamer: prime failed (engine start) - \(error.localizedDescription)")
+        return
+      }
+    }
+
+    let format = outFormat ?? player.outputFormat(forBus: 0)
+    if format.sampleRate <= 0 || format.channelCount == 0 {
+      print("⚠️ PlayerNodeStreamer: prime failed (invalid format) rate=\(format.sampleRate), ch=\(format.channelCount)")
+      return
+    }
+
+    let frames = AVAudioFrameCount(max(1, Int(format.sampleRate * primeSilenceSec)))
+    guard let buf = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames) else {
+      print("⚠️ PlayerNodeStreamer: prime failed (buffer alloc)")
+      return
+    }
+    buf.frameLength = frames
+    if let floatData = buf.floatChannelData {
+      let channels = Int(format.channelCount)
+      let frameLength = Int(buf.frameLength)
+      for ch in 0..<channels {
+        memset(floatData[ch], 0, frameLength * MemoryLayout<Float>.size)
+      }
+    } else if let int16Data = buf.int16ChannelData {
+      let channels = Int(format.channelCount)
+      let frameLength = Int(buf.frameLength)
+      for ch in 0..<channels {
+        memset(int16Data[ch], 0, frameLength * MemoryLayout<Int16>.size)
+      }
+    }
+
+    isPrimingPlayback = true
+    lastPrimeAt = now
+    primeSequence += 1
+    let seq = primeSequence
+    print("🧪 PlayerNodeStreamer: priming scheduled (#\(seq)) reason=\(reason), frames=\(frames), rate=\(format.sampleRate)Hz")
+
+    let onPrimeDone: () -> Void = { [weak self] in
+      guard let self else { return }
+      self.isPrimingPlayback = false
+      print("🧪 PlayerNodeStreamer: priming completed (#\(seq))")
+    }
+
+    if #available(iOS 11.0, *) {
+      player.scheduleBuffer(
+        buf,
+        at: nil,
+        options: [],
+        completionCallbackType: .dataPlayedBack
+      ) { _ in
+        onPrimeDone()
+      }
+    } else {
+      player.scheduleBuffer(buf) {
+        onPrimeDone()
+      }
+    }
+
+    if !player.isPlaying {
+      if !safePlayIfPossible(context: "prime.\(reason)") {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) { [weak self] in
+          _ = self?.safePlayIfPossible(context: "prime.\(reason).retry")
+        }
+      }
+    }
   }
 
   /// 新しい再生ターン開始時に stopRequested を確実に解除しておく
@@ -858,5 +1085,31 @@ public final class PlayerNodeStreamer {
     stateLock.unlock()
 
     print("🎯 PlayerNodeStreamer: first audio chunk state - stopRequested=\(stopFlag), volume=\(player.volume), engineRunning=\(engine.isRunning)")
+  }
+
+  // MARK: - Private helpers
+
+  /// フェードインを適用（HFP時の出だし二重感軽減）
+  /// - Parameters:
+  ///   - buffer: 適用対象のバッファ（Float32）
+  ///   - fadeInSamples: フェードイン全体のサンプル数
+  ///   - alreadyFaded: 既にフェード済みのサンプル数
+  private func applyFadeIn(to buffer: AVAudioPCMBuffer, fadeInSamples: Int, alreadyFaded: Int) {
+    guard let floatData = buffer.floatChannelData else { return }
+    let channelCount = Int(buffer.format.channelCount)
+    let frameLength = Int(buffer.frameLength)
+
+    for i in 0..<frameLength {
+      let globalSampleIndex = alreadyFaded + i
+      if globalSampleIndex >= fadeInSamples {
+        // フェードイン完了
+        break
+      }
+      // 線形フェードイン（0.0 → 1.0）
+      let gain = Float(globalSampleIndex) / Float(fadeInSamples)
+      for ch in 0..<channelCount {
+        floatData[ch][i] *= gain
+      }
+    }
   }
 }

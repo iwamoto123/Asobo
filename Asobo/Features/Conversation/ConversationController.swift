@@ -473,6 +473,8 @@ public final class ConversationController: NSObject, ObservableObject {
         self.handsFreeSpeech = handsFreeSpeech
         // ✅ 共通エンジンを使用してPlayerNodeStreamerを初期化（AEC有効化のため）
         self.player = PlayerNodeStreamer(sharedEngine: sharedAudioEngine)
+        // ✅ HFP時の二重再生対策：毎回PlayerNodeを作り直してバッファ残留を防ぐ
+        self.player.setHardResetPlayerOnPrepare(true)
         super.init()
         setupAppLifecycleObservers()
     }

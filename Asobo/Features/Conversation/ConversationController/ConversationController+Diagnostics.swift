@@ -20,6 +20,7 @@ extension ConversationController {
         let inputs = route.inputs.map { $0.portType.rawValue }.joined(separator: ",")
         print("🎯 ConversationController: first audio chunk - turnId=\(turnId), playbackTurnId=\(playbackIdText), currentTurnId=\(currentTurnId)")
         print("🎯 ConversationController: route outputs=[\(outputs.isEmpty ? "none" : outputs)], inputs=[\(inputs.isEmpty ? "none" : inputs)], category=\(session.category.rawValue), mode=\(session.mode.rawValue), sampleRate=\(session.sampleRate)")
+        logAudioSessionSnapshot(prefix: "firstAudioChunk")
         player.logFirstChunkStateIfNeeded()
     }
 
@@ -115,6 +116,11 @@ extension ConversationController {
         let session = AVAudioSession.sharedInstance()
         let outputs = session.currentRoute.outputs.map { $0.portType.rawValue }.joined(separator: ",")
         print("🔄 ConversationController: audio route change detected - reason=\(reason.rawValue), outputs=[\(outputs.isEmpty ? "none" : outputs)]")
+        logAudioSessionSnapshot(prefix: "routeChange")
+
+        // ✅ HFP (Bluetooth Hands-Free Profile) 検出 → フェードイン有効化
+        let isHfp = session.currentRoute.outputs.contains { $0.portType == .bluetoothHFP }
+        configurePlayerForHfp(isHfp: isHfp)
 
         // ✅ categoryChange(=3) はアプリ内のAudioSession再設定（例: 画面遷移/再生準備）でも頻発する。
         // ここで毎回 prepareForNextStream() / engine restart を走らせると、再生中にバッファが破棄されたり
@@ -135,5 +141,44 @@ extension ConversationController {
             }
         }
         player.resumeIfNeeded()
+        if isHfp {
+            // ルート切替直後は不安定になりやすいため、短い無音でIOサイクルを確立
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in
+                self?.player.primeForPlaybackIfNeeded(reason: "routeChange.hfp", force: true)
+            }
+        }
+    }
+
+    /// HFP接続時の出だし二重感軽減設定
+    func configurePlayerForHfp(isHfp: Bool) {
+        if isHfp {
+            // HFP時: 破棄なし、フェードインなし、プリバッファ長め、play()遅延なし（代わりに無音プリミング）
+            // ⚠️ Voice FX は維持する（ユーザー体験として声の加工は重要）
+            player.setDiscardInitialDuration(0.0)   // 破棄しない（出だしを聞かせる）
+            player.setFadeInDuration(0.0)           // フェードインなし
+            player.setPrebufferDuration(0.35)       // 350msプリバッファ（HFP用に長め）
+            player.setPlayStartDelay(0.0)           // 遅延で間隔が伸びる問題を避ける
+            player.setPrimeSilenceDuration(0.04)    // 40ms無音プリミング
+            player.setHardResetPlayerOnPrepare(true)
+            print("🎧 ConversationController: HFP detected -> discard=OFF, fadeIn=OFF, prebuffer=0.35s, playDelay=OFF, prime=0.04s, hardReset=ON, voiceFX=maintained")
+        } else {
+            // 通常時: 破棄なし、フェードインなし、プリバッファ標準、遅延なし
+            player.setDiscardInitialDuration(0.0)
+            player.setFadeInDuration(0.0)
+            player.setPrebufferDuration(0.2)
+            player.setPlayStartDelay(0.0)
+            player.setPrimeSilenceDuration(0.0)
+            player.setHardResetPlayerOnPrepare(false)
+            print("🔊 ConversationController: non-HFP route -> discard=OFF, fadeIn=OFF, prebuffer=0.2s, playDelay=OFF, prime=OFF, hardReset=OFF")
+        }
+    }
+
+    func logAudioSessionSnapshot(prefix: String) {
+        let session = AVAudioSession.sharedInstance()
+        let outputs = session.currentRoute.outputs.map { $0.portType.rawValue }.joined(separator: ",")
+        let inputs = session.currentRoute.inputs.map { $0.portType.rawValue }.joined(separator: ",")
+        print("🎛️ AudioSession[\(prefix)]: outputs=[\(outputs.isEmpty ? "none" : outputs)], inputs=[\(inputs.isEmpty ? "none" : inputs)], category=\(session.category.rawValue), mode=\(session.mode.rawValue)")
+        print("🎛️ AudioSession[\(prefix)]: sampleRate=\(session.sampleRate)Hz, ioBuffer=\(String(format: "%.4f", session.ioBufferDuration))s, outLatency=\(String(format: "%.4f", session.outputLatency))s, inLatency=\(String(format: "%.4f", session.inputLatency))s")
+        print("🎛️ AudioSession[\(prefix)]: preferredRate=\(session.preferredSampleRate)Hz, preferredIO=\(String(format: "%.4f", session.preferredIOBufferDuration))s, otherAudio=\(session.isOtherAudioPlaying)")
     }
 }
