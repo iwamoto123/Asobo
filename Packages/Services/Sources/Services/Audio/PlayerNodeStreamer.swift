@@ -632,6 +632,13 @@ public final class PlayerNodeStreamer {
     updateVoiceEffect(enabled: true, useVarispeed: true)
   }
 
+  /// ✅ 音量を確実に最大にする（hard reset後の音量低下対策）
+  public func ensureMaxVolume() {
+    player.volume = 1.0
+    engine.mainMixerNode.outputVolume = 1.0
+    print("🔊 PlayerNodeStreamer: ensureMaxVolume() - player.volume=1.0, mainMixer.outputVolume=1.0")
+  }
+
   /// ✅ 「声かけ」タブ専用：マスコット寄り（高め）プリセット
   /// - Note: ハンズフリー等の既存挙動に影響を出さないため、呼び出し側（TTSEngine）でのみ使用する
   /// - Note: pitch を効かせるため、TimePitch → Varispeed の直列で接続する

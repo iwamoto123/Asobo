@@ -173,13 +173,36 @@ public final class ParentPhrasesController: ObservableObject {
             out.portType == .bluetoothHFP || out.portType == .bluetoothA2DP || out.portType == .bluetoothLE
         })
         guard !hasBluetoothOutput else { return }
-        let isReceiver = s.currentRoute.outputs.contains(where: { $0.portType == .builtInReceiver })
-        guard isReceiver else { return } // 既にSpeakerなら触らない（音量メーターの変化を減らす）
+
+        // ✅ AudioSessionを常に再設定する（Bluetooth切断後の音量低下対策）
+        // - Bluetooth(HFP)切断後、サンプルレートが8kHz/16kHzのまま残る問題を解消
+        // - .playAndRecord + .defaultToSpeaker でスピーカー出力を確保
+        // - .voiceChat モードでAEC有効化（マイク入力との干渉を防ぐ）
+        // - 48kHz/10msバッファで高品質再生を確保
+        do {
+            // ✅ AudioEngine を常に停止（BT切断後の不整合状態をリセット）
+            audioEngine.stop()
+            // ✅ PlayerNodeStreamer の状態もリセット（内部バッファや接続をクリア）
+            player.prepareForNextStream()
+            print("🔧 ParentPhrasesController: AudioEngine & Player reset (\(reason))")
+
+            try s.setCategory(.playAndRecord, options: [.defaultToSpeaker, .allowBluetooth, .allowBluetoothA2DP])
+            try s.setMode(.voiceChat)
+            // ✅ サンプルレートとバッファを明示的に設定（BT切断後の復旧）
+            try s.setPreferredSampleRate(48_000)
+            try s.setPreferredIOBufferDuration(0.01)  // 10ms
+            try s.setActive(true)
+            print("🔧 ParentPhrasesController: AudioSession configured - sampleRate=\(s.sampleRate)Hz (\(reason))")
+        } catch {
+            print("⚠️ ParentPhrasesController: AudioSession configuration failed - \(error.localizedDescription)")
+        }
+
+        // ✅ 非Bluetooth時は常にスピーカー出力を強制（受話口落ち対策）
         try? s.overrideOutputAudioPort(.speaker)
         #if canImport(UIKit)
         UIDevice.current.isProximityMonitoringEnabled = false
         #endif
-        print("📢 ParentPhrasesController: speaker override applied (receiver->speaker, no BT) (\(reason))")
+        print("📢 ParentPhrasesController: speaker override applied (no BT) (\(reason))")
     }
 
     private func startStandaloneVoiceCapture() throws {

@@ -121,6 +121,16 @@ public final class TTSEngine: TTSEngineProtocol {
         print("🔧 TTSEngine[\(requestId)]: prepareForNextStream()呼び出し")
         player.prepareForNextStream()  // ✅ 前の再生を停止してバッファをクリア
 
+        // ✅ 非Bluetooth時はスピーカー出力を再強制（hard reset後に受話口に落ちる問題対策）
+        let session = AVAudioSession.sharedInstance()
+        let hasBluetooth = session.currentRoute.outputs.contains {
+            $0.portType == .bluetoothHFP || $0.portType == .bluetoothA2DP || $0.portType == .bluetoothLE
+        }
+        if !hasBluetooth {
+            try? session.overrideOutputAudioPort(.speaker)
+            print("📢 TTSEngine[\(requestId)]: スピーカー出力を再強制")
+        }
+
         guard currentRequestId == requestId else {
             print("⚠️ TTSEngine[\(requestId)]: 再生キャンセル済み（再生前）")
             return
@@ -129,6 +139,9 @@ public final class TTSEngine: TTSEngineProtocol {
         print("🎛️ TTSEngine[\(requestId)]: applyParentPhrasesMascotPreset()呼び出し")
         // ✅ 声かけタブ専用：ハンズフリーに影響させず「声だけ」マスコット寄りにする
         player.applyParentPhrasesMascotPreset()
+
+        // ✅ ノード再接続後に音量を確実に1.0にする（hard reset後に音が小さくなる問題対策）
+        player.ensureMaxVolume()
 
         print("▶️ TTSEngine[\(requestId)]: playChunk()呼び出し - dataSize=\(pcmWithTail.count)")
         // ✅ 単発TTSは必ず即時再生（プリバッファで止まるのを防ぐ）
@@ -146,17 +159,27 @@ public final class TTSEngine: TTSEngineProtocol {
     }
 
     // MARK: - Gain helpers (ParentPhrases only)
-    private static func parentPhrasesNormalizeTargetPeakForCurrentRoute() -> Float {
+
+    /// ✅ 非Bluetooth時の追加ゲインブースト倍率
+    /// - エフェクトチェーン（timePitch + varispeed）で音量が下がる傾向があるため、
+    ///   ハンズフリー会話と同等以上の音量感を出すために追加ブーストが必要
+    /// - 1.8 → 2.5 → 4.0 に引き上げ（ユーザーからのフィードバックで音量不足）
+    private static let speakerExtraBoost: Float = 4.0
+
+    private static func parentPhrasesNormalizeTargetPeakForCurrentRoute() -> (peak: Float, extraBoost: Float) {
         let s = AVAudioSession.sharedInstance()
         let outs = s.currentRoute.outputs.map { $0.portType }
         let isBluetooth = outs.contains(where: { port in
             port == .bluetoothA2DP || port == .bluetoothHFP || port == .bluetoothLE
         })
-        // 目標ピーク（Int16.max に対する割合）
-        let ratio: Float = isBluetooth ? 0.72 : 0.90
+        // ✅ 目標ピーク（Int16.max に対する割合）
+        // Bluetoothは歪み防止で控えめ、スピーカーはフルスケール
+        let ratio: Float = isBluetooth ? 0.72 : 1.0
         let peak = ratio * Float(Int16.max)
-        print("🔊 TTSEngine: ParentPhrases targetPeak=\(Int(peak)) (ratio=\(ratio), outputs=\(outs.map(\.rawValue).joined(separator: ",")))")
-        return peak
+        // ✅ 非Bluetooth時は追加ブースト（エフェクトチェーンの音量低下を補償）
+        let boost: Float = isBluetooth ? 1.0 : speakerExtraBoost
+        print("🔊 TTSEngine: ParentPhrases targetPeak=\(Int(peak)) (ratio=\(ratio), extraBoost=\(boost), outputs=\(outs.map(\.rawValue).joined(separator: ",")))")
+        return (peak, boost)
     }
 
     /// 24kHz/mono/PCM16（little-endian）を想定して、目標ピークへ正規化（上限付き）
@@ -175,15 +198,20 @@ public final class TTSEngine: TTSEngineProtocol {
         }
         if peakAbs <= 0 { return data }
 
-        // 2) 目標ピークに合わせて gain を決める（上限付き）
-        let targetPeak = parentPhrasesNormalizeTargetPeakForCurrentRoute()
+        // 2) 目標ピークに合わせて gain を決める
+        let (targetPeak, extraBoost) = parentPhrasesNormalizeTargetPeakForCurrentRoute()
         let rawGain = targetPeak / Float(peakAbs)
-        let gain = min(max(rawGain, 1.0), 8.0) // 過剰ブーストでノイズが目立つのを防ぐ
+        // ✅ 常に extraBoost を適用（エフェクトチェーンの音量低下を補償）
+        // - 非Bluetooth: 1.8倍ブースト（ハンズフリー会話と同等の音量感）
+        // - Bluetooth: 1.0倍（そのまま）
+        let boostedGain = rawGain * extraBoost
+        let gain = min(max(boostedGain, 1.0), 16.0) // 上限を緩和（8.0→12.0→16.0）
         let gainText = String(format: "%.2f", gain)
         let rawGainText = String(format: "%.2f", rawGain)
-        print("🔊 TTSEngine: ParentPhrases normalize peakAbs=\(peakAbs), gain=\(gainText) (rawGain=\(rawGainText))")
-        guard gain > 1.001 else { return data }
+        let boostedGainText = String(format: "%.2f", boostedGain)
+        print("🔊 TTSEngine: ParentPhrases normalize peakAbs=\(peakAbs), gain=\(gainText) (rawGain=\(rawGainText), boosted=\(boostedGainText))")
 
+        // ✅ ゲインが1.0未満でも常に正規化を実行（extraBoostを確実に適用）
         var out = Data(count: data.count)
         out.withUnsafeMutableBytes { outRaw in
             data.withUnsafeBytes { inRaw in
