@@ -34,7 +34,6 @@ public final class MicrophoneCapture {
   // ✅ 追加: 音量レベル（dB）を通知するコールバック
   public var onVolume: ((Double) -> Void)?
   private var running = false
-  private var pendingVoiceProcessingEnabled: Bool?
 
   // ✅ バッチ送信用：60msごとにまとめて送信（反応速度重視）
   // 変更前: 200ms (安定重視)
@@ -120,14 +119,14 @@ public final class MicrophoneCapture {
     guard !running else { return }
     let inputNode = engine.inputNode
 
-    // ✅ 既にタップがインストールされている場合は先に削除（エラー回避）
-    inputNode.removeTap(onBus: 0)
-
     // ✅ 追加: 強力なAEC有効化設定 (iOS 13+)
-    // 共有エンジンでは切替を行わない（クラッシュ報告あり）
-    if #available(iOS 13.0, *), ownsEngine {
+    // VoiceProcessingモードであっても、明示的にバイパス無効（＝処理有効）を設定するのが安全
+    if #available(iOS 13.0, *) {
       setVoiceProcessingEnabled(true)
     }
+
+    // ✅ 既にタップがインストールされている場合は先に削除（エラー回避）
+    inputNode.removeTap(onBus: 0)
 
     // ✅ エンジンの所有権ロジック
     if ownsEngine && !engine.isRunning {
@@ -315,7 +314,6 @@ public final class MicrophoneCapture {
     if ownsEngine {
       engine.stop()
       engine.reset()  // ← 個別エンジンの場合、完全にリセット
-      applyPendingVoiceProcessingIfPossible()
     }
 
     // ★ 再開に備えて初期化
@@ -330,40 +328,11 @@ extension MicrophoneCapture {
   /// VoiceProcessingのON/OFFを安全に切り替える（iOS 13+のみ）
   private func setVoiceProcessingEnabled(_ enabled: Bool) {
     guard #available(iOS 13.0, *) else { return }
-    guard ownsEngine else {
-      print("⚠️ MicrophoneCapture: VoiceProcessingEnabled skip (shared engine) -> \(enabled)")
-      return
-    }
-    // ⚠️ 共有エンジンが稼働中の切替はクラッシュすることがあるため、実行条件を厳格化
-    if engine.isRunning && !ownsEngine {
-      pendingVoiceProcessingEnabled = enabled
-      print("⚠️ MicrophoneCapture: VoiceProcessingEnabled defer (engine running, shared) -> \(enabled)")
-      return
-    }
-    if engine.isRunning {
-      pendingVoiceProcessingEnabled = enabled
-      print("⚠️ MicrophoneCapture: VoiceProcessingEnabled defer (engine running) -> \(enabled)")
-      return
-    }
     do {
       try engine.inputNode.setVoiceProcessingEnabled(enabled)
-      pendingVoiceProcessingEnabled = nil
       print("✅ MicrophoneCapture: VoiceProcessingEnabled = \(enabled)")
     } catch {
       print("⚠️ MicrophoneCapture: VoiceProcessingEnabled設定失敗 - \(error)")
-    }
-  }
-
-  private func applyPendingVoiceProcessingIfPossible() {
-    guard let pending = pendingVoiceProcessingEnabled else { return }
-    guard #available(iOS 13.0, *) else { return }
-    guard !engine.isRunning else { return }
-    do {
-      try engine.inputNode.setVoiceProcessingEnabled(pending)
-      print("✅ MicrophoneCapture: VoiceProcessingEnabled applied (pending) = \(pending)")
-      pendingVoiceProcessingEnabled = nil
-    } catch {
-      print("⚠️ MicrophoneCapture: VoiceProcessingEnabled pending apply failed - \(error)")
     }
   }
 }

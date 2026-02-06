@@ -43,17 +43,17 @@ extension ConversationController {
             print("   - OutputVolume: \(audioSession.outputVolume) (1.0が最大)")
             print("   - OutputChannels: \(audioSession.outputNumberOfChannels)")
             print("   - SampleRate: \(audioSession.sampleRate)Hz")
-            logAudioSessionSnapshot(prefix: "sessionStart")
 
             if audioSession.outputVolume < 0.1 {
                 print("⚠️ ConversationController: 音量が非常に低いです（\(audioSession.outputVolume)）。デバイスの音量設定を確認してください。")
             }
 
-            // ✅ HFP (Bluetooth Hands-Free Profile) 検出 → プライミング + プリバッファ延長
-            // ⚠️ 出だしを破棄せず、無音プリミングでSCOリンク立ち上がりを安定化する
-            // ⚠️ Voice FX は維持する（ユーザー体験として声の加工は重要）
+            // ✅ HFP (Bluetooth Hands-Free Profile) 検出時のみ特別設定
+            // ⚠️ 非HFP時は何も変更しない（AECを維持するため）
             let isHfp = audioSession.currentRoute.outputs.contains { $0.portType == .bluetoothHFP }
-            configurePlayerForHfp(isHfp: isHfp)
+            if isHfp {
+                configurePlayerForHfp()
+            }
 
             print("✅ ConversationController: AudioSession設定とPlayerNodeStreamer開始成功")
         } catch {

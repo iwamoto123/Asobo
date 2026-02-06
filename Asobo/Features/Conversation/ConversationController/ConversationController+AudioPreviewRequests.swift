@@ -99,10 +99,16 @@ extension ConversationController {
             self.isThinking = true
             self.playRandomFiller()
             self.player.prepareForNextStream()
-            let isHfp = AVAudioSession.sharedInstance().currentRoute.outputs.contains { $0.portType == .bluetoothHFP }
-            if isHfp {
-                self.player.primeForPlaybackIfNeeded(reason: "beforeStream.hfp", force: true)
+            // ✅ 非Bluetooth時はスピーカー出力を再強制（hard reset後に受話口に落ちる問題対策）
+            let session = AVAudioSession.sharedInstance()
+            let hasBluetooth = session.currentRoute.outputs.contains {
+                $0.portType == .bluetoothHFP || $0.portType == .bluetoothA2DP || $0.portType == .bluetoothLE
             }
+            if !hasBluetooth {
+                try? session.overrideOutputAudioPort(.speaker)
+            }
+            // ✅ 全ルートで無音プリミングを実行（二重再生対策）
+            self.player.primeForHfpPlaybackIfNeeded(reason: "beforeTextRequest", force: true)
         }
 
         let tStart = Date()
@@ -312,6 +318,16 @@ extension ConversationController {
         print("⏱️ ConversationController: sendAudioPreviewRequest start - pcmBytes=\(captured.count), sampleRate=\(recordedSampleRate)")
         await MainActor.run {
             self.player.prepareForNextStream()
+            // ✅ 非Bluetooth時はスピーカー出力を再強制（hard reset後に受話口に落ちる問題対策）
+            let session = AVAudioSession.sharedInstance()
+            let hasBluetooth = session.currentRoute.outputs.contains {
+                $0.portType == .bluetoothHFP || $0.portType == .bluetoothA2DP || $0.portType == .bluetoothLE
+            }
+            if !hasBluetooth {
+                try? session.overrideOutputAudioPort(.speaker)
+            }
+            // ✅ 全ルートで無音プリミングを実行（二重再生対策）
+            self.player.primeForHfpPlaybackIfNeeded(reason: "beforeAudioRequest", force: true)
         }
 
         do {
