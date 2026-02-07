@@ -163,8 +163,13 @@ public final class TTSEngine: TTSEngineProtocol {
     /// ✅ 非Bluetooth時の追加ゲインブースト倍率
     /// - エフェクトチェーン（timePitch + varispeed）で音量が下がる傾向があるため、
     ///   ハンズフリー会話と同等以上の音量感を出すために追加ブーストが必要
-    /// - 1.8 → 2.5 → 4.0 に引き上げ（ユーザーからのフィードバックで音量不足）
-    private static let speakerExtraBoost: Float = 4.0
+    /// - 1.8 → 2.5 → 4.0 → 6.0 に引き上げ（ユーザーからのフィードバックで音量不足）
+    private static let speakerExtraBoost: Float = 6.0
+
+    /// ✅ Bluetooth時の追加ゲインブースト倍率
+    /// - Bluetoothでも音量を上げたいというフィードバックに対応
+    /// - 歪み防止のため非Bluetoothより控えめに設定
+    private static let bluetoothExtraBoost: Float = 1.5
 
     private static func parentPhrasesNormalizeTargetPeakForCurrentRoute() -> (peak: Float, extraBoost: Float) {
         let s = AVAudioSession.sharedInstance()
@@ -173,11 +178,12 @@ public final class TTSEngine: TTSEngineProtocol {
             port == .bluetoothA2DP || port == .bluetoothHFP || port == .bluetoothLE
         })
         // ✅ 目標ピーク（Int16.max に対する割合）
-        // Bluetoothは歪み防止で控えめ、スピーカーはフルスケール
-        let ratio: Float = isBluetooth ? 0.72 : 1.0
+        // Bluetoothは歪み防止で控えめ（0.72→0.85）、スピーカーはフルスケール
+        let ratio: Float = isBluetooth ? 0.85 : 1.0
         let peak = ratio * Float(Int16.max)
-        // ✅ 非Bluetooth時は追加ブースト（エフェクトチェーンの音量低下を補償）
-        let boost: Float = isBluetooth ? 1.0 : speakerExtraBoost
+        // ✅ 追加ブースト（エフェクトチェーンの音量低下を補償）
+        // Bluetooth時も控えめにブースト適用
+        let boost: Float = isBluetooth ? bluetoothExtraBoost : speakerExtraBoost
         print("🔊 TTSEngine: ParentPhrases targetPeak=\(Int(peak)) (ratio=\(ratio), extraBoost=\(boost), outputs=\(outs.map(\.rawValue).joined(separator: ",")))")
         return (peak, boost)
     }
