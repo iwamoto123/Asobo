@@ -1,6 +1,8 @@
 import SwiftUI
 import Domain
 
+private let analytics = AnalyticsService.shared
+
 // MARK: - History List View
 struct HistoryListView: View {
     @EnvironmentObject var authVM: AuthViewModel
@@ -78,6 +80,8 @@ struct HistoryListView: View {
             .navigationTitle("おもいで")
             .navigationBarTitleDisplayMode(.large)
             .task {
+                analytics.logScreenView(.history)
+
                 // ✅ AuthViewModelからユーザー情報を取得してHistoryViewModelに設定
                 if let userId = authVM.currentUser?.uid, let childId = authVM.selectedChild?.id {
                     viewModel.setupUser(userId: userId, childId: childId)

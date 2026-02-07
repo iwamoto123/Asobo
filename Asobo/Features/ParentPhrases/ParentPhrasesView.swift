@@ -2,6 +2,8 @@ import SwiftUI
 import Domain
 import Combine
 
+private let analytics = AnalyticsService.shared
+
 @available(iOS 17.0, *)
 struct ParentPhrasesView: View {
     @EnvironmentObject private var authViewModel: AuthViewModel
@@ -29,6 +31,8 @@ struct ParentPhrasesView: View {
             .navigationTitle("声かけ")
             .navigationBarTitleDisplayMode(.large)
             .task {
+                analytics.logScreenView(.parentPhrases)
+
                 if controller == nil {
                     let uid = authViewModel.currentUser?.uid
                     controller = ParentPhrasesController(userId: uid)

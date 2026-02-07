@@ -7,6 +7,8 @@ import Services
 import Support
 import Speech
 
+private let analytics = AnalyticsService.shared
+
 @available(iOS 17.0, *)
 @MainActor
 public final class ParentPhrasesController: ObservableObject {
@@ -114,6 +116,7 @@ public final class ParentPhrasesController: ObservableObject {
         if !customCategories.contains(c) {
             customCategories.append(c)
             persistCustomCategories()
+            analytics.log(.categoryCreated(name: name))
         }
     }
 
@@ -308,6 +311,8 @@ public final class ParentPhrasesController: ObservableObject {
             playbackProgress = 0.0
         }
 
+        analytics.log(.phraseCardPlay(category: card.category.name))
+
         let requestId = String(UUID().uuidString.prefix(8))
         playQueueTask = Task { @MainActor [weak self] in
             await self?.playCard(card, requestId: requestId)
@@ -416,6 +421,7 @@ public final class ParentPhrasesController: ObservableObject {
     // 音声入力（即時テキスト表示 → 追加へ）
     func startVoiceInput(clearExistingText: Bool) {
         if isRecording { return }
+        analytics.log(.voiceInputStart)
         Task { @MainActor in
             self.voiceInputError = nil
             print("🎤 ParentPhrasesController: startVoiceInput()")
@@ -564,6 +570,7 @@ public final class ParentPhrasesController: ObservableObject {
     // toggle/cancel/stop/tap helpers are implemented in ParentPhrasesController+VoiceInput.swift
 
     func saveCard(_ card: PhraseCard) {
+        let isNew = !cards.contains(where: { $0.id == card.id })
         Task {
             try? await repository.upsert(card)
             await loadCards()
@@ -571,6 +578,7 @@ public final class ParentPhrasesController: ObservableObject {
             if !card.category.isBuiltin {
                 addCustomCategory(card.category.name)
             }
+            analytics.log(.phraseCardSave(category: card.category.name, isNew: isNew))
             print("✅ カード保存完了: \(card.text)")
         }
     }
@@ -579,6 +587,7 @@ public final class ParentPhrasesController: ObservableObject {
         Task {
             try? await repository.delete(id: card.id)
             await loadCards()
+            analytics.log(.phraseCardDelete(category: card.category.name))
             print("🗑️ カード削除完了: \(card.text)")
         }
     }

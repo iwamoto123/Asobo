@@ -1,5 +1,8 @@
 import SwiftUI
 import AVFoundation
+import Domain
+
+private let analytics = AnalyticsService.shared
 
 // MARK: - Color Palette
 extension Color {
@@ -166,6 +169,8 @@ public struct ChildHomeView: View {
             }
         }
         .onAppear {
+            analytics.logScreenView(.home)
+
             // ✅ AuthViewModelからユーザー情報を取得してConversationControllerに設定
             if let userId = authVM.currentUser?.uid, let child = authVM.selectedChild, let childId = child.id {
                 controller.setupUser(

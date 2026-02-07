@@ -6,6 +6,8 @@ import AuthenticationServices
 import Domain
 import GoogleSignIn
 
+private let analytics = AnalyticsService.shared
+
 @MainActor
 class AuthViewModel: ObservableObject {
     @Published var currentUser: User?
@@ -51,16 +53,19 @@ class AuthViewModel: ObservableObject {
     // MARK: - Google Sign In
     func handleGoogleSignIn(idToken: String, accessToken: String) {
         isSigningIn = true
+        analytics.log(.loginStart(provider: .google))
         let credential = GoogleAuthProvider.credential(withIDToken: idToken, accessToken: accessToken)
         Auth.auth().signIn(with: credential) { [weak self] _, error in
             guard let self else { return }
             if let error = error {
                 self.errorMessage = "Googleログインに失敗しました: \(error.localizedDescription)"
                 print("❌ AuthViewModel: Google Sign In エラー - \(error)")
+                analytics.log(.loginFailure(provider: .google, error: error.localizedDescription))
                 self.isSigningIn = false
                 return
             }
             print("✅ AuthViewModel: Google Sign In 成功")
+            analytics.log(.loginSuccess(provider: .google))
             // fetchUserProfileはリスナー経由で呼ばれるためここでは呼ばない
         }
     }
@@ -68,13 +73,16 @@ class AuthViewModel: ObservableObject {
     // MARK: - Apple Sign In
     func handleSignInWithApple(credential: ASAuthorizationAppleIDCredential, nonce: String) {
         isSigningIn = true
+        analytics.log(.loginStart(provider: .apple))
         guard let appleIDToken = credential.identityToken else {
             self.errorMessage = "認証トークンの取得に失敗しました"
+            analytics.log(.loginFailure(provider: .apple, error: "認証トークンの取得に失敗"))
             self.isSigningIn = false
             return
         }
         guard let idTokenString = String(data: appleIDToken, encoding: .utf8) else {
             self.errorMessage = "トークンの変換に失敗しました"
+            analytics.log(.loginFailure(provider: .apple, error: "トークンの変換に失敗"))
             self.isSigningIn = false
             return
         }
@@ -90,10 +98,12 @@ class AuthViewModel: ObservableObject {
             if let error = error {
                 self.errorMessage = error.localizedDescription
                 print("❌ AuthViewModel: Apple Sign In エラー - \(error)")
+                analytics.log(.loginFailure(provider: .apple, error: error.localizedDescription))
                 self.isSigningIn = false
                 return
             }
             print("✅ AuthViewModel: Apple Sign In 成功")
+            analytics.log(.loginSuccess(provider: .apple))
         }
     }
 
@@ -105,6 +115,8 @@ class AuthViewModel: ObservableObject {
             self.selectedChild = nil
             self.authState = .login
             self.isSigningIn = false
+            analytics.log(.logout)
+            analytics.setUserId(nil)
             print("✅ AuthViewModel: ログアウト成功")
         } catch {
             self.errorMessage = "ログアウトに失敗しました: \(error.localizedDescription)"
@@ -164,6 +176,8 @@ class AuthViewModel: ObservableObject {
 
             if self.selectedChild != nil {
                 self.authState = .main
+                analytics.setUserId(userId)
+                analytics.setUserProperty(String(decoded.count), forName: "children_count")
                 print("✅ AuthViewModel: 準備完了 (Child: \(self.selectedChild?.displayName ?? "unknown"), children=\(decoded.count))")
             } else {
                 print("⚠️ AuthViewModel: 子どもデータが見つかりません -> Onboardingへ")

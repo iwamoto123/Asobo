@@ -1,6 +1,9 @@
 import Foundation
 import AVFoundation
 import Services
+import Domain
+
+private let analytics = AnalyticsService.shared
 
 extension ConversationController {
     // MARK: - Hands-free Conversation (VAD)
@@ -41,6 +44,7 @@ extension ConversationController {
         speechStartTime = nil
         silenceTimer?.invalidate()
         silenceTimer = nil
+        analytics.log(.handsFreeStart)
         startHandsFreeInternal()
     }
 
@@ -61,6 +65,7 @@ extension ConversationController {
         stopHandsFreeRealtimeSTTMonitor()
         mic?.stop()
         turnState = .waitingUser
+        analytics.log(.handsFreeStop)
     }
 
     private func startHandsFreeInternal() {

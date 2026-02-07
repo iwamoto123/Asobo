@@ -5,6 +5,8 @@ import FirebaseFirestore
 import FirebaseStorage
 import Domain
 
+private let analytics = AnalyticsService.shared
+
 // 画像キャッシュ用のシングルトン
 class ImageCache {
     static let shared = ImageCache()
@@ -73,6 +75,7 @@ struct ProfileView: View {
             .navigationTitle("プロフィール")
             .navigationBarTitleDisplayMode(.inline)
             .onAppear {
+                analytics.logScreenView(.profile)
                 loadInitialValues()
                 Task { await loadProfileImageIfNeeded(forceReload: true) }
             }
@@ -333,6 +336,7 @@ struct ProfileView: View {
             try await ref.setData(data)
 
             await authVM.fetchUserProfile(userId: uid)
+            analytics.log(.siblingAdded)
             await MainActor.run {
                 loadInitialValues()
                 message = "きょうだいを追加しました"
@@ -560,6 +564,7 @@ struct ProfileView: View {
                     _ = try await ref.putData(compressedData, metadata: metadata)
                     let url = try await ref.downloadURL()
                     photoURL = url.absoluteString
+                    analytics.log(.avatarUpload)
                     print("📸 ProfileView: 画像アップロード成功 - URL: \(photoURL ?? "nil")")
                 }
 
@@ -622,6 +627,7 @@ struct ProfileView: View {
                 // 再度画像を読み込む（authVM.fetchUserProfile完了後）
                 await loadProfileImageIfNeeded(forceReload: true)
 
+                analytics.log(.profileUpdate)
                 message = "保存しました"
 
             } catch {

@@ -5,6 +5,8 @@ import Domain
 import Support
 import DataStores
 
+private let analytics = AnalyticsService.shared
+
 extension ConversationController {
     // MARK: - Realtime（次の段階：会話）
     public func startRealtimeSession() {
@@ -203,6 +205,7 @@ extension ConversationController {
             guard let self else { return }
             do {
                 print("🚀 ConversationController: gpt-4o-audio-previewセッション開始")
+                analytics.log(.conversationSessionStart(mode: .freeTalk))
 
                 // 状態を更新
                 await MainActor.run {
@@ -226,6 +229,10 @@ extension ConversationController {
 
     public func stopRealtimeSession() {
         print("🛑 ConversationController: Realtimeセッション終了")
+
+        // Analytics: セッション終了をログ（turnCountは終了時点の値を使用）
+        let finalTurnCount = self.turnCount
+        analytics.log(.conversationSessionEnd(durationSeconds: 0, turnCount: finalTurnCount))
         ignoreIncomingAIChunks = true
         currentTurnId = 0
         listeningTurnId = 0

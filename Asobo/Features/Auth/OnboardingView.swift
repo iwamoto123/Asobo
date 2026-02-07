@@ -5,6 +5,8 @@ import FirebaseFirestore
 import Domain
 import FirebaseAuth
 
+private let analytics = AnalyticsService.shared
+
 struct OnboardingView: View {
     @ObservedObject var authVM: AuthViewModel
     @State private var tabSelection = 0
@@ -400,6 +402,13 @@ struct OnboardingView: View {
                 keyboardHeight = 0
             }
         }
+        .onAppear {
+            analytics.log(.onboardingStart)
+            analytics.logScreenView(.onboarding)
+        }
+        .onChange(of: tabSelection) { newStep in
+            analytics.log(.onboardingStep(step: newStep))
+        }
     }
 
     var canSubmit: Bool {
@@ -532,7 +541,10 @@ struct OnboardingView: View {
                 try await db.collection("users").document(uid).updateData(["currentChildId": childRef.documentID])
                 print("✅ OnboardingView: currentChildId更新成功")
 
-                // 5. ViewModelの状態更新 -> Mainへ遷移
+                // 5. Analytics: オンボーディング完了
+                analytics.log(.onboardingComplete)
+
+                // 6. ViewModelの状態更新 -> Mainへ遷移
                 await authVM.fetchUserProfile(userId: uid)
 
             } catch {
