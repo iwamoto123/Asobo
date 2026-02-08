@@ -297,6 +297,49 @@ public final class ParentPhrasesController: ObservableObject {
             }
     }
 
+    // テキストを直接読み上げ（保存前のプレビュー用）
+    func playText(_ text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+
+        // 再生中なら止める
+        if isPlaying || playQueueTask != nil || preparingCardId != nil {
+            currentPlayRequestId = nil
+            playQueueTask?.cancel()
+            playQueueTask = nil
+            ttsEngine.cancelCurrentPlayback(reason: "user_tapped_preview")
+            isPlaying = false
+            playingCardId = nil
+            preparingCardId = nil
+            playbackProgress = 0.0
+        }
+
+        let requestId = String(UUID().uuidString.prefix(8))
+        playQueueTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            self.currentPlayRequestId = requestId
+            self.ttsEngine.beginRequest(requestId)
+            self.ensureSpeakerOutputIfNoBluetooth(reason: "playText")
+            self.audioEngine.mainMixerNode.outputVolume = 1.0
+            guard self.ensureAudioEngineRunning(reason: "playText") else { return }
+
+            self.isPlaying = true
+            defer {
+                if self.currentPlayRequestId == requestId {
+                    self.isPlaying = false
+                    self.currentPlayRequestId = nil
+                }
+            }
+
+            do {
+                try await self.ttsEngine.speak(text: trimmed, requestId: requestId)
+            } catch {
+                print("❌ playText[\(requestId)]: 再生エラー - text=\"\(trimmed)\", error=\(error.localizedDescription)")
+            }
+            self.playQueueTask = nil
+        }
+    }
+
     // フレーズ読み上げ
     func playPhrase(_ card: PhraseCard) {
         // ✅ UX: 新しいカードが押されたら、前の再生（待機中のAPI含む）を即キャンセルして差し替える

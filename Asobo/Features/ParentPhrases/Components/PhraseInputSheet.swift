@@ -8,6 +8,8 @@ struct PhraseInputSheet: View {
     let initialText: String?
     let availableCategories: [PhraseCategory]
     let onCreateCategory: ((String) -> Void)?
+    let onPlay: ((String) -> Void)?
+    let isPlaying: Bool
     let onSave: (PhraseCard) -> Void
 
     @State private var text: String
@@ -20,6 +22,8 @@ struct PhraseInputSheet: View {
         initialText: String? = nil,
         availableCategories: [PhraseCategory] = PhraseCategory.builtinAllCases,
         onCreateCategory: ((String) -> Void)? = nil,
+        onPlay: ((String) -> Void)? = nil,
+        isPlaying: Bool = false,
         onSave: @escaping (PhraseCard) -> Void
     ) {
         self.card = card
@@ -27,6 +31,8 @@ struct PhraseInputSheet: View {
         self.initialText = initialText
         self.availableCategories = availableCategories
         self.onCreateCategory = onCreateCategory
+        self.onPlay = onPlay
+        self.isPlaying = isPlaying
         self.onSave = onSave
         _text = State(initialValue: card?.text ?? initialText ?? "")
         _selectedCategory = State(initialValue: card?.category ?? category)
@@ -66,10 +72,25 @@ struct PhraseInputSheet: View {
                 }
 
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("保存") {
-                        save()
+                    HStack(spacing: 12) {
+                        if onPlay != nil {
+                            Button {
+                                onPlay?(text)
+                            } label: {
+                                if isPlaying {
+                                    ProgressView()
+                                } else {
+                                    Image(systemName: "play.circle.fill")
+                                }
+                            }
+                            .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isPlaying)
+                        }
+
+                        Button("保存") {
+                            save()
+                        }
+                        .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     }
-                    .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
         }
@@ -109,7 +130,8 @@ struct PhraseInputSheet: View {
         card: nil,
         category: .morning,
         availableCategories: PhraseCategory.builtinAllCases,
-        onCreateCategory: { _ in }
+        onCreateCategory: { _ in },
+        onPlay: { text in print("Play: \(text)") }
     ) { card in
         print("Saved: \(card.text)")
     }

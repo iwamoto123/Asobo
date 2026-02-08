@@ -112,7 +112,9 @@ struct ParentPhrasesContentView: View {
                     category: category,
                     initialText: initialText,
                     availableCategories: controller.availableCategories(),
-                    onCreateCategory: { controller.addCustomCategory($0) }
+                    onCreateCategory: { controller.addCustomCategory($0) },
+                    onPlay: { controller.playText($0) },
+                    isPlaying: controller.isPlaying
                 ) { newCard in
                     controller.saveCard(newCard)
                 }
@@ -121,7 +123,9 @@ struct ParentPhrasesContentView: View {
                     card: card,
                     category: card.category,
                     availableCategories: controller.availableCategories(),
-                    onCreateCategory: { controller.addCustomCategory($0) }
+                    onCreateCategory: { controller.addCustomCategory($0) },
+                    onPlay: { controller.playText($0) },
+                    isPlaying: controller.isPlaying
                 ) { newCard in
                     controller.saveCard(newCard)
                 }
